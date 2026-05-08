@@ -98,7 +98,7 @@
         {
           "name": "ask",
           "execute": [
-            "aux4 manager ask --request \"${request}\" --configFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort} --workerInstructions ${instructions} --workerSkills ${skills}"
+            "aux4 manager ask --request \"${request}\" --configFile ${configFile} --workerConfigFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort} --workerInstructions ${instructions} --workerSkills ${skills}"
           ],
           "help": {
             "text": "Send a request to the agent",

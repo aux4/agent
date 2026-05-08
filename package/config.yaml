@@ -1,29 +1,17 @@
 config:
-  agent:
-    bio:
-      name: Agent
-      role: AI Assistant
-      description: General-purpose AI agent with research, planning, and task management
+  model:
+    type: bedrock
+    model: global.anthropic.claude-sonnet-4-5-20250929-v1:0
 
-    models:
-      strong:
-        type: bedrock
-        model: global.anthropic.claude-sonnet-4-5-20250929-v1:0
-        description: "Complex reasoning, code generation, multi-step analysis, research"
+  bio:
+    name: Agent
+    role: AI Assistant
+    description: General-purpose AI agent with research, planning, and task management
 
-      fast:
-        type: bedrock
-        model: global.anthropic.claude-haiku-4-5-20251001-v1:0
-        description: "Simple questions, lookups, formatting, summaries, routine tasks"
-
+  compaction:
+    contextWindow: 200000
+    maxContextPercent: 85
+    keepLastMessages: 6
     model:
       type: bedrock
-      model: global.anthropic.claude-sonnet-4-5-20250929-v1:0
-
-    compaction:
-      contextWindow: 200000
-      maxContextPercent: 85
-      keepLastMessages: 6
-      model:
-        type: bedrock
-        model: global.anthropic.claude-haiku-4-5-20251001-v1:0
+      model: global.anthropic.claude-haiku-4-5-20251001-v1:0
