@@ -1,10 +1,10 @@
 #### Description
 
-The `agent` command group provides an AI agent that understands, plans, and executes tasks. It combines a manager agent (orchestration, KB, memory, tasks) with a worker agent (execution) behind a single unified interface.
+The `agent` command group provides an AI agent that understands, plans, and executes tasks with research, knowledge management, and on-demand skills.
 
 Available subcommands:
 
-- **run** — Process a request
+- **ask** — Send a request to the agent
 - **status** — Check task progress
 - **resume** — Resume a paused session
 - **history** — View past executions
@@ -19,5 +19,5 @@ aux4 agent <subcommand> [options]
 #### Example
 
 ```bash
-aux4 agent run "set up a Node.js project with TypeScript"
+aux4 agent ask "set up a Node.js project with TypeScript"
 ```

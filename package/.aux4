@@ -34,12 +34,12 @@
       "name": "agent",
       "commands": [
         {
-          "name": "run",
+          "name": "ask",
           "execute": [
-            "aux4 manager run --request \"${request}\" --configFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort} --workerInstructions ${workerInstructions} --workerConfigFile ${workerConfigFile}"
+            "aux4 manager ask --request \"${request}\" --configFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort} --workerInstructions ${instructions} --workerSkills ${skills}"
           ],
           "help": {
-            "text": "Run the agent for a given request",
+            "text": "Send a request to the agent",
             "variables": [
               {
                 "name": "request",
@@ -49,6 +49,16 @@
               {
                 "name": "configFile",
                 "text": "Path to model configuration file",
+                "default": ""
+              },
+              {
+                "name": "instructions",
+                "text": "Path to custom instructions file",
+                "default": ""
+              },
+              {
+                "name": "skills",
+                "text": "Path to skills directory",
                 "default": ""
               },
               {
@@ -66,16 +76,6 @@
                 "text": "Queue server port for channels",
                 "default": "8420",
                 "env": "QUEUE_PORT"
-              },
-              {
-                "name": "workerInstructions",
-                "text": "Path to custom worker instructions file",
-                "default": ""
-              },
-              {
-                "name": "workerConfigFile",
-                "text": "Path to custom worker configuration file",
-                "default": ""
               }
             ]
           }

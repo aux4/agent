@@ -1,15 +1,15 @@
 # agent
 
-## run
+## ask
 
 ### should display help
 
 ```execute
-aux4 agent run --help
+aux4 agent ask --help
 ```
 
 ```expect:partial
-Run the agent for a given request
+Send a request to the agent
 ```
 
 ## status

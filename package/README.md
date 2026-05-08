@@ -1,8 +1,6 @@
 # agent/agent
 
-AI agent with manager/worker architecture. Combines `agent/manager` and `agent/worker` into a single package that presents as one unified agent.
-
-Behind the scenes, a manager agent handles user communication, task tracking, knowledge management, and orchestration, while a worker agent focuses on executing tasks. The split is invisible to the user.
+AI agent with research, planning, task management, and iterative execution powered by on-demand skills.
 
 ## Installation
 
@@ -13,32 +11,32 @@ aux4 aux4 pkger install agent/agent
 ## Quick Start
 
 ```bash
-# Start the queue server (required for agent communication)
+# Start the queue server
 aux4 queue start &
 
-# Run a task
-aux4 agent run "create a Python REST API with Flask"
+# Send a request
+aux4 agent ask "create a Python REST API with Flask"
 ```
 
 ## Commands
 
-### `agent run`
+### `agent ask`
 
-Run the agent for a given request. The manager interprets the request, dispatches work to the worker, and reports results.
+Send a request to the agent.
 
 ```bash
-aux4 agent run "<request>" [options]
+aux4 agent ask "<request>" [options]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `<request>` | The task or request to process | (required) |
 | `--configFile` | Path to model configuration file | `config.yaml` or built-in |
+| `--instructions` | Path to custom instructions file | built-in |
+| `--skills` | Path to skills directory | none |
 | `--history` | Path to conversation history file | `manager-history.json` |
 | `--memory` | Knowledge base folder | `.memory` |
 | `--queuePort` | Queue server port | `8420` |
-| `--workerInstructions` | Path to custom worker instructions | worker built-in |
-| `--workerConfigFile` | Path to custom worker configuration | worker built-in |
 
 ### `agent status`
 
@@ -87,20 +85,6 @@ Internal command called by cron to check for pending work.
 ### `agent daemon status`
 
 Show the daemon status and schedule.
-
-## Architecture
-
-```text
-user <-> agent/agent <-> agent/manager <-> agent/worker
-                              |
-                    memory, tasks, KB,
-                    scheduling, channels
-```
-
-- **agent/agent** — unified entry point (this package)
-- **agent/manager** — orchestrator: user communication, KB, memory, tasks, scheduling
-- **agent/worker** — executor: file operations, commands, search
-- **aux4/agent-channel** — communication layer between manager and worker
 
 ## Configuration
 
