@@ -1,0 +1,252 @@
+{
+  "scope": "agent",
+  "name": "agent",
+  "version": "3.0.0",
+  "description": "AI agent with manager/worker architecture",
+  "license": "Apache-2.0",
+  "tags": [
+    "ai",
+    "agent",
+    "manager",
+    "worker"
+  ],
+  "dependencies": [
+    "agent/manager",
+    "agent/worker",
+    "aux4/queue"
+  ],
+  "profiles": [
+    {
+      "name": "main",
+      "commands": [
+        {
+          "name": "agent",
+          "execute": [
+            "profile:agent"
+          ],
+          "help": {
+            "text": "AI agent that understands, plans, and executes tasks"
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent",
+      "commands": [
+        {
+          "name": "run",
+          "execute": [
+            "aux4 manager run --request \"${request}\" --configFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort} --workerInstructions ${workerInstructions} --workerConfigFile ${workerConfigFile}"
+          ],
+          "help": {
+            "text": "Run the agent for a given request",
+            "variables": [
+              {
+                "name": "request",
+                "text": "The task or request to process",
+                "arg": true
+              },
+              {
+                "name": "configFile",
+                "text": "Path to model configuration file",
+                "default": ""
+              },
+              {
+                "name": "history",
+                "text": "Path to conversation history file",
+                "default": "manager-history.json"
+              },
+              {
+                "name": "memory",
+                "text": "Knowledge base folder for session memories",
+                "default": ".memory"
+              },
+              {
+                "name": "queuePort",
+                "text": "Queue server port for channels",
+                "default": "8420",
+                "env": "QUEUE_PORT"
+              },
+              {
+                "name": "workerInstructions",
+                "text": "Path to custom worker instructions file",
+                "default": ""
+              },
+              {
+                "name": "workerConfigFile",
+                "text": "Path to custom worker configuration file",
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "status",
+          "execute": [
+            "aux4 manager status \"${name}\""
+          ],
+          "help": {
+            "text": "Check the status of a task",
+            "variables": [
+              {
+                "name": "name",
+                "text": "The task name",
+                "arg": true
+              }
+            ]
+          }
+        },
+        {
+          "name": "resume",
+          "execute": [
+            "aux4 manager resume --configFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort}"
+          ],
+          "help": {
+            "text": "Resume a paused agent session",
+            "variables": [
+              {
+                "name": "configFile",
+                "text": "Path to model configuration file",
+                "default": ""
+              },
+              {
+                "name": "history",
+                "text": "Path to conversation history file",
+                "default": "manager-history.json"
+              },
+              {
+                "name": "memory",
+                "text": "Knowledge base folder for session memories",
+                "default": ".memory"
+              },
+              {
+                "name": "queuePort",
+                "text": "Queue server port for channels",
+                "default": "8420",
+                "env": "QUEUE_PORT"
+              }
+            ]
+          }
+        },
+        {
+          "name": "history",
+          "execute": [
+            "aux4 manager history"
+          ],
+          "help": {
+            "text": "View past executions and their task lists"
+          }
+        },
+        {
+          "name": "daemon",
+          "execute": [
+            "profile:agent:daemon"
+          ],
+          "help": {
+            "text": "Daemon mode — agent wakes up periodically to check for work"
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent:daemon",
+      "commands": [
+        {
+          "name": "start",
+          "execute": [
+            "aux4 manager daemon start --every \"${every}\" --queuePort ${queuePort} --configFile ${configFile} --history ${history} --memory ${memory}"
+          ],
+          "help": {
+            "text": "Start the agent daemon to check for work on a schedule",
+            "variables": [
+              {
+                "name": "every",
+                "text": "How often to check for work",
+                "default": "5 min"
+              },
+              {
+                "name": "queuePort",
+                "text": "Queue server port",
+                "default": "8420",
+                "env": "QUEUE_PORT"
+              },
+              {
+                "name": "configFile",
+                "text": "Path to model configuration file",
+                "default": ""
+              },
+              {
+                "name": "history",
+                "text": "Path to conversation history file",
+                "default": "manager-history.json"
+              },
+              {
+                "name": "memory",
+                "text": "Knowledge base folder for session memories",
+                "default": ".memory"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stop",
+          "execute": [
+            "aux4 manager daemon stop --queuePort ${queuePort}"
+          ],
+          "help": {
+            "text": "Stop the agent daemon",
+            "variables": [
+              {
+                "name": "queuePort",
+                "text": "Queue server port",
+                "default": "8420",
+                "env": "QUEUE_PORT"
+              }
+            ]
+          }
+        },
+        {
+          "name": "check",
+          "execute": [
+            "aux4 manager daemon check --queuePort ${queuePort} --configFile ${configFile} --history ${history} --memory ${memory}"
+          ],
+          "help": {
+            "text": "Check for pending work — called by cron, not manually",
+            "variables": [
+              {
+                "name": "queuePort",
+                "text": "Queue server port",
+                "default": "8420",
+                "env": "QUEUE_PORT"
+              },
+              {
+                "name": "configFile",
+                "text": "Path to model configuration file",
+                "default": ""
+              },
+              {
+                "name": "history",
+                "text": "Path to conversation history file",
+                "default": "manager-history.json"
+              },
+              {
+                "name": "memory",
+                "text": "Knowledge base folder for session memories",
+                "default": ".memory"
+              }
+            ]
+          }
+        },
+        {
+          "name": "status",
+          "execute": [
+            "aux4 manager daemon status"
+          ],
+          "help": {
+            "text": "Show the daemon status"
+          }
+        }
+      ]
+    }
+  ]
+}
