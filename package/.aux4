@@ -38,16 +38,39 @@
           "execute": [
             "nout:aux4 jobs run \"aux4 queue start --port ${queuePort}\" 2>/dev/null || true",
             "nout:sleep 1",
+            "nout:aux4 jobs run \"aux4 cron start\" 2>/dev/null || true",
+            "nout:sleep 1",
+            "aux4 manager daemon start --every \"${every}\" --queuePort ${queuePort} --configFile ${configFile} --history ${history} --memory ${memory}",
             "log:Agent started"
           ],
           "help": {
-            "text": "Start the agent services",
+            "text": "Start the agent",
             "variables": [
+              {
+                "name": "every",
+                "text": "How often to check for work",
+                "default": "5 min"
+              },
               {
                 "name": "queuePort",
                 "text": "Queue server port",
                 "default": "8420",
                 "env": "QUEUE_PORT"
+              },
+              {
+                "name": "configFile",
+                "text": "Path to model configuration file",
+                "default": ""
+              },
+              {
+                "name": "history",
+                "text": "Path to conversation history file",
+                "default": "manager-history.json"
+              },
+              {
+                "name": "memory",
+                "text": "Knowledge base folder for session memories",
+                "default": ".memory"
               }
             ]
           }
@@ -55,11 +78,13 @@
         {
           "name": "stop",
           "execute": [
+            "nout:aux4 manager daemon stop --queuePort ${queuePort} 2>/dev/null || true",
+            "nout:aux4 cron stop 2>/dev/null || true",
             "nout:aux4 queue stop --port ${queuePort} 2>/dev/null || true",
             "log:Agent stopped"
           ],
           "help": {
-            "text": "Stop the agent services",
+            "text": "Stop the agent",
             "variables": [
               {
                 "name": "queuePort",
@@ -118,22 +143,6 @@
           }
         },
         {
-          "name": "status",
-          "execute": [
-            "aux4 manager status \"${name}\""
-          ],
-          "help": {
-            "text": "Check the status of a task",
-            "variables": [
-              {
-                "name": "name",
-                "text": "The task name",
-                "arg": true
-              }
-            ]
-          }
-        },
-        {
           "name": "resume",
           "execute": [
             "aux4 manager resume --configFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort}"
@@ -172,115 +181,6 @@
           ],
           "help": {
             "text": "View past executions and their task lists"
-          }
-        },
-        {
-          "name": "daemon",
-          "execute": [
-            "profile:agent:daemon"
-          ],
-          "help": {
-            "text": "Daemon mode — agent wakes up periodically to check for work"
-          }
-        }
-      ]
-    },
-    {
-      "name": "agent:daemon",
-      "commands": [
-        {
-          "name": "start",
-          "execute": [
-            "aux4 manager daemon start --every \"${every}\" --queuePort ${queuePort} --configFile ${configFile} --history ${history} --memory ${memory}"
-          ],
-          "help": {
-            "text": "Start the agent daemon to check for work on a schedule",
-            "variables": [
-              {
-                "name": "every",
-                "text": "How often to check for work",
-                "default": "5 min"
-              },
-              {
-                "name": "queuePort",
-                "text": "Queue server port",
-                "default": "8420",
-                "env": "QUEUE_PORT"
-              },
-              {
-                "name": "configFile",
-                "text": "Path to model configuration file",
-                "default": ""
-              },
-              {
-                "name": "history",
-                "text": "Path to conversation history file",
-                "default": "manager-history.json"
-              },
-              {
-                "name": "memory",
-                "text": "Knowledge base folder for session memories",
-                "default": ".memory"
-              }
-            ]
-          }
-        },
-        {
-          "name": "stop",
-          "execute": [
-            "aux4 manager daemon stop --queuePort ${queuePort}"
-          ],
-          "help": {
-            "text": "Stop the agent daemon",
-            "variables": [
-              {
-                "name": "queuePort",
-                "text": "Queue server port",
-                "default": "8420",
-                "env": "QUEUE_PORT"
-              }
-            ]
-          }
-        },
-        {
-          "name": "check",
-          "execute": [
-            "aux4 manager daemon check --queuePort ${queuePort} --configFile ${configFile} --history ${history} --memory ${memory}"
-          ],
-          "help": {
-            "text": "Check for pending work — called by cron, not manually",
-            "variables": [
-              {
-                "name": "queuePort",
-                "text": "Queue server port",
-                "default": "8420",
-                "env": "QUEUE_PORT"
-              },
-              {
-                "name": "configFile",
-                "text": "Path to model configuration file",
-                "default": ""
-              },
-              {
-                "name": "history",
-                "text": "Path to conversation history file",
-                "default": "manager-history.json"
-              },
-              {
-                "name": "memory",
-                "text": "Knowledge base folder for session memories",
-                "default": ".memory"
-              }
-            ]
-          }
-        },
-        {
-          "name": "status",
-          "execute": [
-            "aux4 manager daemon status"
-          ],
-          "help": {
-            "text": "Show the daemon status"
           }
         }
       ]

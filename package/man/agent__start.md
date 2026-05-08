@@ -1,22 +1,25 @@
 #### Description
 
-The `start` command starts the agent services required for operation. This must be called before using `agent ask`.
-
-Currently starts the queue server in the background for channel communication.
+The `start` command starts the agent. This must be called before using `agent ask`. It starts all required background services and begins periodic work detection.
 
 #### Usage
 
 ```bash
-aux4 agent start [--queuePort <port>]
+aux4 agent start [--every <interval>] [--queuePort <port>] [--configFile <path>] [--history <path>] [--memory <folder>]
 ```
 
---queuePort  Queue server port (default: 8420)
+--every       How often to check for pending work (default: 5 min)
+--queuePort   Queue server port (default: 8420)
+--configFile  Path to model configuration file
+--history     Path to conversation history file (default: manager-history.json)
+--memory      Knowledge base folder (default: .memory)
 
 #### Example
 
 ```bash
 aux4 agent start
 aux4 agent ask "create a REST API"
+aux4 agent stop
 ```
 
 ```text

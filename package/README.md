@@ -20,15 +20,15 @@ aux4 agent stop
 
 ### `agent start`
 
-Start the agent services. Must be called before using `agent ask`.
+Start the agent. Must be called before using `agent ask`.
 
 ```bash
-aux4 agent start [--queuePort <port>]
+aux4 agent start [--every <interval>] [--queuePort <port>]
 ```
 
 ### `agent stop`
 
-Stop the agent services.
+Stop the agent.
 
 ```bash
 aux4 agent stop [--queuePort <port>]
@@ -52,14 +52,6 @@ aux4 agent ask "<request>" [options]
 | `--memory` | Knowledge base folder | `.memory` |
 | `--queuePort` | Queue server port | `8420` |
 
-### `agent status`
-
-Check the progress of a named task.
-
-```bash
-aux4 agent status "<task-name>"
-```
-
 ### `agent resume`
 
 Resume a paused agent session from the conversation history.
@@ -75,30 +67,6 @@ View all past executions and their task lists.
 ```bash
 aux4 agent history
 ```
-
-### `agent daemon start`
-
-Start the agent daemon to check for work on a schedule.
-
-```bash
-aux4 agent daemon start [--every <interval>] [--queuePort <port>]
-```
-
-### `agent daemon stop`
-
-Stop the agent daemon.
-
-```bash
-aux4 agent daemon stop
-```
-
-### `agent daemon check`
-
-Internal command called by cron to check for pending work.
-
-### `agent daemon status`
-
-Show the daemon status and schedule.
 
 ## Configuration
 

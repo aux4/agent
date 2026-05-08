@@ -7,10 +7,8 @@ Available subcommands:
 - **start** — Start the agent services
 - **stop** — Stop the agent services
 - **ask** — Send a request to the agent
-- **status** — Check task progress
 - **resume** — Resume a paused session
 - **history** — View past executions
-- **daemon** — Autonomous daemon mode
 
 #### Usage
 
