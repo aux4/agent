@@ -1,5 +1,29 @@
 # agent
 
+## start
+
+### should display help
+
+```execute
+aux4 agent start --help
+```
+
+```expect:partial
+Start the agent services
+```
+
+## stop
+
+### should display help
+
+```execute
+aux4 agent stop --help
+```
+
+```expect:partial
+Stop the agent services
+```
+
 ## ask
 
 ### should display help

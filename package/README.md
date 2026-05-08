@@ -11,14 +11,28 @@ aux4 aux4 pkger install agent/agent
 ## Quick Start
 
 ```bash
-# Start the queue server
-aux4 queue start &
-
-# Send a request
+aux4 agent start
 aux4 agent ask "create a Python REST API with Flask"
+aux4 agent stop
 ```
 
 ## Commands
+
+### `agent start`
+
+Start the agent services. Must be called before using `agent ask`.
+
+```bash
+aux4 agent start [--queuePort <port>]
+```
+
+### `agent stop`
+
+Stop the agent services.
+
+```bash
+aux4 agent stop [--queuePort <port>]
+```
 
 ### `agent ask`
 

@@ -4,6 +4,8 @@ The `agent` command group provides an AI agent that understands, plans, and exec
 
 Available subcommands:
 
+- **start** — Start the agent services
+- **stop** — Stop the agent services
 - **ask** — Send a request to the agent
 - **status** — Check task progress
 - **resume** — Resume a paused session
@@ -19,5 +21,7 @@ aux4 agent <subcommand> [options]
 #### Example
 
 ```bash
+aux4 agent start
 aux4 agent ask "set up a Node.js project with TypeScript"
+aux4 agent stop
 ```
