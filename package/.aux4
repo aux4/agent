@@ -36,11 +36,12 @@
         {
           "name": "start",
           "execute": [
+            "nout:mkdir -p .agent/history",
             "nout:aux4 jobs run \"aux4 queue start --port ${queuePort}\" 2>/dev/null || true",
             "nout:sleep 1",
             "nout:aux4 jobs run \"aux4 cron start\" 2>/dev/null || true",
             "nout:sleep 1",
-            "aux4 manager daemon start --every \"${every}\" --queuePort ${queuePort} --configFile ${configFile} --history ${history} --memory ${memory}",
+            "aux4 manager daemon start --every \"${every}\" --queuePort ${queuePort} --configFile ${configFile} --history .agent/history/default.json --memory .agent/memory",
             "log:Agent started"
           ],
           "help": {
@@ -61,16 +62,6 @@
                 "name": "configFile",
                 "text": "Path to model configuration file",
                 "default": ""
-              },
-              {
-                "name": "history",
-                "text": "Path to conversation history file",
-                "default": "manager-history.json"
-              },
-              {
-                "name": "memory",
-                "text": "Knowledge base folder for session memories",
-                "default": ".memory"
               }
             ]
           }
@@ -79,6 +70,7 @@
           "name": "stop",
           "execute": [
             "nout:aux4 manager daemon stop --queuePort ${queuePort} 2>/dev/null || true",
+            "nout:aux4 jobs killall 2>/dev/null || true",
             "nout:aux4 cron stop 2>/dev/null || true",
             "nout:aux4 queue stop --port ${queuePort} 2>/dev/null || true",
             "log:Agent stopped"
@@ -98,7 +90,16 @@
         {
           "name": "ask",
           "execute": [
-            "aux4 manager ask --request \"${request}\" --configFile ${configFile} --workerConfigFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort} --workerInstructions ${instructions} --workerSkills ${skills}"
+            "nout:mkdir -p .agent/history",
+            "nout:if(conversation!=) && echo .agent/history/${conversation}.json || echo .agent/history/default.json",
+            "set:historyFile=${response}",
+            "nout:if(instructions!=) && echo ${instructions} || (test -f AGENTS.md && echo AGENTS.md || echo '')",
+            "set:resolvedInstructions=${response}",
+            "nout:if(resolvedInstructions!=) && echo --workerInstructions ${resolvedInstructions} || echo ''",
+            "set:workerInstructionsFlag=${response}",
+            "nout:if(skills!=) && echo --workerSkills ${skills} || echo ''",
+            "set:workerSkillsFlag=${response}",
+            "aux4 manager ask --request \"${request}\" --configFile ${configFile} --workerConfigFile ${configFile} --history ${historyFile} --memory .agent/memory --queuePort ${queuePort} ${workerInstructionsFlag} ${workerSkillsFlag}"
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -109,9 +110,14 @@
                 "arg": true
               },
               {
+                "name": "conversation",
+                "text": "Conversation name",
+                "default": ""
+              },
+              {
                 "name": "configFile",
                 "text": "Path to model configuration file",
-                "default": ""
+                "default": "config.yaml"
               },
               {
                 "name": "instructions",
@@ -124,16 +130,6 @@
                 "default": ""
               },
               {
-                "name": "history",
-                "text": "Path to conversation history file",
-                "default": "manager-history.json"
-              },
-              {
-                "name": "memory",
-                "text": "Knowledge base folder for session memories",
-                "default": ".memory"
-              },
-              {
                 "name": "queuePort",
                 "text": "Queue server port for channels",
                 "default": "8420",
@@ -143,27 +139,52 @@
           }
         },
         {
+          "name": "new",
+          "execute": [
+            "nout:mkdir -p .agent/history",
+            "nout:if(conversation!=) && echo .agent/history/${conversation}.json || echo .agent/history/default.json",
+            "set:historyFile=${response}",
+            "nout:aux4 ai agent remember ${historyFile} --configFile ${configFile} --config 2>/dev/null || echo ''",
+            "nout:if(response==) && echo skip || aux4 kb add --folder .agent/memory --topic \"session-$(date +%Y-%m-%d)-$(date +%H%M%S)\" --content \"${response}\" --tags session 2>/dev/null",
+            "nout:rm -f ${historyFile}",
+            "log:New conversation started"
+          ],
+          "help": {
+            "text": "Start a new conversation",
+            "variables": [
+              {
+                "name": "conversation",
+                "text": "Conversation name",
+                "default": ""
+              },
+              {
+                "name": "configFile",
+                "text": "Path to model configuration file",
+                "default": "config.yaml"
+              }
+            ]
+          }
+        },
+        {
           "name": "resume",
           "execute": [
-            "aux4 manager resume --configFile ${configFile} --history ${history} --memory ${memory} --queuePort ${queuePort}"
+            "nout:mkdir -p .agent/history",
+            "nout:if(conversation!=) && echo .agent/history/${conversation}.json || echo .agent/history/default.json",
+            "set:historyFile=${response}",
+            "aux4 manager resume --configFile ${configFile} --history ${historyFile} --memory .agent/memory --queuePort ${queuePort}"
           ],
           "help": {
             "text": "Resume a paused agent session",
             "variables": [
               {
-                "name": "configFile",
-                "text": "Path to model configuration file",
+                "name": "conversation",
+                "text": "Conversation name",
                 "default": ""
               },
               {
-                "name": "history",
-                "text": "Path to conversation history file",
-                "default": "manager-history.json"
-              },
-              {
-                "name": "memory",
-                "text": "Knowledge base folder for session memories",
-                "default": ".memory"
+                "name": "configFile",
+                "text": "Path to model configuration file",
+                "default": ""
               },
               {
                 "name": "queuePort",

@@ -36,6 +36,18 @@ aux4 agent ask --help
 Send a request to the agent
 ```
 
+## new
+
+### should display help
+
+```execute
+aux4 agent new --help
+```
+
+```expect:partial
+Start a new conversation
+```
+
 ## resume
 
 ### should display help

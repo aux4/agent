@@ -4,9 +4,10 @@ The `agent` command group provides an AI agent that understands, plans, and exec
 
 Available subcommands:
 
-- **start** — Start the agent services
-- **stop** — Stop the agent services
+- **start** — Start the agent
+- **stop** — Stop the agent
 - **ask** — Send a request to the agent
+- **new** — Start a new conversation
 - **resume** — Resume a paused session
 - **history** — View past executions
 

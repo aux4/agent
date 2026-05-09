@@ -52,6 +52,14 @@ aux4 agent ask "<request>" [options]
 | `--memory` | Knowledge base folder | `.memory` |
 | `--queuePort` | Queue server port | `8420` |
 
+### `agent new`
+
+Start a new conversation. Saves the current session to the knowledge base, then clears the history.
+
+```bash
+aux4 agent new
+```
+
 ### `agent resume`
 
 Resume a paused agent session from the conversation history.
@@ -72,13 +80,17 @@ aux4 agent history
 
 ```yaml
 config:
-  agent:
-    model:
-      type: bedrock
-      model: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model:
+    type: bedrock
+    model: global.anthropic.claude-sonnet-4-5-20250929-v1:0
 
-    compaction:
-      contextWindow: 200000
-      maxContextPercent: 85
-      keepLastMessages: 6
+  bio:
+    name: Alex
+    role: Senior Developer
+    description: Handles code reviews, implements features, and manages deployments
+
+  compaction:
+    contextWindow: 200000
+    maxContextPercent: 85
+    keepLastMessages: 6
 ```
