@@ -1,19 +1,23 @@
 {
   "scope": "agent",
   "name": "agent",
-  "version": "3.0.0",
-  "description": "AI agent with manager/worker architecture",
+  "version": "4.0.0",
+  "description": "AI agent powered by on-demand skills",
   "license": "Apache-2.0",
   "tags": [
     "ai",
-    "agent",
-    "manager",
-    "worker"
+    "agent"
   ],
   "dependencies": [
-    "agent/manager",
-    "agent/worker",
-    "aux4/queue"
+    "aux4/ai-agent",
+    "aux4/todo",
+    "aux4/jobs",
+    "aux4/queue",
+    "aux4/cron",
+    "aux4/config",
+    "aux4/kb",
+    "aux4/search",
+    "aux4/poller"
   ],
   "profiles": [
     {
@@ -41,27 +45,16 @@
             "nout:sleep 1",
             "nout:aux4 jobs run \"aux4 cron start\" 2>/dev/null || true",
             "nout:sleep 1",
-            "aux4 manager daemon start --every \"${every}\" --queuePort ${queuePort} --configFile ${configFile} --history .agent/history/default.json --memory .agent/memory",
             "log:Agent started"
           ],
           "help": {
             "text": "Start the agent",
             "variables": [
               {
-                "name": "every",
-                "text": "How often to check for work",
-                "default": "5 min"
-              },
-              {
                 "name": "queuePort",
                 "text": "Queue server port",
                 "default": "8420",
                 "env": "QUEUE_PORT"
-              },
-              {
-                "name": "configFile",
-                "text": "Path to model configuration file",
-                "default": ""
               }
             ]
           }
@@ -69,10 +62,7 @@
         {
           "name": "stop",
           "execute": [
-            "nout:aux4 manager daemon stop --queuePort ${queuePort} 2>/dev/null || true",
-            "nout:aux4 jobs killall 2>/dev/null || true",
-            "nout:aux4 cron stop 2>/dev/null || true",
-            "nout:aux4 queue stop --port ${queuePort} 2>/dev/null || true",
+            "nout:aux4 connector stop-all --queuePort ${queuePort} 2>/dev/null || true",
             "log:Agent stopped"
           ],
           "help": {
@@ -95,11 +85,15 @@
             "set:historyFile=${response}",
             "nout:if(instructions!=) && echo ${instructions} || (test -f AGENTS.md && echo AGENTS.md || echo '')",
             "set:resolvedInstructions=${response}",
-            "nout:if(resolvedInstructions!=) && echo --workerInstructions ${resolvedInstructions} || echo ''",
-            "set:workerInstructionsFlag=${response}",
-            "nout:if(skills!=) && echo --workerSkills ${skills} || echo ''",
-            "set:workerSkillsFlag=${response}",
-            "aux4 manager ask --request \"${request}\" --configFile ${configFile} --workerConfigFile ${configFile} --history ${historyFile} --memory .agent/memory --queuePort ${queuePort} ${workerInstructionsFlag} ${workerSkillsFlag}"
+            "nout:if(resolvedInstructions!=) && echo --instructions ${resolvedInstructions} || echo ''",
+            "set:instructionsFlag=${response}",
+            "nout:if(skills!=) && echo ${skills} || (test -d skills && echo skills || echo '')",
+            "set:resolvedSkills=${response}",
+            "nout:if(resolvedSkills!=) && echo --skills ${resolvedSkills} || echo ''",
+            "set:skillsFlag=${response}",
+            "nout:if(image!=) && echo --image ${image} || echo ''",
+            "set:imageFlag=${response}",
+            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md ${instructionsFlag} ${skillsFlag} ${imageFlag} --history ${historyFile} --question \"${request}\""
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -130,10 +124,9 @@
                 "default": ""
               },
               {
-                "name": "queuePort",
-                "text": "Queue server port for channels",
-                "default": "8420",
-                "env": "QUEUE_PORT"
+                "name": "image",
+                "text": "Image file paths (comma-separated)",
+                "default": ""
               }
             ]
           }
@@ -171,7 +164,15 @@
             "nout:mkdir -p .agent/history",
             "nout:if(conversation!=) && echo .agent/history/${conversation}.json || echo .agent/history/default.json",
             "set:historyFile=${response}",
-            "aux4 manager resume --configFile ${configFile} --history ${historyFile} --memory .agent/memory --queuePort ${queuePort}"
+            "nout:if(instructions!=) && echo ${instructions} || (test -f AGENTS.md && echo AGENTS.md || echo '')",
+            "set:resolvedInstructions=${response}",
+            "nout:if(resolvedInstructions!=) && echo --instructions ${resolvedInstructions} || echo ''",
+            "set:instructionsFlag=${response}",
+            "nout:if(skills!=) && echo ${skills} || (test -d skills && echo skills || echo '')",
+            "set:resolvedSkills=${response}",
+            "nout:if(resolvedSkills!=) && echo --skills ${resolvedSkills} || echo ''",
+            "set:skillsFlag=${response}",
+            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md ${instructionsFlag} ${skillsFlag} --history ${historyFile} --question \"Resume: check current tasks with 'aux4 todo list' and continue from where you left off.\""
           ],
           "help": {
             "text": "Resume a paused agent session",
@@ -187,10 +188,14 @@
                 "default": ""
               },
               {
-                "name": "queuePort",
-                "text": "Queue server port for channels",
-                "default": "8420",
-                "env": "QUEUE_PORT"
+                "name": "instructions",
+                "text": "Path to custom instructions file",
+                "default": ""
+              },
+              {
+                "name": "skills",
+                "text": "Path to skills directory",
+                "default": ""
               }
             ]
           }
@@ -198,7 +203,7 @@
         {
           "name": "history",
           "execute": [
-            "aux4 manager history"
+            "aux4 todo list"
           ],
           "help": {
             "text": "View past executions and their task lists"
