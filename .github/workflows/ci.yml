@@ -14,22 +14,19 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Lint package
-        uses: aux4/lint-package-action@v1
+      - uses: aux4/action@v1
         with:
-          package_directory: package
+          command: lint
+          strict: 'true'
 
   test:
+    needs: [lint]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Test package
-        uses: aux4/test-package-action@v1
+      - uses: aux4/action@v1
         with:
-          package_directory: package
-          test_directory: test
+          command: test
