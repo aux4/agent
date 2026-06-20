@@ -45,7 +45,8 @@
             "nout:sleep 1",
             "nout:aux4 jobs run \"aux4 cron start\" 2>/dev/null || true",
             "nout:sleep 1",
-            "log:Agent started"
+            "nout:aux4 cron add --name agent-heartbeat --every \"${heartbeat}\" --run \"aux4 agent ask 'Heartbeat: check your goal and task board; do the next thing that serves the goal, or rest.' --conversation heartbeat\" 2>/dev/null || true",
+            "log:Agent started (heartbeat every ${heartbeat})"
           ],
           "help": {
             "text": "Start the agent",
@@ -55,6 +56,12 @@
                 "text": "Queue server port",
                 "default": "8420",
                 "env": "QUEUE_PORT"
+              },
+              {
+                "name": "heartbeat",
+                "text": "How often the agent wakes to check its goal and task board (e.g. 5m, 30s, 1 hour)",
+                "default": "5m",
+                "env": "AGENT_HEARTBEAT"
               }
             ]
           }
@@ -62,7 +69,8 @@
         {
           "name": "stop",
           "execute": [
-            "nout:aux4 connector stop-all --queuePort ${queuePort} 2>/dev/null || true",
+            "nout:aux4 cron remove --name agent-heartbeat 2>/dev/null || true",
+            "nout:aux4 queue stop --port ${queuePort} 2>/dev/null || true",
             "log:Agent stopped"
           ],
           "help": {
