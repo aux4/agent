@@ -76,6 +76,29 @@ View all past executions and their task lists.
 aux4 agent history
 ```
 
+## How the agent is composed
+
+The agent's prompt is built from layers, lean by default:
+
+1. **Base discipline** (`instructions/agent.md`, hardcoded and immutable) — a tight behavioral core: own your identity, hold opinions but verify facts against real tool calls, clarify before acting, set a checkable definition of done, validate each done-condition against the actual artifact, report honestly. It carries no operational machinery — delegation, messaging, scheduling, and knowledge-base workflows live in on-demand skills, not in the base.
+2. **Identity** (`bio:` in `config.yaml`) — who *this* agent is (name, role, description), injected into the base as an `# Agent Identity` section.
+3. **AGENTS.md** (optional, picked up automatically) — what *this* agent does: its domain, task board, and persona.
+4. **Skills** (optional `--skills` directory) — capabilities loaded only when a task needs them.
+
+## Agent Identity (bio)
+
+Define the agent's identity in a `bio:` section of `config.yaml`. The `ask` and `resume` commands read it and pass it to the runtime as `--bio`, which renders it into an `# Agent Identity` section on top of the base discipline. Recognized fields: `name`, `role`, `description`.
+
+```yaml
+config:
+  bio:
+    name: Sam Okafor
+    role: infra engineer
+    description: Owns the platform's CI/CD and observability; ships small reversible changes
+```
+
+If no `bio:` section is present, the agent still runs — no identity section is injected.
+
 ## Configuration
 
 ```yaml

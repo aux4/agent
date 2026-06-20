@@ -2,6 +2,8 @@
 
 The `resume` command continues a paused agent session from the conversation history. It checks for incomplete tasks and resumes execution from where it left off.
 
+Like `ask`, it runs on the immutable base discipline and injects the agent's identity from the `bio:` section of the config file (`name`, `role`, `description`) as an `# Agent Identity` section. If no `bio:` is present, the agent resumes without an identity section.
+
 #### Usage
 
 ```bash

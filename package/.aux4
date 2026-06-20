@@ -93,7 +93,8 @@
             "set:skillsFlag=${response}",
             "nout:if(image!=) && echo --image ${image} || echo ''",
             "set:imageFlag=${response}",
-            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md ${instructionsFlag} ${skillsFlag} ${imageFlag} --history ${historyFile} --question \"${request}\""
+            "set:bio=!aux4 config get --configFile ${configFile} --name bio 2>/dev/null || echo {}",
+            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} ${imageFlag} --history ${historyFile} --question \"${request}\""
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -172,7 +173,8 @@
             "set:resolvedSkills=${response}",
             "nout:if(resolvedSkills!=) && echo --skills ${resolvedSkills} || echo ''",
             "set:skillsFlag=${response}",
-            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md ${instructionsFlag} ${skillsFlag} --history ${historyFile} --question \"Resume: check current tasks with 'aux4 todo list' and continue from where you left off.\""
+            "set:bio=!aux4 config get --configFile ${configFile} --name bio 2>/dev/null || echo {}",
+            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} --history ${historyFile} --question \"Resume: check current tasks with 'aux4 todo list' and continue from where you left off.\""
           ],
           "help": {
             "text": "Resume a paused agent session",
