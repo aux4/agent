@@ -1,31 +1,77 @@
-name: publish
+name: Publish Package
 
 on:
   push:
     branches:
       - main
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!README.md'
+      - '!LICENSE'
+      - '!.gitignore'
+
+  workflow_dispatch:
+    inputs:
+      level:
+        description: 'Release level (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
-  publish:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Install aux4
-        run: npm install -g aux4
-
-      - name: Install dependencies
-        run: |
-          aux4 aux4 pkger install agent/manager
-          aux4 aux4 pkger install agent/worker
-          aux4 aux4 pkger install aux4/queue
-
-      - name: Run tests
-        run: cd package && aux4 test run
-
-      - name: Publish package
-        uses: aux4/publish-package-action@v1
+      - uses: aux4/action@v1
         with:
-          package: package
-        env:
-          AUX4_API_KEY: ${{ secrets.AUX4_API_KEY }}
+          command: lint
+          strict: 'true'
+
+  test-linux:
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: aux4/action@v1
+        with:
+          command: test
+
+  test-darwin:
+    needs: [lint]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: aux4/action@v1
+        with:
+          command: test
+
+  publish:
+    needs: [test-linux, test-darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: aux4/action@v1
+        with:
+          command: publish
+          level: ${{ inputs.level || 'patch' }}
+          aux4_token: ${{ secrets.AUX4_ACCESS_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}

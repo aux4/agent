@@ -12,6 +12,26 @@ aux4 agent start --help
 Start the agent
 ```
 
+### should expose the heartbeat option
+
+```execute
+aux4 agent start --help
+```
+
+```expect:partial
+How often the agent wakes
+```
+
+### should schedule the agent-heartbeat cron
+
+```execute
+aux4 agent start --showSource
+```
+
+```expect:partial
+cron add --name agent-heartbeat
+```
+
 ## stop
 
 ### should display help
@@ -22,6 +42,16 @@ aux4 agent stop --help
 
 ```expect:partial
 Stop the agent
+```
+
+### should remove the agent-heartbeat cron
+
+```execute
+aux4 agent stop --showSource
+```
+
+```expect:partial
+cron remove --name agent-heartbeat
 ```
 
 ## ask
