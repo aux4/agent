@@ -1,23 +1,24 @@
 #### Description
 
-The `new` command starts a new conversation. It saves a summary of the current session to the knowledge base as memory, then clears the history file. The next `agent ask` starts fresh, but past context is searchable in the KB.
+The `new` command starts a new conversation. It consolidates the current conversation's history into long-term memory, then clears the history file so the next `agent ask` starts fresh — while the consolidated summary stays searchable in the knowledge base.
 
-If the history file is empty or doesn't exist, the command does nothing and just reports a new conversation started.
+Consolidation runs `aux4 ai agent remember` over the conversation's history file (`.agent/history/<conversation>.json`, default `default`), then stores the resulting summary as a knowledge entry in the `.agent/memory` knowledge base (topic `session-<date>-<time>`, tagged `session`). Finally it removes the history file.
+
+If the history file is empty or doesn't exist, nothing is remembered and the command just reports a new conversation started.
 
 #### Usage
 
 ```bash
-aux4 agent new [--configFile <path>] [--history <path>] [--memory <folder>]
+aux4 agent new [--conversation <name>] [--configFile <path>]
 ```
 
---configFile  Path to model configuration file (default: config.yaml)
---history     Path to conversation history file (default: manager-history.json)
---memory      Knowledge base folder (default: .memory)
+--conversation  Conversation name; selects `.agent/history/<name>.json` (default: `default`)
+--configFile    Path to model configuration file (default: `config.yaml`)
 
 #### Example
 
 ```bash
-aux4 agent new
+aux4 agent new --conversation user-api
 ```
 
 ```text
