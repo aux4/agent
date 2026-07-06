@@ -195,7 +195,7 @@
               {
                 "name": "configFile",
                 "text": "Path to model configuration file",
-                "default": ""
+                "default": "config.yaml"
               },
               {
                 "name": "instructions",
