@@ -6,21 +6,22 @@ The agent runs on a tight, immutable base discipline (`instructions/agent.md`): 
 
 The agent's identity is read from the `bio:` section of the config file (`name`, `role`, `description`) and injected into the base prompt as an `# Agent Identity` section. If no `bio:` is present, the agent runs without an identity section.
 
-The queue server must be running before executing this command.
+Conversation history is persisted per conversation under `.agent/history/<conversation>.json`. Use `--conversation` to select or start a named conversation; without it, the agent uses `.agent/history/default.json`. The history directory is created automatically. History grows as the conversation continues; `agent new` consolidates it into memory and clears it.
+
+If `--instructions` is omitted, the agent picks up `AGENTS.md` from the current directory when present (domain instructions). If `--skills` is omitted, it picks up a `skills` directory from the current directory when present (on-demand capabilities).
 
 #### Usage
 
 ```bash
-aux4 agent ask "<request>" [--configFile <path>] [--instructions <path>] [--skills <path>] [--history <path>] [--memory <folder>] [--queuePort <port>]
+aux4 agent ask "<request>" [--conversation <name>] [--configFile <path>] [--instructions <path>] [--skills <path>] [--image <paths>]
 ```
 
 --request       The task or request to process (positional argument)
---configFile    Path to model configuration file (default: config.yaml or built-in)
---instructions  Path to custom instructions file (default: built-in)
---skills        Path to skills directory (default: none)
---history       Path to conversation history file (default: manager-history.json)
---memory        Knowledge base folder for session memories (default: .memory)
---queuePort     Queue server port (default: 8420)
+--conversation  Conversation name; selects `.agent/history/<name>.json` (default: `default`)
+--configFile    Path to model configuration file (default: `config.yaml`)
+--instructions  Path to custom instructions file (default: `AGENTS.md` if present, else none)
+--skills        Path to skills directory (default: `skills` directory if present, else none)
+--image         Image file paths, comma-separated (default: none)
 
 Configuration file:
 
@@ -39,6 +40,11 @@ config:
 #### Example
 
 ```bash
-aux4 queue start &
 aux4 agent ask "create a REST API for user management"
+```
+
+Continue a named conversation:
+
+```bash
+aux4 agent ask "add pagination to the list endpoint" --conversation user-api
 ```

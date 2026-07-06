@@ -45,7 +45,7 @@ aux4 agent stop [--queuePort <port>]
 
 ### `agent ask`
 
-Send a request to the agent.
+Send a request to the agent. History is persisted per conversation under `.agent/history/<conversation>.json` (default `default`). When `--instructions` is omitted the agent picks up `AGENTS.md` from the current directory if present; when `--skills` is omitted it picks up a `skills` directory if present.
 
 ```bash
 aux4 agent ask "<request>" [options]
@@ -54,27 +54,26 @@ aux4 agent ask "<request>" [options]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `<request>` | The task or request to process | (required) |
-| `--configFile` | Path to model configuration file | `config.yaml` or built-in |
-| `--instructions` | Path to custom instructions file | built-in |
-| `--skills` | Path to skills directory | none |
-| `--history` | Path to conversation history file | `manager-history.json` |
-| `--memory` | Knowledge base folder | `.memory` |
-| `--queuePort` | Queue server port | `8420` |
+| `--conversation` | Conversation name; selects `.agent/history/<name>.json` | `default` |
+| `--configFile` | Path to model configuration file | `config.yaml` |
+| `--instructions` | Path to custom instructions file | `AGENTS.md` if present, else none |
+| `--skills` | Path to skills directory | `skills` dir if present, else none |
+| `--image` | Image file paths (comma-separated) | none |
 
 ### `agent new`
 
-Start a new conversation. Saves the current session to the knowledge base, then clears the history.
+Start a new conversation. Consolidates the current conversation's history into the `.agent/memory` knowledge base (via `aux4 ai agent remember`), then clears the history file so the next `agent ask` starts fresh.
 
 ```bash
-aux4 agent new
+aux4 agent new [--conversation <name>] [--configFile <path>]
 ```
 
 ### `agent resume`
 
-Resume a paused agent session from the conversation history.
+Resume a paused agent session from its conversation history. Reloads `.agent/history/<conversation>.json` and continues from where it left off, checking the task board with `aux4 todo list`.
 
 ```bash
-aux4 agent resume [options]
+aux4 agent resume [--conversation <name>] [--configFile <path>] [--instructions <path>] [--skills <path>]
 ```
 
 ### `agent history`
@@ -93,6 +92,13 @@ The agent's prompt is built from layers, lean by default:
 2. **Identity** (`bio:` in `config.yaml`) — who *this* agent is (name, role, description), injected into the base as an `# Agent Identity` section.
 3. **AGENTS.md** (optional, picked up automatically) — what *this* agent does: its domain, task board, and persona.
 4. **Skills** (optional `--skills` directory) — capabilities loaded only when a task needs them.
+
+## Conversations and memory
+
+The agent keeps state in an `.agent/` directory in the working directory:
+
+- **History** — each conversation is stored as `.agent/history/<conversation>.json`. `agent ask` and `agent resume` select the file with `--conversation` (default `default`). History accumulates as the conversation continues, kept in check by automatic compaction.
+- **Memory** — `agent new` consolidates the current conversation into long-term memory: it summarizes the history via `aux4 ai agent remember`, stores the summary as a knowledge entry in the `.agent/memory` knowledge base (topic `session-<date>-<time>`, tag `session`), and then clears the history file. Consolidation happens **only on `agent new`**, not on every `ask` — so past sessions stay searchable in the KB while the active history stays lean.
 
 ## Agent Identity (bio)
 
