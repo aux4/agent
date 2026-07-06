@@ -11,7 +11,7 @@ aux4 agent resume [--conversation <name>] [--configFile <path>] [--instructions 
 ```
 
 --conversation  Conversation name; selects `.agent/history/<name>.json` (default: `default`)
---configFile    Path to model configuration file (default: none; falls back to the runtime built-in)
+--configFile    Path to model configuration file (default: `config.yaml`)
 --instructions  Path to custom instructions file (default: `AGENTS.md` if present, else none)
 --skills        Path to skills directory (default: `skills` directory if present, else none)
 
