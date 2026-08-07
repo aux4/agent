@@ -102,7 +102,11 @@
             "nout:if(image!=) && echo --image ${image} || echo ''",
             "set:imageFlag=${response}",
             "set:bio=!aux4 config get --configFile ${configFile} --name bio 2>/dev/null || echo {}",
-            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} ${imageFlag} --history ${historyFile} --question \"${request}\""
+            "nout:if(tools!=) && echo --tools ${tools} || echo ''",
+            "set:toolsFlag=${response}",
+            "nout:if(policy!=) && echo --policy '${policy}' || echo ''",
+            "set:policyFlag=${response}",
+            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} ${imageFlag} ${toolsFlag} ${policyFlag} --history ${historyFile} --question \"${request}\""
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -136,6 +140,16 @@
                 "name": "image",
                 "text": "Image file paths (comma-separated)",
                 "default": ""
+              },
+              {
+                "name": "tools",
+                "text": "Comma-separated allow-list of tools to bind (e.g. executeAux4,aux4Skill). Binding every tool sends every tool description on each request; on a small model that context floor alone can stop it calling tools at all. Default: all tools.",
+                "default": ""
+              },
+              {
+                "name": "policy",
+                "text": "Guardrails as JSON, e.g. '{\"budget\":{\"calls\":40}}'. Without a budget a run is unbounded: a single run on a metered endpoint reached 624 calls and 26M input tokens before a wall-clock timeout stopped it.",
+                "default": "{\"budget\":{\"calls\":60}}"
               }
             ]
           }
