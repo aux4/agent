@@ -106,7 +106,7 @@
             "set:toolsFlag=${response}",
             "nout:if(policy!=) && echo --policy '${policy}' || echo ''",
             "set:policyFlag=${response}",
-            "aux4 ai agent ask --configFile ${configFile} --config --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} ${imageFlag} ${toolsFlag} ${policyFlag} --history ${historyFile} --question \"${request}\""
+            "aux4 ai agent ask --configFile ${configFile} param(config) --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} ${imageFlag} ${toolsFlag} ${policyFlag} param(permissions) --history ${historyFile} --question \"${request}\""
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -119,6 +119,11 @@
               {
                 "name": "conversation",
                 "text": "Conversation name",
+                "default": ""
+              },
+              {
+                "name": "config",
+                "text": "Config section in --configFile to take the model from. Without it the agent falls back to the default model, which silently means the hosted one even when the section you named is local.",
                 "default": ""
               },
               {
@@ -150,6 +155,11 @@
                 "name": "policy",
                 "text": "Guardrails as JSON, e.g. '{\"budget\":{\"calls\":40}}'. Without a budget a run is unbounded: a single run on a metered endpoint reached 624 calls and 26M input tokens before a wall-clock timeout stopped it.",
                 "default": "{\"budget\":{\"calls\":60}}"
+              },
+              {
+                "name": "permissions",
+                "text": "Command allow-list as JSON, e.g. '{\"allow\":[\"aux4 google gmail list\"]}'. Without it the agent may run any aux4 command; set it when a run must not reach a real account.",
+                "default": ""
               }
             ]
           }
