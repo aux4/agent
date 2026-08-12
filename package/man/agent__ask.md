@@ -11,16 +11,21 @@ The queue server must be running before executing this command.
 #### Usage
 
 ```bash
-aux4 agent ask "<request>" [--configFile <path>] [--instructions <path>] [--skills <path>] [--history <path>] [--memory <folder>] [--queuePort <port>]
+aux4 agent ask "<request>" [--config <section>] [--configFile <path>] [--conversation <name>] \
+  [--instructions <path>] [--skills <path>] [--image <paths>] \
+  [--tools <list>] [--policy <json>] [--permissions <json>]
 ```
 
 --request       The task or request to process (positional argument)
+--config        Config section in --configFile to take the model from. Without it the agent falls back to the default model — which silently means the hosted one even when the section you named is local
 --configFile    Path to model configuration file (default: config.yaml or built-in)
+--conversation  Conversation name; each conversation keeps its own history
 --instructions  Path to custom instructions file (default: built-in)
 --skills        Path to skills directory (default: none)
---history       Path to conversation history file (default: manager-history.json)
---memory        Knowledge base folder for session memories (default: .memory)
---queuePort     Queue server port (default: 8420)
+--image         Image file paths, comma-separated
+--tools         Comma-separated allow-list of tools to bind (e.g. `executeAux4,aux4Skill`). Binding every tool sends every tool description on each request; on a small model that context floor alone can stop it calling tools at all. Default: all tools
+--policy        Guardrails as JSON, e.g. `{"budget":{"calls":40}}`. Without a budget a run is unbounded
+--permissions   Command allow-list as JSON, e.g. `{"allow":["aux4 google gmail list"]}`. Confines the run to those commands; omit to leave it unrestricted
 
 Configuration file:
 
