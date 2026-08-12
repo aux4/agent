@@ -54,12 +54,15 @@ aux4 agent ask "<request>" [options]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `<request>` | The task or request to process | (required) |
+| `--config` | Config section in `--configFile` to take the model from. Without it the agent falls back to the default model — which silently means the hosted one even when the section you named is local | (default model) |
 | `--configFile` | Path to model configuration file | `config.yaml` or built-in |
+| `--conversation` | Conversation name; each keeps its own history | `default` |
 | `--instructions` | Path to custom instructions file | built-in |
 | `--skills` | Path to skills directory | none |
-| `--history` | Path to conversation history file | `manager-history.json` |
-| `--memory` | Knowledge base folder | `.memory` |
-| `--queuePort` | Queue server port | `8420` |
+| `--image` | Image file paths, comma-separated | none |
+| `--tools` | Allow-list of tools to bind (e.g. `executeAux4,aux4Skill`); binding all tools can overwhelm a small model | all tools |
+| `--policy` | Guardrails as JSON, e.g. `{"budget":{"calls":40}}` | unbounded |
+| `--permissions` | Command allow-list as JSON, e.g. `{"allow":["aux4 google gmail list"]}`; confines the run | unrestricted |
 
 ### `agent new`
 
