@@ -28,7 +28,8 @@ limited to 16 nonempty strings of at most 96 bytes each.
 
 An explicit new-instance request for an obvious mutable collection (`new`, `separate`, `another`,
 or equivalent) selects inline UI before classifier scoring. Explanation, comparison, and drafting
-requests remain eligible for Markdown.
+requests remain eligible for Markdown. After a successful explicit-new collection build, the
+harness emits a clean creation confirmation instead of retaining contradictory destination prose.
 
 Builder `needs-decision` results append a clean Markdown question and expose typed decision metadata.
 Internal validation and command-line diagnostics remain in `builder.reason`; they are not copied into

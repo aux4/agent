@@ -153,6 +153,8 @@ key and aliases when an older builder omits them.
 Explicit new-instance requests for an obvious mutable collection, such as “Create a separate picnic
 grocery list with juice and apples,” deterministically select inline UI before JEV classification.
 This avoids a low-confidence presentation result changing an explicit creation request into prose.
+After the builder succeeds, the harness also replaces contradictory model-side destination prose
+with a short confirmation that the new interactive list is ready.
 
 When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show me the
 list”, “View the current dashboard”, or “Open it” re-emits that artifact directly. The response keeps

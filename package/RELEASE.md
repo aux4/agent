@@ -1,5 +1,11 @@
 # Release notes
 
+## Successful separate collection builds use clean confirmation prose
+
+When an explicit new/separate collection successfully produces an inline artifact, the harness now
+returns `Here’s your new list.` instead of retaining a model-side destination question that the
+completed UI has already answered. The artifact, state, and semantic identity remain unchanged.
+
 ## Explicit separate collections bypass uncertain presentation classification
 
 An unmistakable request such as `Create a separate picnic grocery list with juice and apples`

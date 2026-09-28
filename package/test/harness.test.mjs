@@ -330,6 +330,29 @@ test("builder semantic key and bounded aliases survive the typed harness envelop
   assert.deepEqual(envelope.artifacts, [semanticArtifact]);
 });
 
+test("a successful separate collection build replaces contradictory model prose", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const semanticArtifact = {
+    ...artifact,
+    key: "list:grocery:picnic",
+    aliases: ["picnic grocery list", "picnic grocery"]
+  };
+  const result = run(askArgs({
+    request: "Create a separate picnic grocery list with juice and apples",
+    presentation: "auto"
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact: semanticArtifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.content, "Here’s your new list.");
+  assert.equal(envelope.presentation.source, "explicit-request");
+  assert.deepEqual(envelope.artifacts, [semanticArtifact]);
+});
+
 test("invalid semantic artifact metadata is rejected while legacy metadata remains optional", () => {
   for (const invalid of [
     { ...artifact, key: "bad key" },

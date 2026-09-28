@@ -282,6 +282,12 @@ function isActiveArtifactViewRequest(request) {
   return new RegExp(`^${polite}${verb} ${determiner}${qualifier}${target}(?: again| now| please)?$`).test(text);
 }
 
+function isExplicitNewMutableStateRequest(request) {
+  const text = String(request || "").toLowerCase();
+  return /\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)
+    && inferObviousMutableStateMode(request) === "markdown+inline-ui";
+}
+
 function inferExplicitMode(request) {
   const text = String(request || "").toLowerCase();
   if (/\b(markdown|plain text|text only|no ui|without (a |the )?ui)\b/.test(text)) return "markdown";
@@ -291,8 +297,7 @@ function inferExplicitMode(request) {
   if (/\b(inline|interactive)\b.{0,35}\b(ui|interface|widget|form|list|table|dashboard)\b|\b(show|build|create|give)\b.{0,35}\b(ui|interface|widget)\b/.test(text)) {
     return "markdown+inline-ui";
   }
-  if (/\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)
-    && inferObviousMutableStateMode(request) === "markdown+inline-ui") {
+  if (isExplicitNewMutableStateRequest(request)) {
     return "markdown+inline-ui";
   }
   return null;
@@ -571,6 +576,11 @@ function ask(options) {
         : builder.artifact;
       envelope.artifacts = [artifact];
       envelope.builder = { status: "done" };
+      if (isExplicitNewMutableStateRequest(options.request)) {
+        envelope.content = /\b(?:list|checklist)\b/i.test(options.request)
+          ? "Here’s your new list."
+          : "Here’s your new interactive view.";
+      }
       if (presentation.mode === "markdown+app-proposal") {
         envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
       }
