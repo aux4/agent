@@ -63,6 +63,69 @@ aux4 agent ask "<request>" [options]
 | `--tools` | Allow-list of tools to bind (e.g. `executeAux4,aux4Skill`); binding all tools can overwhelm a small model | all tools |
 | `--policy` | Guardrails as JSON, e.g. `{"budget":{"calls":40}}` | unbounded |
 | `--permissions` | Command allow-list as JSON, e.g. `{"allow":["aux4 google gmail list"]}`; confines the run | unrestricted |
+| `--output` | `text` for the traditional Markdown response, or `json` for a typed response envelope | `text` |
+| `--presentation` | Explicit presentation override (`auto`, `markdown`, `markdown+inline-ui`, `markdown+app-proposal`, `update-existing-ui`) | `auto` |
+| `--conversationContext` | Compact recent context used only by presentation routing | none |
+| `--activeArtifact` | Active artifact metadata as JSON; a follow-up routes to `update-existing-ui` | none |
+| `--playbookFolder` | Folder containing learned playbooks | `.agent/playbooks` |
+| `--playbookThreshold` | Minimum JEV probability for automatic playbook replay | `0.15` |
+| `--classifierThreshold` | Minimum JEV probability for a UI presentation; lower confidence falls back to Markdown | `0.55` |
+
+The internal harness installs `agent/skill-playbook` and owns its lifecycle. Before the model runs,
+it calls `hook-before`; a confident, fully parameterized match is executed directly. When no safe
+match exists, the normal agent runs. After completion, `hook-after` inspects the history and may
+append a suggestion to save repeatable work. Hook or classifier failure never prevents the normal
+agent response.
+
+Use `--output json` when a client needs presentation metadata:
+
+```bash
+aux4 agent ask "keep a grocery list for milk and eggs" --output json
+```
+
+```json
+{
+  "version": 1,
+  "content": "I created the grocery list.",
+  "presentation": {
+    "version": 1,
+    "mode": "markdown+inline-ui",
+    "source": "classifier",
+    "confidence": 0.91,
+    "reason": "jev-selected-known-candidate",
+    "criterion": "benefit-from-manipulating-structured-state",
+    "requiresBuilder": true
+  },
+  "artifacts": [],
+  "execution": {
+    "source": "agent"
+  }
+}
+```
+
+`content` is always the accompanying Markdown response. The classifier chooses only one of the
+known presentation modes; it never creates a schema or artifact. A builder can populate `artifacts`
+after consuming the decision.
+
+### `agent route`
+
+Classify presentation without running the agent:
+
+```bash
+aux4 agent route "keep a grocery list I can edit"
+```
+
+The command prints one JSON decision with these stable modes:
+
+- `markdown` — written answers, research, summaries, and simple confirmations.
+- `markdown+inline-ui` — editable collections, forms, tables, trackers, dashboards, and repeated interaction.
+- `markdown+app-proposal` — a request to publish or deploy the experience as an app.
+- `update-existing-ui` — a follow-up that modifies the active artifact.
+
+An explicit `--presentation` wins first. A natural-language request for Markdown, an inline UI, or
+an app wins next. An active artifact then selects `update-existing-ui`. Otherwise JEV ranks the four
+known candidates using the request and compact conversation context. Missing JEV or confidence
+below `--classifierThreshold` returns `markdown`.
 
 ### `agent new`
 
@@ -96,6 +159,9 @@ The agent's prompt is built from layers, lean by default:
 2. **Identity** (`bio:` in `config.yaml`) — who *this* agent is (name, role, description), injected into the base as an `# Agent Identity` section.
 3. **AGENTS.md** (optional, picked up automatically) — what *this* agent does: its domain, task board, and persona.
 4. **Skills** (optional `--skills` directory) — capabilities loaded only when a task needs them.
+
+The playbook skill is different: it is an installed harness dependency and its before/after hooks
+run deterministically. The model does not need to remember to invoke them.
 
 ## Agent Identity (bio)
 

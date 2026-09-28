@@ -6,6 +6,16 @@ The agent runs on a tight, immutable base discipline (`instructions/agent.md`): 
 
 The agent's identity is read from the `bio:` section of the config file (`name`, `role`, `description`) and injected into the base prompt as an `# Agent Identity` section. If no `bio:` is present, the agent runs without an identity section.
 
+The internal harness deterministically calls the installed `agent/skill-playbook` before and after
+the model. A confident, fully parameterized match is replayed without asking the model to remember
+the workflow. After a normal agent run, repeatable successful work can produce a save suggestion.
+Failures inside these best-effort hooks fall through to the normal agent.
+
+Presentation routing asks whether the user benefits from manipulating structured state after the
+response. It chooses only a known mode and never generates a schema. Explicit format requests win,
+an active artifact selects `update-existing-ui`, and low confidence or classifier failure falls back
+to `markdown`. The `json` output always retains the written response in `content`.
+
 The queue server must be running before executing this command.
 
 #### Usage
@@ -13,7 +23,9 @@ The queue server must be running before executing this command.
 ```bash
 aux4 agent ask "<request>" [--config <section>] [--configFile <path>] [--conversation <name>] \
   [--instructions <path>] [--skills <path>] [--image <paths>] \
-  [--tools <list>] [--policy <json>] [--permissions <json>]
+  [--tools <list>] [--policy <json>] [--permissions <json>] \
+  [--output text|json] [--presentation <mode>] \
+  [--conversationContext <text>] [--activeArtifact <json>]
 ```
 
 --request       The task or request to process (positional argument)
@@ -26,6 +38,18 @@ aux4 agent ask "<request>" [--config <section>] [--configFile <path>] [--convers
 --tools         Comma-separated allow-list of tools to bind (e.g. `executeAux4,aux4Skill`). Binding every tool sends every tool description on each request; on a small model that context floor alone can stop it calling tools at all. Default: all tools
 --policy        Guardrails as JSON, e.g. `{"budget":{"calls":40}}`. Without a budget a run is unbounded
 --permissions   Command allow-list as JSON, e.g. `{"allow":["aux4 google gmail list"]}`. Confines the run to those commands; omit to leave it unrestricted
+--output        `text` preserves the traditional Markdown response; `json` emits the typed response envelope (default: text)
+--presentation  Explicit override: auto, markdown, markdown+inline-ui, markdown+app-proposal, or update-existing-ui (default: auto)
+--conversationContext  Compact recent conversation context used for routing
+--activeArtifact       Active artifact metadata as JSON; follow-ups prefer update-existing-ui
+--playbookFolder       Learned playbook folder (default: .agent/playbooks)
+--playbookThreshold    Minimum probability for deterministic replay (default: 0.15)
+--classifierThreshold  Minimum probability for a UI mode (default: 0.55)
+--classifyModel        JEV model identifier (default: jev-1.13.0)
+--classifyBaseUrl      Optional JEV API base URL override
+--classifyApiKey       Optional JEV API key (env: TYPESAFE_API_KEY)
+--brokerUrl            Optional inference broker URL for presentation routing (env: AUX4_INFERENCE_BROKER_URL)
+--brokerToken          Optional inference broker token (env: AUX4_INFERENCE_BROKER_TOKEN)
 
 Configuration file:
 
@@ -45,5 +69,25 @@ config:
 
 ```bash
 aux4 queue start &
-aux4 agent ask "create a REST API for user management"
+aux4 agent ask "keep a grocery list for milk and eggs" --output json
+```
+
+```json
+{
+  "version": 1,
+  "content": "I created the grocery list.",
+  "presentation": {
+    "version": 1,
+    "mode": "markdown+inline-ui",
+    "source": "classifier",
+    "confidence": 0.91,
+    "reason": "jev-selected-known-candidate",
+    "criterion": "benefit-from-manipulating-structured-state",
+    "requiresBuilder": true
+  },
+  "artifacts": [],
+  "execution": {
+    "source": "agent"
+  }
+}
 ```

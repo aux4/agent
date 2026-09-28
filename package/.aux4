@@ -17,7 +17,9 @@
     "aux4/config",
     "aux4/kb",
     "aux4/search",
-    "aux4/poller"
+    "aux4/poller",
+    "agent/skill-playbook@^0.2.3",
+    "aux4/classify-jev@^0.2.0"
   ],
   "profiles": [
     {
@@ -88,25 +90,7 @@
         {
           "name": "ask",
           "execute": [
-            "nout:mkdir -p .agent/history",
-            "nout:if(conversation!=) && echo .agent/history/${conversation}.json || echo .agent/history/default.json",
-            "set:historyFile=${response}",
-            "nout:if(instructions!=) && echo ${instructions} || (test -f AGENTS.md && echo AGENTS.md || echo '')",
-            "set:resolvedInstructions=${response}",
-            "nout:if(resolvedInstructions!=) && echo --instructions ${resolvedInstructions} || echo ''",
-            "set:instructionsFlag=${response}",
-            "nout:if(skills!=) && echo ${skills} || (test -d skills && echo skills || echo '')",
-            "set:resolvedSkills=${response}",
-            "nout:if(resolvedSkills!=) && echo --skills ${resolvedSkills} || echo ''",
-            "set:skillsFlag=${response}",
-            "nout:if(image!=) && echo --image ${image} || echo ''",
-            "set:imageFlag=${response}",
-            "set:bio=!aux4 config get --configFile ${configFile} --name bio 2>/dev/null || echo {}",
-            "nout:if(tools!=) && echo --tools ${tools} || echo ''",
-            "set:toolsFlag=${response}",
-            "nout:if(policy!=) && echo --policy '${policy}' || echo ''",
-            "set:policyFlag=${response}",
-            "aux4 ai agent ask --configFile ${configFile} param(config) --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} ${imageFlag} ${toolsFlag} ${policyFlag} param(permissions) --history ${historyFile} --question \"${request}\""
+            "node ${packageDir}/lib/harness.mjs ask values(request, conversation, config, configFile, instructions, skills, image, tools, policy, permissions, output, presentation, conversationContext, activeArtifact, playbookFolder, playbookThreshold, classifierThreshold, classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir)"
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -159,6 +143,155 @@
               {
                 "name": "permissions",
                 "text": "Command allow-list as JSON, e.g. '{\"allow\":[\"aux4 google gmail list\"]}'. Without it the agent may run any aux4 command; set it when a run must not reach a real account.",
+                "default": ""
+              },
+              {
+                "name": "output",
+                "text": "Output shape: text preserves the traditional Markdown response; json emits a typed envelope with content, presentation, artifacts, and execution metadata.",
+                "default": "text",
+                "options": [
+                  "text",
+                  "json"
+                ]
+              },
+              {
+                "name": "presentation",
+                "text": "Explicit presentation override: auto, markdown, markdown+inline-ui, markdown+app-proposal, or update-existing-ui.",
+                "default": "auto",
+                "options": [
+                  "auto",
+                  "markdown",
+                  "markdown+inline-ui",
+                  "markdown+app-proposal",
+                  "update-existing-ui"
+                ]
+              },
+              {
+                "name": "conversationContext",
+                "text": "Compact recent conversation context for presentation routing.",
+                "default": ""
+              },
+              {
+                "name": "activeArtifact",
+                "text": "Active artifact metadata as JSON; follow-ups prefer update-existing-ui.",
+                "default": ""
+              },
+              {
+                "name": "playbookFolder",
+                "text": "Folder containing learned playbooks.",
+                "default": ".agent/playbooks"
+              },
+              {
+                "name": "playbookThreshold",
+                "text": "Minimum probability for deterministic playbook replay.",
+                "default": "0.15"
+              },
+              {
+                "name": "classifierThreshold",
+                "text": "Minimum probability for a UI presentation; lower scores fall back to markdown.",
+                "default": "0.55"
+              },
+              {
+                "name": "classifyModel",
+                "text": "JEV model used by playbook matching and presentation routing.",
+                "default": "jev-1.13.0"
+              },
+              {
+                "name": "classifyBaseUrl",
+                "text": "Optional JEV API base URL override.",
+                "default": ""
+              },
+              {
+                "name": "classifyApiKey",
+                "text": "Optional JEV API key.",
+                "env": "TYPESAFE_API_KEY",
+                "hide": true,
+                "default": ""
+              },
+              {
+                "name": "brokerUrl",
+                "text": "Optional aux4 inference broker URL for presentation routing.",
+                "env": "AUX4_INFERENCE_BROKER_URL",
+                "default": ""
+              },
+              {
+                "name": "brokerToken",
+                "text": "Optional aux4 inference broker token.",
+                "env": "AUX4_INFERENCE_BROKER_TOKEN",
+                "hide": true,
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "route",
+          "execute": [
+            "node ${packageDir}/lib/harness.mjs route values(request, presentation, conversationContext, activeArtifact, classifierThreshold, classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken)"
+          ],
+          "help": {
+            "text": "Choose a stable response presentation mode and print the decision as JSON",
+            "variables": [
+              {
+                "name": "request",
+                "text": "The user's current request.",
+                "arg": true
+              },
+              {
+                "name": "presentation",
+                "text": "Explicit override, or auto to classify.",
+                "default": "auto",
+                "options": [
+                  "auto",
+                  "markdown",
+                  "markdown+inline-ui",
+                  "markdown+app-proposal",
+                  "update-existing-ui"
+                ]
+              },
+              {
+                "name": "conversationContext",
+                "text": "Compact recent conversation context.",
+                "default": ""
+              },
+              {
+                "name": "activeArtifact",
+                "text": "Active artifact metadata as JSON.",
+                "default": ""
+              },
+              {
+                "name": "classifierThreshold",
+                "text": "Minimum JEV probability for a UI mode.",
+                "default": "0.55"
+              },
+              {
+                "name": "classifyModel",
+                "text": "JEV model identifier.",
+                "default": "jev-1.13.0"
+              },
+              {
+                "name": "classifyBaseUrl",
+                "text": "Optional JEV API base URL override.",
+                "default": ""
+              },
+              {
+                "name": "classifyApiKey",
+                "text": "Optional JEV API key.",
+                "env": "TYPESAFE_API_KEY",
+                "hide": true,
+                "default": ""
+              },
+              {
+                "name": "brokerUrl",
+                "text": "Optional aux4 inference broker URL.",
+                "env": "AUX4_INFERENCE_BROKER_URL",
+                "default": ""
+              },
+              {
+                "name": "brokerToken",
+                "text": "Optional aux4 inference broker token.",
+                "env": "AUX4_INFERENCE_BROKER_TOKEN",
+                "hide": true,
                 "default": ""
               }
             ]

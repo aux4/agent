@@ -66,6 +66,46 @@ aux4 agent ask --help
 Send a request to the agent
 ```
 
+### should delegate execution to the internal harness
+
+```execute
+aux4 agent ask --showSource
+```
+
+```expect:partial
+lib/harness.mjs ask
+```
+
+## route
+
+### should display help
+
+```execute
+aux4 agent route --help
+```
+
+```expect:partial
+Choose a stable response presentation mode
+```
+
+### should emit a typed active-artifact decision
+
+```execute
+aux4 agent route "add eggs" --activeArtifact '{"id":"groceries"}'
+```
+
+```expect:json
+{
+  "version": 1,
+  "mode": "update-existing-ui",
+  "source": "active-artifact",
+  "confidence": 1,
+  "reason": "follow-up-has-active-artifact",
+  "criterion": "benefit-from-manipulating-structured-state",
+  "requiresBuilder": true
+}
+```
+
 ## new
 
 ### should display help

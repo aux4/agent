@@ -1,5 +1,16 @@
 # Release notes
 
+## Internal harness: automatic playbooks and typed presentation routing
+
+`agent/agent` now installs `agent/skill-playbook` and runs its before/after lifecycle in the harness,
+so replay and learning no longer depend on a model following a prompt. Confident playbooks with all
+parameters filled run directly; failed or unavailable matches fall through to the agent.
+
+`agent route` emits a versioned JSON decision across four stable modes. `agent ask --output json`
+includes that decision beside the Markdown `content`, an empty `artifacts` slot for builder/chat
+integration, and execution metadata. Explicit requests and active artifacts are deterministic;
+JEV handles the remaining choice and low confidence safely returns Markdown.
+
 ## `--config` now reaches the model
 
 `aux4 agent ask --config <section>` passed a bare `--config` through to `ai agent ask`, so the
