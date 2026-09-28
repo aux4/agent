@@ -459,7 +459,7 @@ test("a valid builder transaction is preserved unchanged with an empty artifact 
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({
-    request: "Can you split my list, the eggs and vegetables I always buy on Pavilions and the rest on Costco",
+    request: "Can you split my list into separate Pavilions and Costco lists, with eggs and vegetables at Pavilions and the rest at Costco",
     presentation: "update-existing-ui",
     activeArtifact: JSON.stringify(activeGroceryArtifact)
   }), {
@@ -654,7 +654,7 @@ test("needs-input preserves the active artifact without a false technical-error 
   const log = path.join(folder, "calls.log");
   const reason = "no part of the instruction could be resolved into an app screen/route";
   const result = run(askArgs({
-    request: "Can you split my list, the eggs and vegetables I always buy on Pavilions and the rest on Costco",
+    request: "Make the interactive version better",
     presentation: "update-existing-ui",
     activeArtifact: JSON.stringify(activeGroceryArtifact)
   }), {
