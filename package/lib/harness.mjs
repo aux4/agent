@@ -81,12 +81,14 @@ function builderFailure(code) {
 
 function makeBuilderPayload(options) {
   const currentArtifact = parseOptionalJson(options.activeArtifact, null, "activeArtifact");
-  const decisions = parseOptionalJson(options.builderDecisions, [], "builderDecisions");
+  const decisions = parseOptionalJson(options.builderDecisions, {}, "builderDecisions");
   const backends = parseOptionalJson(options.builderBackends, [], "builderBackends");
   if (currentArtifact !== null && (Array.isArray(currentArtifact) || typeof currentArtifact !== "object")) {
     throw new Error("activeArtifact must be a JSON object");
   }
-  if (!Array.isArray(decisions)) throw new Error("builderDecisions must be a JSON array");
+  if (!decisions || Array.isArray(decisions) || typeof decisions !== "object") {
+    throw new Error("builderDecisions must be a JSON object");
+  }
   if (!Array.isArray(backends)) throw new Error("builderBackends must be a JSON array");
 
   const request = boundedString(options.request, BUILDER_LIMITS.request, "request");
@@ -101,7 +103,7 @@ function makeBuilderPayload(options) {
     ...(context ? { context } : {}),
     ...(currentArtifact?.ref ? { currentRef: currentArtifact.ref } : {}),
     ...(currentArtifact ? { currentArtifact } : {}),
-    ...(decisions.length ? { decisions } : {}),
+    ...(Object.keys(decisions).length ? { decisions } : {}),
     ...(backends.length ? { backends } : {}),
     auto: options.builderAuto !== "false",
     steps: Math.max(1, Math.min(50, Number.parseInt(options.builderSteps, 10) || 10)),
@@ -141,7 +143,9 @@ function parseBuilderOutput(stdout) {
     && typeof artifact.title === "string"
     && artifact.schema && !Array.isArray(artifact.schema) && typeof artifact.schema === "object"
     && artifact.state && !Array.isArray(artifact.state) && typeof artifact.state === "object"
-    && artifact.data && !Array.isArray(artifact.data) && typeof artifact.data === "object";
+    && artifact.data && !Array.isArray(artifact.data) && typeof artifact.data === "object"
+    && artifact.data.app && !Array.isArray(artifact.data.app) && typeof artifact.data.app === "object"
+    && artifact.data.package && !Array.isArray(artifact.data.package) && typeof artifact.data.package === "object";
   const typedArtifact = validArtifact ? {
     id: artifact.id,
     kind: artifact.kind,

@@ -75,7 +75,7 @@ aux4 agent ask "<request>" [options]
 | `--builderScope` | Cloud scope containing the builder VM | `AUX4_CLOUD_SCOPE` |
 | `--builderApiUrl` | Cloud API URL | `https://api.aux4.cloud` (env `AUX4_CLOUD_API_URL`) |
 | `--builderTimeoutMs` | Builder timeout, clamped to 1–300 seconds | `120000` |
-| `--builderDecisions` | Answers to prior builder decisions as a JSON array | none |
+| `--builderDecisions` | Answers keyed by prior decision id as a JSON object | none |
 | `--builderBackends` | Backend package allow-list as a JSON array | none |
 
 The internal harness installs `agent/skill-playbook` and owns its lifecycle. Before the model runs,
@@ -118,7 +118,10 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
         }
       },
       "state": {},
-      "data": {}
+      "data": {
+        "app": {},
+        "package": {}
+      }
     }
   ],
   "builder": {

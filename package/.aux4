@@ -258,7 +258,7 @@
               },
               {
                 "name": "builderDecisions",
-                "text": "Caller answers to prior builder decisions as a JSON array.",
+                "text": "Caller answers keyed by decision id as a JSON object.",
                 "default": ""
               },
               {

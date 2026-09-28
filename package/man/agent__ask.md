@@ -67,7 +67,7 @@ aux4 agent ask "<request>" [--config <section>] [--configFile <path>] [--convers
 --builderScope         Cloud scope containing the builder VM (env: AUX4_CLOUD_SCOPE)
 --builderApiUrl        Cloud API URL (default: https://api.aux4.cloud; env: AUX4_CLOUD_API_URL)
 --builderTimeoutMs     Builder timeout in milliseconds, clamped to 1000-300000 (default: 120000)
---builderDecisions     Caller answers to prior decisions as a JSON array
+--builderDecisions     Caller answers keyed by prior decision id as a JSON object
 --builderBackends      Optional backend package allow-list as a JSON array
 --builderAuto          Let the builder apply a clear candidate automatically; never deploys (default: true)
 --builderSteps         Builder step cap, clamped to 1-50 (default: 10)
@@ -122,7 +122,10 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
         }
       },
       "state": {},
-      "data": {}
+      "data": {
+        "app": {},
+        "package": {}
+      }
     }
   ],
   "builder": {

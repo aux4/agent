@@ -71,7 +71,10 @@ const artifact = {
   title: "Groceries",
   schema: { type: "List", props: { field: "items" } },
   state: {},
-  data: { app: { routes: { "/": { type: "List", props: { field: "items" } } } } }
+  data: {
+    app: { routes: { "/": { type: "List", props: { field: "items" } } } },
+    package: { scope: "generated", name: "grocery-list", profiles: [] }
+  }
 };
 
 test("explicit Markdown wins without calling the classifier", () => {
@@ -183,7 +186,7 @@ test("Markdown mode never invokes the builder", () => {
 test("inline UI uses local builder argv and preserves Markdown content", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
-  const result = run(askArgs({ builderDecisions: '[{"id":"backend","value":"aux4/todo"}]' }), {
+  const result = run(askArgs({ builderDecisions: '{"backend":"aux4/todo"}' }), {
     AUX4_BIN: fake,
     CALL_LOG: log,
     BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact })
@@ -199,7 +202,7 @@ test("inline UI uses local builder argv and preserves Markdown content", () => {
   assert.deepEqual(JSON.parse(builder.input), {
     request: "build a grocery list",
     context: "milk and eggs",
-    decisions: [{ id: "backend", value: "aux4/todo" }],
+    decisions: { backend: "aux4/todo" },
     auto: true,
     steps: 10
   });
