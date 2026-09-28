@@ -12,9 +12,11 @@ the workflow. After a normal agent run, repeatable successful work can produce a
 Failures inside these best-effort hooks fall through to the normal agent.
 
 Presentation routing asks whether the user benefits from manipulating structured state after the
-response. It chooses only a known mode and never generates a schema. Explicit format requests win,
-an active artifact selects `update-existing-ui`, and low confidence or classifier failure falls back
-to `markdown`. The `json` output always retains the written response in `content`.
+response. It chooses only a known mode and never generates a schema. Explicit format requests win.
+A pure show/view/open/display request with a complete active artifact re-emits that artifact without
+calling the classifier, playbook hooks, model, or builder. Other active-artifact follow-ups select
+`update-existing-ui`, and low confidence or classifier failure falls back to `markdown`. The `json`
+output always retains the written response in `content`.
 
 In JSON mode, a decision with `requiresBuilder: true` invokes a bounded builder adapter. `local`
 runs `aux4 agent builder build`; `cloud` runs `aux4 cloud <builderVm> generate`. Both receive the same
@@ -55,7 +57,7 @@ aux4 agent ask "<request>" [--config <section>] [--configFile <path>] [--convers
 --output        `text` preserves the traditional Markdown response; `json` emits the typed response envelope (default: text)
 --presentation  Explicit override: auto, markdown, markdown+inline-ui, markdown+app-proposal, or update-existing-ui (default: auto)
 --conversationContext  Compact recent conversation context used for routing
---activeArtifact       Active artifact metadata as JSON; follow-ups prefer update-existing-ui
+--activeArtifact       Active artifact as JSON; pure view requests reuse a complete typed artifact, while other follow-ups prefer update-existing-ui
 --playbookFolder       Learned playbook folder (default: .agent/playbooks)
 --playbookThreshold    Minimum probability for deterministic replay (default: 0.15)
 --classifierThreshold  Minimum probability for a UI mode (default: 0.55)

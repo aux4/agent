@@ -66,7 +66,7 @@ aux4 agent ask "<request>" [options]
 | `--output` | `text` for the traditional Markdown response, or `json` for a typed response envelope | `text` |
 | `--presentation` | Explicit presentation override (`auto`, `markdown`, `markdown+inline-ui`, `markdown+app-proposal`, `update-existing-ui`) | `auto` |
 | `--conversationContext` | Compact recent context used only by presentation routing | none |
-| `--activeArtifact` | Active artifact metadata as JSON; a follow-up routes to `update-existing-ui` | none |
+| `--activeArtifact` | Active artifact as JSON; pure show/view requests reuse a complete artifact, while other follow-ups route to `update-existing-ui` | none |
 | `--playbookFolder` | Folder containing learned playbooks | `.agent/playbooks` |
 | `--playbookThreshold` | Minimum JEV probability for automatic playbook replay | `0.15` |
 | `--classifierThreshold` | Minimum JEV probability for a UI presentation; lower confidence falls back to Markdown | `0.55` |
@@ -138,6 +138,12 @@ known presentation modes; it never creates a schema or artifact. In JSON mode, a
 the configured builder and accepts only its typed `aux4.app` artifact contract. Text output and
 `markdown` decisions never call the builder.
 
+When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show me the
+list”, “View the current dashboard”, or “Open it” re-emits that artifact directly. The response keeps
+the same `id`, `ref`, `schema`, `state`, and `data`, uses clean Markdown, and does not call the
+classifier, playbook hooks, model, or builder. Requests that change the artifact still use
+`update-existing-ui`; explanation and format-override requests are not treated as view requests.
+
 The local adapter sends bounded JSON on stdin to `aux4 agent builder build`. The cloud adapter sends
 the same payload to `aux4 cloud builder generate`, adding `--scope` and `--apiUrl` when configured. User
 text is never interpolated into a shell command. The payload includes the request, compact context,
@@ -166,9 +172,10 @@ The command prints one JSON decision with these stable modes:
 - `markdown+app-proposal` — a request to publish or deploy the experience as an app.
 - `update-existing-ui` — a follow-up that modifies the active artifact.
 
-An explicit `--presentation` wins first. A natural-language request for Markdown, an inline UI, or
-an app wins next. An active artifact then selects `update-existing-ui`. Otherwise JEV ranks the four
-known candidates using the request and compact conversation context. If JEV is unavailable, a
+An explicit `--presentation` wins first. A pure show/view/open/display request reuses a complete
+active artifact next. A natural-language request for Markdown, an inline UI, or an app follows, and
+other active-artifact follow-ups select `update-existing-ui`. Otherwise JEV ranks the four known
+candidates using the request and compact conversation context. If JEV is unavailable, a
 conservative deterministic fallback recognizes obvious mutable structured-state requests such as
 “Keep a grocery list” and selects inline UI; explanation/research requests still return Markdown.
 A valid JEV result below `--classifierThreshold` always remains Markdown.

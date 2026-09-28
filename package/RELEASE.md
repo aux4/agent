@@ -1,5 +1,12 @@
 # Release notes
 
+## Active artifacts reappear without regeneration
+
+Pure requests such as “Show me the list”, “View the current dashboard”, and “Open it” now re-emit a
+complete active `aux4.app` artifact directly. The harness preserves its identity, schema, state, and
+data and returns concise Markdown without invoking classification, playbook hooks, the model, or the
+builder. Mutation requests continue through the existing update path.
+
 ## Offline mutable-state routing and clean decision questions
 
 When JEV is unavailable, the presentation router now recognizes conservative, obvious requests to

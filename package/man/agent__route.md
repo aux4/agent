@@ -10,8 +10,10 @@ The stable modes are:
 - `markdown+app-proposal` — a request to publish or deploy the experience as an app.
 - `update-existing-ui` — a follow-up that modifies the active artifact.
 
-Precedence is deterministic: an explicit `--presentation`, then an explicit format request in the
-text, then active artifact metadata, then JEV classification over the known candidates. The core
+Precedence is deterministic: an explicit `--presentation`; then a pure show/view/open/display request
+that reuses a complete typed active artifact; then an explicit format request in the text; then other
+active-artifact follow-ups; then JEV classification over the known candidates. Artifact reuse emits
+`source: active-artifact-reuse`, `reuseActiveArtifact: true`, and `requiresBuilder: false`. The core
 criterion is whether the user benefits from manipulating structured state after the response. When
 JEV is unavailable, a conservative deterministic fallback recognizes obvious mutable-state intents
 such as keeping a grocery list, tracker, or checklist; answer-shaped explanation and research
@@ -29,7 +31,7 @@ aux4 agent route "<request>" [--presentation <mode>] \
 --request              Current user request (positional argument)
 --presentation         Explicit mode or `auto` (default: auto)
 --conversationContext  Compact recent context used by the classifier
---activeArtifact       Active artifact metadata as JSON
+--activeArtifact       Active artifact as JSON; complete typed artifacts can be reused by pure view requests
 --classifierThreshold  Minimum probability for a UI mode (default: 0.55)
 --classifyModel         JEV model identifier (default: jev-1.13.0)
 --classifyBaseUrl       Optional JEV API base URL override

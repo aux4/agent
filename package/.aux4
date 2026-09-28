@@ -173,7 +173,7 @@
               },
               {
                 "name": "activeArtifact",
-                "text": "Active artifact metadata as JSON; follow-ups prefer update-existing-ui.",
+                "text": "Active artifact as JSON; pure view requests reuse a complete typed artifact, while other follow-ups prefer update-existing-ui.",
                 "default": ""
               },
               {
@@ -320,7 +320,7 @@
               },
               {
                 "name": "activeArtifact",
-                "text": "Active artifact metadata as JSON.",
+                "text": "Active artifact as JSON; complete typed artifacts can be reused by pure view requests.",
                 "default": ""
               },
               {

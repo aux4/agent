@@ -99,6 +99,68 @@ test("an active artifact routes a follow-up to update-existing-ui", () => {
   assert.equal(decision.source, "active-artifact");
 });
 
+test("a show request deterministically reuses a complete active artifact", () => {
+  const result = run(["route", "Show me the list", "auto", "", JSON.stringify(artifact)]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: 1,
+    mode: "markdown+inline-ui",
+    source: "active-artifact-reuse",
+    confidence: 1,
+    reason: "show-existing-active-artifact",
+    criterion: "benefit-from-manipulating-structured-state",
+    requiresBuilder: false,
+    reuseActiveArtifact: true
+  });
+});
+
+test("a show request does not reuse incomplete active artifact metadata", () => {
+  const result = run(["route", "Show me the list", "auto", "", '{"id":"grocery-list","ref":"builder://grocery-list"}']);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "update-existing-ui");
+  assert.equal(decision.source, "active-artifact");
+  assert.equal(decision.requiresBuilder, true);
+  assert.equal(decision.reuseActiveArtifact, undefined);
+});
+
+test("ask re-emits the exact active artifact without invoking aux4", () => {
+  const current = {
+    ...artifact,
+    state: { items: [{ id: "milk", label: "Milk" }, { id: "eggs", label: "Eggs" }] }
+  };
+  const { folder, fake } = makeFakeAux4(`
+const fs = require("node:fs");
+fs.appendFileSync(process.env.CALL_LOG, "called\\n");
+process.stderr.write("aux4 must not run");
+process.exit(9);
+`);
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "Could you please show me the list?",
+    presentation: "auto",
+    activeArtifact: JSON.stringify(current)
+  }), { AUX4_BIN: fake, CALL_LOG: log }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.content, "Here’s the list.");
+  assert.equal(envelope.presentation.source, "active-artifact-reuse");
+  assert.equal(envelope.presentation.requiresBuilder, false);
+  assert.deepEqual(envelope.artifacts, [current]);
+  assert.deepEqual(envelope.execution, { source: "active-artifact-reuse" });
+  assert.equal(fs.existsSync(log), false);
+});
+
+test("a show-shaped mutation does not reuse the active artifact", () => {
+  const result = run(["route", "Show me how to edit the list", "auto", "", JSON.stringify(artifact)]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "update-existing-ui");
+  assert.equal(decision.source, "active-artifact");
+  assert.equal(decision.requiresBuilder, true);
+  assert.equal(decision.reuseActiveArtifact, undefined);
+});
+
 test("low JEV confidence falls back to Markdown", () => {
   const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown+inline-ui",score:0.31}]}));');
   const result = run(["route", "organize groceries", "auto", "", "", "0.55"], { AUX4_BIN: fake });

@@ -139,6 +139,17 @@ function parseBuilderOutput(stdout) {
   }
   if (!value || Array.isArray(value) || typeof value !== "object") return builderFailure("BUILDER_INVALID_OUTPUT");
   const { status, reason, artifact, decisions } = value;
+  const typedArtifact = normalizeTypedArtifact(artifact);
+  if (status === "done" && typedArtifact) {
+    return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact };
+  }
+  if (status === "needs-decision" && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
+    return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact, decisions };
+  }
+  return builderFailure("BUILDER_INVALID_OUTPUT");
+}
+
+function normalizeTypedArtifact(artifact) {
   const validArtifact = artifact && !Array.isArray(artifact) && typeof artifact === "object"
     && typeof artifact.id === "string" && artifact.id.length > 0
     && artifact.kind === "aux4.app"
@@ -151,7 +162,7 @@ function parseBuilderOutput(stdout) {
     && artifact.data && !Array.isArray(artifact.data) && typeof artifact.data === "object"
     && artifact.data.app && !Array.isArray(artifact.data.app) && typeof artifact.data.app === "object"
     && artifact.data.package && !Array.isArray(artifact.data.package) && typeof artifact.data.package === "object";
-  const typedArtifact = validArtifact ? {
+  return validArtifact ? {
     id: artifact.id,
     kind: artifact.kind,
     version: artifact.version,
@@ -162,13 +173,6 @@ function parseBuilderOutput(stdout) {
     state: artifact.state,
     data: artifact.data
   } : null;
-  if (status === "done" && typedArtifact) {
-    return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact };
-  }
-  if (status === "needs-decision" && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
-    return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact, decisions };
-  }
-  return builderFailure("BUILDER_INVALID_OUTPUT");
 }
 
 function invokeBuilder(options) {
@@ -229,6 +233,34 @@ function hasActiveArtifact(value) {
   } catch {
     return true;
   }
+}
+
+function completeActiveArtifact(value) {
+  if (!value || !String(value).trim()) return null;
+  try {
+    return normalizeTypedArtifact(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function isActiveArtifactViewRequest(request) {
+  const text = String(request || "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return false;
+  if (/\b(?:add|append|remove|delete|update|edit|change|replace|rename|filter|sort|clear|complete|check|uncheck|deploy|publish|ship)\b/.test(text)) return false;
+  if (/\b(?:markdown|plain text|text only|no ui|without (?:a |the )?ui|how to|how do|why|explain)\b/.test(text)) return false;
+
+  const polite = "(?:(?:please |(?:can|could|would|will) you (?:please )?))?";
+  const verb = "(?:show(?: me)?|view|open|display)";
+  const determiner = "(?:(?:the|this|that|my|our|current|active) )?";
+  const qualifier = "(?:(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) )?";
+  const target = "(?:list|checklist|app|application|ui|interface|view|dashboard|form|table|tracker|artifact|it|this|that)";
+  return new RegExp(`^${polite}${verb} ${determiner}${qualifier}${target}(?: again| now| please)?$`).test(text);
 }
 
 function inferExplicitMode(request) {
@@ -292,6 +324,20 @@ function routePresentation({
       reason: "caller-selected-presentation",
       criterion: "benefit-from-manipulating-structured-state",
       requiresBuilder: presentation !== "markdown"
+    };
+  }
+
+  const reusableArtifact = completeActiveArtifact(activeArtifact);
+  if (reusableArtifact && isActiveArtifactViewRequest(request)) {
+    return {
+      version: 1,
+      mode: "markdown+inline-ui",
+      source: "active-artifact-reuse",
+      confidence: 1,
+      reason: "show-existing-active-artifact",
+      criterion: "benefit-from-manipulating-structured-state",
+      requiresBuilder: false,
+      reuseActiveArtifact: true
     };
   }
 
@@ -432,8 +478,22 @@ function runAgentAsk(options, history, recovery = "") {
 }
 
 function ask(options) {
-  const history = resolveHistory(options.conversation);
   const presentation = routePresentation(options);
+  if (presentation.reuseActiveArtifact) {
+    const artifact = completeActiveArtifact(options.activeArtifact);
+    const content = /\b(?:list|checklist)\b/i.test(options.request) ? "Here’s the list." : "Here’s the current interactive view.";
+    const envelope = {
+      version: 1,
+      content,
+      presentation,
+      artifacts: [artifact],
+      execution: { source: "active-artifact-reuse" }
+    };
+    process.stdout.write(options.output === "json" ? `${JSON.stringify(envelope)}\n` : `${content}\n`);
+    return;
+  }
+
+  const history = resolveHistory(options.conversation);
   const match = runHookBefore({
     request: options.request,
     folder: options.playbookFolder,
