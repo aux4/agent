@@ -1,5 +1,16 @@
 # Release notes
 
+## UI decisions now invoke the safe builder adapter
+
+`agent ask --output json` now turns UI presentation decisions into typed `aux4.app` artifacts.
+Local development calls `aux4 agent builder build`; deployed agents can select the cloud adapter to
+call the `builder` VM. Both receive bounded JSON over stdin with no shell interpolation.
+
+The Markdown response is always preserved. Needs-decision outcomes return a clear question and
+machine-readable decisions, updates retain their artifact id/ref, and app proposals never deploy
+without a later explicit confirmation. Timeouts, command failures, and malformed builder output
+degrade safely to Markdown plus a non-secret error code.
+
 ## Internal harness: automatic playbooks and typed presentation routing
 
 `agent/agent` now installs `agent/skill-playbook` and runs its before/after lifecycle in the harness,

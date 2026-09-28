@@ -22,6 +22,58 @@ function run(args, extraEnv = {}, cwd = process.cwd()) {
   });
 }
 
+function askArgs(overrides = {}) {
+  const values = {
+    request: "build a grocery list", conversation: "default", config: "", configFile: "config.yaml",
+    instructions: "", skills: "", image: "", tools: "", policy: '{"budget":{"calls":60}}',
+    permissions: "", output: "json", presentation: "markdown+inline-ui", conversationContext: "milk and eggs",
+    activeArtifact: "", playbookFolder: ".agent/playbooks", playbookThreshold: "0.15",
+    classifierThreshold: "0.55", classifyModel: "jev-1.13.0", classifyBaseUrl: "", classifyApiKey: "",
+    brokerUrl: "", brokerToken: "", packageDir: path.resolve(harness, "../.."), builderAdapter: "local",
+    builderVm: "builder", builderScope: "", builderApiUrl: "https://api.aux4.cloud",
+    builderTimeoutMs: "120000", builderDecisions: "", builderBackends: "", builderAuto: "true",
+    builderSteps: "10", builderModel: ""
+  };
+  Object.assign(values, overrides);
+  return ["ask", values.request, values.conversation, values.config, values.configFile, values.instructions,
+    values.skills, values.image, values.tools, values.policy, values.permissions, values.output,
+    values.presentation, values.conversationContext, values.activeArtifact, values.playbookFolder,
+    values.playbookThreshold, values.classifierThreshold, values.classifyModel, values.classifyBaseUrl,
+    values.classifyApiKey, values.brokerUrl, values.brokerToken, values.packageDir, values.builderAdapter,
+    values.builderVm, values.builderScope, values.builderApiUrl, values.builderTimeoutMs,
+    values.builderDecisions, values.builderBackends, values.builderAuto, values.builderSteps, values.builderModel];
+}
+
+function makeBuilderFake() {
+  return makeFakeAux4(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const input = fs.readFileSync(0, "utf8");
+fs.appendFileSync(process.env.CALL_LOG, JSON.stringify({args,input}) + "\\n");
+const command = args.join(" ");
+if (command.includes("config get")) process.stdout.write("{}\\n");
+else if (command.includes("playbook hook-before")) process.stdout.write("");
+else if (command.includes("ai agent ask")) process.stdout.write("Here is your written answer.\\n");
+else if (command.includes("playbook hook-after")) process.stdout.write("");
+else if (command === "agent builder build" || command.startsWith("cloud ")) {
+  if (process.env.BUILDER_DELAY_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.BUILDER_DELAY_MS));
+  process.stdout.write(process.env.BUILDER_OUTPUT || "");
+}
+`);
+}
+
+const artifact = {
+  id: "artifact-groceries",
+  kind: "aux4.app",
+  version: 1,
+  presentation: "inline",
+  ref: "builder://artifact-groceries",
+  title: "Groceries",
+  schema: { type: "List", props: { field: "items" } },
+  state: {},
+  data: { app: { routes: { "/": { type: "List", props: { field: "items" } } } } }
+};
+
 test("explicit Markdown wins without calling the classifier", () => {
   const result = run(["route", "show me a dashboard", "markdown"]);
   assert.equal(result.status, 0, result.stderr);
@@ -111,4 +163,136 @@ else if (command.includes("playbook hook-after")) process.stdout.write('Save thi
   const modelIndex = calls.findIndex(args => args.join(" ").includes("ai agent ask"));
   const afterIndex = calls.findIndex(args => args.join(" ").includes("playbook hook-after"));
   assert.ok(modelIndex >= 0 && afterIndex > modelIndex);
+});
+
+test("Markdown mode never invokes the builder", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({ presentation: "markdown" }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, []);
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(calls.some(call => call.args.join(" ").includes("builder build")), false);
+});
+
+test("inline UI uses local builder argv and preserves Markdown content", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({ builderDecisions: '[{"id":"backend","value":"aux4/todo"}]' }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.content, "Here is your written answer.");
+  assert.deepEqual(envelope.artifacts, [artifact]);
+  assert.deepEqual(envelope.builder, { status: "done" });
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const builder = calls.find(call => call.args.join(" ") === "agent builder build");
+  assert.ok(builder);
+  assert.deepEqual(JSON.parse(builder.input), {
+    request: "build a grocery list",
+    context: "milk and eggs",
+    decisions: [{ id: "backend", value: "aux4/todo" }],
+    auto: true,
+    steps: 10
+  });
+});
+
+test("app proposal builds an artifact but never auto-deploys", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({ presentation: "markdown+app-proposal", request: "make this into an app" }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.deployment, { status: "proposal", automatic: false, requiresConfirmation: true });
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(calls.some(call => /deploy/.test(call.args.join(" "))), false);
+});
+
+test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const current = { ...artifact, id: "stable-id", ref: "builder://stable-id", title: "Existing" };
+  const changed = { ...artifact, id: "wrong-id", ref: "builder://wrong-id", title: "Updated" };
+  const result = run(askArgs({
+    presentation: "update-existing-ui",
+    request: "add eggs",
+    activeArtifact: JSON.stringify(current),
+    builderAdapter: "cloud",
+    builderVm: "builder",
+    builderScope: "acme",
+    builderApiUrl: "https://dev.api.aux4.cloud"
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact: changed })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.artifacts[0].id, "stable-id");
+  assert.equal(envelope.artifacts[0].ref, "builder://stable-id");
+  assert.equal(envelope.artifacts[0].title, "Updated");
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const builder = calls.find(call => call.args[0] === "cloud");
+  assert.deepEqual(builder.args, ["cloud", "builder", "build", "--scope", "acme", "--apiUrl", "https://dev.api.aux4.cloud"]);
+  const payload = JSON.parse(builder.input);
+  assert.equal(payload.currentRef, "builder://stable-id");
+  assert.equal(payload.currentArtifact.id, "stable-id");
+});
+
+test("needs-decision returns the partial typed artifact and a machine-readable question", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const decisions = [{ id: "backend", question: "Which list should store these items?", options: [{ value: "groceries" }] }];
+  const result = run(askArgs(), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "needs-decision", reason: "Choose a backend.", artifact, decisions })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, [artifact]);
+  assert.equal(envelope.builder.status, "needs-decision");
+  assert.deepEqual(envelope.builder.decisions, decisions);
+  assert.match(envelope.content, /Choose a backend\.[\s\S]*Which list should store these items\?/);
+});
+
+test("malformed builder output safely degrades without exposing stderr", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs(), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: "not-json secret-token"
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_INVALID_OUTPUT" });
+  assert.doesNotMatch(envelope.content, /secret-token/);
+});
+
+test("builder timeout safely degrades with a structured code", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({ builderTimeoutMs: "1000" }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_DELAY_MS: "1500",
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_TIMEOUT" });
 });

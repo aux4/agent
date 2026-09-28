@@ -70,6 +70,13 @@ aux4 agent ask "<request>" [options]
 | `--playbookFolder` | Folder containing learned playbooks | `.agent/playbooks` |
 | `--playbookThreshold` | Minimum JEV probability for automatic playbook replay | `0.15` |
 | `--classifierThreshold` | Minimum JEV probability for a UI presentation; lower confidence falls back to Markdown | `0.55` |
+| `--builderAdapter` | Builder transport for JSON UI responses: `local`, `cloud`, or `disabled` | `local` (env `AGENT_BUILDER_ADAPTER`) |
+| `--builderVm` | Cloud builder VM name | `builder` (env `AGENT_BUILDER_VM`) |
+| `--builderScope` | Cloud scope containing the builder VM | `AUX4_CLOUD_SCOPE` |
+| `--builderApiUrl` | Cloud API URL | `https://api.aux4.cloud` (env `AUX4_CLOUD_API_URL`) |
+| `--builderTimeoutMs` | Builder timeout, clamped to 1–300 seconds | `120000` |
+| `--builderDecisions` | Answers to prior builder decisions as a JSON array | none |
+| `--builderBackends` | Backend package allow-list as a JSON array | none |
 
 The internal harness installs `agent/skill-playbook` and owns its lifecycle. Before the model runs,
 it calls `hook-before`; a confident, fully parameterized match is executed directly. When no safe
@@ -96,7 +103,27 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
     "criterion": "benefit-from-manipulating-structured-state",
     "requiresBuilder": true
   },
-  "artifacts": [],
+  "artifacts": [
+    {
+      "id": "grocery-list",
+      "kind": "aux4.app",
+      "version": 1,
+      "presentation": "inline",
+      "ref": "builder://grocery-list",
+      "title": "Groceries",
+      "schema": {
+        "type": "List",
+        "props": {
+          "field": "items"
+        }
+      },
+      "state": {},
+      "data": {}
+    }
+  ],
+  "builder": {
+    "status": "done"
+  },
   "execution": {
     "source": "agent"
   }
@@ -104,8 +131,20 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
 ```
 
 `content` is always the accompanying Markdown response. The classifier chooses only one of the
-known presentation modes; it never creates a schema or artifact. A builder can populate `artifacts`
-after consuming the decision.
+known presentation modes; it never creates a schema or artifact. In JSON mode, a UI decision calls
+the configured builder and accepts only its typed `aux4.app` artifact contract. Text output and
+`markdown` decisions never call the builder.
+
+The local adapter sends bounded JSON on stdin to `aux4 agent builder build`. The cloud adapter sends
+the same payload to `aux4 cloud builder build`, adding `--scope` and `--apiUrl` when configured. User
+text is never interpolated into a shell command. The payload includes the request, compact context,
+active artifact/ref, and caller decisions.
+
+A `needs-decision` result preserves the partial artifact, appends a clear question to `content`, and
+returns the typed decisions in `builder.decisions`. A timeout, malformed result, or failed command
+keeps the Markdown response and returns only a non-secret `builder.code`. Updates keep the active
+artifact's `id` and `ref`. An app proposal adds `deployment.status: proposal` and always requires
+explicit confirmation; the harness never deploys it automatically.
 
 ### `agent route`
 

@@ -9,5 +9,5 @@ node harness.test.mjs
 ```
 
 ```expect:partial
-pass 6
+pass 13
 ```

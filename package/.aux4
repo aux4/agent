@@ -90,7 +90,7 @@
         {
           "name": "ask",
           "execute": [
-            "node ${packageDir}/lib/harness.mjs ask values(request, conversation, config, configFile, instructions, skills, image, tools, policy, permissions, output, presentation, conversationContext, activeArtifact, playbookFolder, playbookThreshold, classifierThreshold, classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir)"
+            "node ${packageDir}/lib/harness.mjs ask values(request, conversation, config, configFile, instructions, skills, image, tools, policy, permissions, output, presentation, conversationContext, activeArtifact, playbookFolder, playbookThreshold, classifierThreshold, classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir, builderAdapter, builderVm, builderScope, builderApiUrl, builderTimeoutMs, builderDecisions, builderBackends, builderAuto, builderSteps, builderModel)"
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -219,6 +219,70 @@
                 "text": "Optional aux4 inference broker token.",
                 "env": "AUX4_INFERENCE_BROKER_TOKEN",
                 "hide": true,
+                "default": ""
+              },
+              {
+                "name": "builderAdapter",
+                "text": "Builder adapter for JSON UI responses: local, cloud, or disabled.",
+                "default": "local",
+                "env": "AGENT_BUILDER_ADAPTER",
+                "options": [
+                  "local",
+                  "cloud",
+                  "disabled"
+                ]
+              },
+              {
+                "name": "builderVm",
+                "text": "Cloud builder VM name.",
+                "default": "builder",
+                "env": "AGENT_BUILDER_VM"
+              },
+              {
+                "name": "builderScope",
+                "text": "Cloud scope containing the builder VM.",
+                "default": "",
+                "env": "AUX4_CLOUD_SCOPE"
+              },
+              {
+                "name": "builderApiUrl",
+                "text": "aux4 Cloud API URL used by the cloud builder adapter.",
+                "default": "https://api.aux4.cloud",
+                "env": "AUX4_CLOUD_API_URL"
+              },
+              {
+                "name": "builderTimeoutMs",
+                "text": "Builder timeout in milliseconds, clamped to 1000-300000.",
+                "default": "120000",
+                "env": "AGENT_BUILDER_TIMEOUT_MS"
+              },
+              {
+                "name": "builderDecisions",
+                "text": "Caller answers to prior builder decisions as a JSON array.",
+                "default": ""
+              },
+              {
+                "name": "builderBackends",
+                "text": "Optional backend package allow-list as a JSON array.",
+                "default": ""
+              },
+              {
+                "name": "builderAuto",
+                "text": "Allow the builder to apply a clear candidate automatically; this never deploys an app.",
+                "default": "true",
+                "options": [
+                  "true",
+                  "false"
+                ]
+              },
+              {
+                "name": "builderSteps",
+                "text": "Builder step cap, clamped to 1-50.",
+                "default": "10"
+              },
+              {
+                "name": "builderModel",
+                "text": "Optional builder model override.",
                 "default": ""
               }
             ]

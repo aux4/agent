@@ -30,6 +30,16 @@ const CANDIDATES = [
   }
 ];
 
+const BUILDER_LIMITS = {
+  request: 16 * 1024,
+  context: 32 * 1024,
+  artifact: 64 * 1024,
+  decisions: 32 * 1024,
+  payload: 128 * 1024,
+  output: 2 * 1024 * 1024,
+  timeout: 300000
+};
+
 function runAux4(args, { allowFailure = false } = {}) {
   const result = spawnSync(process.env.AUX4_BIN || "aux4", args, {
     encoding: "utf8",
@@ -44,6 +54,160 @@ function runAux4(args, { allowFailure = false } = {}) {
     throw new Error(detail);
   }
   return { ok: true, stdout, stderr, status: 0 };
+}
+
+function parseOptionalJson(value, fallback, name) {
+  if (!value || !String(value).trim()) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`${name} must be valid JSON`);
+  }
+}
+
+function boundedString(value, max, name) {
+  const text = String(value || "");
+  if (Buffer.byteLength(text, "utf8") > max) throw new Error(`${name} exceeds the builder payload limit`);
+  return text;
+}
+
+function builderFailure(code) {
+  return {
+    status: "error",
+    code,
+    message: "I couldn't create or update the interactive view right now. The written response is still available."
+  };
+}
+
+function makeBuilderPayload(options) {
+  const currentArtifact = parseOptionalJson(options.activeArtifact, null, "activeArtifact");
+  const decisions = parseOptionalJson(options.builderDecisions, [], "builderDecisions");
+  const backends = parseOptionalJson(options.builderBackends, [], "builderBackends");
+  if (currentArtifact !== null && (Array.isArray(currentArtifact) || typeof currentArtifact !== "object")) {
+    throw new Error("activeArtifact must be a JSON object");
+  }
+  if (!Array.isArray(decisions)) throw new Error("builderDecisions must be a JSON array");
+  if (!Array.isArray(backends)) throw new Error("builderBackends must be a JSON array");
+
+  const request = boundedString(options.request, BUILDER_LIMITS.request, "request");
+  const context = boundedString(options.conversationContext, BUILDER_LIMITS.context, "conversationContext");
+  const artifactJson = currentArtifact === null ? "" : JSON.stringify(currentArtifact);
+  const decisionsJson = JSON.stringify(decisions);
+  if (Buffer.byteLength(artifactJson, "utf8") > BUILDER_LIMITS.artifact) throw new Error("activeArtifact exceeds the builder payload limit");
+  if (Buffer.byteLength(decisionsJson, "utf8") > BUILDER_LIMITS.decisions) throw new Error("builderDecisions exceeds the builder payload limit");
+
+  const payload = {
+    request,
+    ...(context ? { context } : {}),
+    ...(currentArtifact?.ref ? { currentRef: currentArtifact.ref } : {}),
+    ...(currentArtifact ? { currentArtifact } : {}),
+    ...(decisions.length ? { decisions } : {}),
+    ...(backends.length ? { backends } : {}),
+    auto: options.builderAuto !== "false",
+    steps: Math.max(1, Math.min(50, Number.parseInt(options.builderSteps, 10) || 10)),
+    ...(options.builderModel ? { model: options.builderModel } : {})
+  };
+  const encoded = JSON.stringify(payload);
+  if (Buffer.byteLength(encoded, "utf8") > BUILDER_LIMITS.payload) throw new Error("builder payload exceeds the total limit");
+  return { payload, encoded };
+}
+
+function builderArgs(options) {
+  if (options.builderAdapter === "local") return ["agent", "builder", "build"];
+  if (options.builderAdapter === "cloud") {
+    const args = ["cloud", options.builderVm || "builder", "build"];
+    if (options.builderScope) args.push("--scope", options.builderScope);
+    if (options.builderApiUrl) args.push("--apiUrl", options.builderApiUrl);
+    return args;
+  }
+  throw new Error("builderAdapter must be local, cloud, or disabled");
+}
+
+function parseBuilderOutput(stdout) {
+  let value;
+  try {
+    value = JSON.parse(String(stdout || "").trim());
+  } catch {
+    return builderFailure("BUILDER_INVALID_OUTPUT");
+  }
+  if (!value || Array.isArray(value) || typeof value !== "object") return builderFailure("BUILDER_INVALID_OUTPUT");
+  const { status, reason, artifact, decisions } = value;
+  const validArtifact = artifact && !Array.isArray(artifact) && typeof artifact === "object"
+    && typeof artifact.id === "string" && artifact.id.length > 0
+    && artifact.kind === "aux4.app"
+    && artifact.version === 1
+    && artifact.presentation === "inline"
+    && typeof artifact.ref === "string" && artifact.ref.length > 0
+    && typeof artifact.title === "string"
+    && artifact.schema && !Array.isArray(artifact.schema) && typeof artifact.schema === "object"
+    && artifact.state && !Array.isArray(artifact.state) && typeof artifact.state === "object"
+    && artifact.data && !Array.isArray(artifact.data) && typeof artifact.data === "object";
+  const typedArtifact = validArtifact ? {
+    id: artifact.id,
+    kind: artifact.kind,
+    version: artifact.version,
+    presentation: artifact.presentation,
+    ref: artifact.ref,
+    title: artifact.title,
+    schema: artifact.schema,
+    state: artifact.state,
+    data: artifact.data
+  } : null;
+  if (status === "done" && typedArtifact) {
+    return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact };
+  }
+  if (status === "needs-decision" && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
+    return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact, decisions };
+  }
+  return builderFailure("BUILDER_INVALID_OUTPUT");
+}
+
+function invokeBuilder(options) {
+  if (options.builderAdapter === "disabled") return builderFailure("BUILDER_DISABLED");
+  let encoded;
+  let args;
+  try {
+    ({ encoded } = makeBuilderPayload(options));
+    args = builderArgs(options);
+  } catch (error) {
+    if (/payload limit|total limit/.test(error.message)) return builderFailure("BUILDER_PAYLOAD_TOO_LARGE");
+    return builderFailure("BUILDER_INVALID_INPUT");
+  }
+
+  const requestedTimeout = Number.parseInt(options.builderTimeoutMs, 10);
+  const timeout = Math.max(1000, Math.min(BUILDER_LIMITS.timeout, Number.isFinite(requestedTimeout) ? requestedTimeout : 120000));
+  const result = spawnSync(process.env.AUX4_BIN || "aux4", args, {
+    encoding: "utf8",
+    env: process.env,
+    input: encoded,
+    timeout,
+    maxBuffer: BUILDER_LIMITS.output,
+    killSignal: "SIGTERM"
+  });
+  if (result.error?.code === "ETIMEDOUT") return builderFailure("BUILDER_TIMEOUT");
+  if (result.error?.code === "ENOBUFS") return builderFailure("BUILDER_OUTPUT_TOO_LARGE");
+  if (result.error || result.status !== 0) return builderFailure("BUILDER_EXECUTION_FAILED");
+  return parseBuilderOutput(result.stdout);
+}
+
+function decisionQuestion(result) {
+  const reason = result.reason?.trim() || "I need one more choice before I can build the interactive view.";
+  const labels = result.decisions.map(decision => {
+    if (typeof decision === "string") return decision;
+    if (!decision || typeof decision !== "object") return "Choose one of the available options.";
+    return String(decision.question || decision.label || decision.id || "Choose one of the available options.");
+  });
+  return `${reason}\n\n${labels.map(label => `- ${label}`).join("\n")}`;
+}
+
+function applyStableArtifactIdentity(artifact, activeArtifact) {
+  const current = parseOptionalJson(activeArtifact, null, "activeArtifact");
+  if (!current || Array.isArray(current) || typeof current !== "object") return artifact;
+  return {
+    ...artifact,
+    ...(current.id ? { id: current.id } : {}),
+    ...(current.ref ? { ref: current.ref } : {})
+  };
 }
 
 function hasActiveArtifact(value) {
@@ -278,6 +442,30 @@ function ask(options) {
     artifacts: [],
     execution
   };
+  if (options.output === "json" && presentation.requiresBuilder) {
+    const builder = invokeBuilder(options);
+    if (builder.status === "done") {
+      const artifact = presentation.mode === "update-existing-ui"
+        ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
+        : builder.artifact;
+      envelope.artifacts = [artifact];
+      envelope.builder = { status: "done" };
+      if (presentation.mode === "markdown+app-proposal") {
+        envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
+      }
+    } else if (builder.status === "needs-decision") {
+      const artifact = presentation.mode === "update-existing-ui"
+        ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
+        : builder.artifact;
+      envelope.artifacts = [artifact];
+      const question = decisionQuestion(builder);
+      envelope.content = envelope.content ? `${envelope.content}\n\n${question}` : question;
+      envelope.builder = { status: "needs-decision", reason: builder.reason, decisions: builder.decisions };
+    } else {
+      envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
+      envelope.builder = { status: "error", code: builder.code };
+    }
+  }
   process.stdout.write(options.output === "json" ? `${JSON.stringify(envelope)}\n` : `${content}\n`);
 }
 
@@ -287,11 +475,15 @@ function optionsFrom(values) {
     image = "", tools = "", policy = "", permissions = "", output = "text", presentation = "auto",
     conversationContext = "", activeArtifact = "", playbookFolder = ".agent/playbooks", playbookThreshold = "0.15",
     classifierThreshold = "0.55", classifyModel = "jev-1.13.0", classifyBaseUrl = "", classifyApiKey = "",
-    brokerUrl = "", brokerToken = "", packageDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
+    brokerUrl = "", brokerToken = "", packageDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."),
+    builderAdapter = "local", builderVm = "builder", builderScope = "", builderApiUrl = "https://api.aux4.cloud",
+    builderTimeoutMs = "120000", builderDecisions = "", builderBackends = "", builderAuto = "true",
+    builderSteps = "10", builderModel = ""
   ] = values;
   return { request, conversation, config, configFile, instructions, skills, image, tools, policy, permissions, output,
     presentation, conversationContext, activeArtifact, playbookFolder, playbookThreshold, classifierThreshold,
-    classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir };
+    classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir, builderAdapter, builderVm,
+    builderScope, builderApiUrl, builderTimeoutMs, builderDecisions, builderBackends, builderAuto, builderSteps, builderModel };
 }
 
 const [action, ...values] = process.argv.slice(2);
