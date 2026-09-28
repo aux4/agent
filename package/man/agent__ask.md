@@ -13,10 +13,10 @@ Failures inside these best-effort hooks fall through to the normal agent.
 
 Presentation routing asks whether the user benefits from manipulating structured state after the
 response. It chooses only a known mode and never generates a schema. Explicit format requests win.
-A pure show/view/open/display request, including a named request such as “Show my breakfast grocery
-list”, with a complete resolved active artifact re-emits that artifact without calling the
-classifier, playbook hooks, model, or builder. Canonical `revision` metadata is preserved. Other active-artifact follow-ups select
-`update-existing-ui`, and low confidence or classifier failure falls back to `markdown`. The `json`
+A pure show/view/open/display request with a complete resolved active artifact re-emits that artifact
+without calling the classifier, playbook hooks, model, or builder. Canonical `revision` metadata is
+preserved. JEV classifies every other automatic decision using the generic structured-state benefit:
+prose versus UI, and create versus modify when an active artifact exists. Low confidence or classifier failure falls back to `markdown`. The `json`
 output always retains the written response in `content`.
 
 In JSON mode, a decision with `requiresBuilder: true` invokes a bounded builder adapter. `local`
@@ -27,17 +27,17 @@ JSON on stdin, never shell-interpolated user input. The harness accepts only a v
 artifacts without these fields remain valid. Keys are bounded and path-safe, while aliases are
 limited to 16 nonempty strings of at most 96 bytes each.
 
-A successful builder result must contain exactly one ordinary artifact or one validated
-`artifactTransaction`. A transaction has a bounded transaction id, the active source's canonical
+A successful builder result must contain exactly one ordinary artifact, one validated
+`artifactTransformation`, or one validated `artifactTransaction`. A transformation is version 1 and
+contains a bounded idempotency id, `create` or `modify` mode, the complete final typed artifact, and
+for modification the exact active source id/ref/key/revision. Create plans forbid a source and
+revision. The harness passes the plan through unchanged with `artifacts: []` and never executes it.
+
+A transaction has a bounded transaction id, the active source's canonical
 id/ref/key and positive revision, one or more complete create operations, and one final delete that
 matches the source id and revision. Create keys and aliases must match their inline artifacts. The
 harness passes a valid plan through unchanged with `artifacts: []`; it never applies the operations.
 The caller is responsible for the atomic revision-checked commit and idempotent replay.
-
-An explicit new-instance request for an obvious mutable collection (`new`, `separate`, `another`,
-or equivalent) selects inline UI before classifier scoring. Explanation, comparison, and drafting
-requests remain eligible for Markdown. After a successful explicit-new collection build, the
-harness emits a clean creation confirmation instead of retaining contradictory destination prose.
 
 Builder `needs-decision` results append a clean Markdown question and expose typed decision metadata.
 Internal validation and command-line diagnostics remain in `builder.reason`; they are not copied into
@@ -74,7 +74,7 @@ aux4 agent ask "<request>" [--config <section>] [--configFile <path>] [--convers
 --output        `text` preserves the traditional Markdown response; `json` emits the typed response envelope (default: text)
 --presentation  Explicit override: auto, markdown, markdown+inline-ui, markdown+app-proposal, or update-existing-ui (default: auto)
 --conversationContext  Compact recent conversation context used for routing
---activeArtifact       Active artifact as JSON; pure view requests reuse a complete typed artifact, while other follow-ups prefer update-existing-ui
+--activeArtifact       Active artifact as JSON; pure view requests reuse it, while JEV classifies other follow-ups as prose, create, or modify
 --playbookFolder       Learned playbook folder (default: .agent/playbooks)
 --playbookThreshold    Minimum probability for deterministic replay (default: 0.15)
 --classifierThreshold  Minimum probability for a UI mode (default: 0.55)
@@ -112,13 +112,13 @@ config:
 
 ```bash
 aux4 queue start &
-aux4 agent ask "keep a grocery list for milk and eggs" --output json
+aux4 agent ask "build an editable packing checklist" --output json
 ```
 
 ```json
 {
   "version": 1,
-  "content": "I created the grocery list.",
+  "content": "I created the packing checklist.",
   "presentation": {
     "version": 1,
     "mode": "markdown+inline-ui",
@@ -130,12 +130,12 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
   },
   "artifacts": [
     {
-      "id": "grocery-list",
+      "id": "packing-checklist",
       "kind": "aux4.app",
       "version": 1,
       "presentation": "inline",
-      "ref": "builder://grocery-list",
-      "title": "Groceries",
+      "ref": "builder://packing-checklist",
+      "title": "Conference packing",
       "schema": {
         "type": "List",
         "props": {

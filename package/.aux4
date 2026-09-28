@@ -1,7 +1,7 @@
 {
   "scope": "agent",
   "name": "agent",
-  "version": "4.2.11",
+  "version": "4.2.12",
   "description": "AI agent powered by on-demand skills",
   "license": "Apache-2.0",
   "tags": [
@@ -173,7 +173,7 @@
               },
               {
                 "name": "activeArtifact",
-                "text": "Active artifact as JSON; pure view requests reuse a complete typed artifact, while other follow-ups prefer update-existing-ui.",
+                "text": "Active artifact as JSON; pure view requests reuse it, while JEV classifies other follow-ups as prose, create, or modify.",
                 "default": ""
               },
               {

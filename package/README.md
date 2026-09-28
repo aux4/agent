@@ -66,7 +66,7 @@ aux4 agent ask "<request>" [options]
 | `--output` | `text` for the traditional Markdown response, or `json` for a typed response envelope | `text` |
 | `--presentation` | Explicit presentation override (`auto`, `markdown`, `markdown+inline-ui`, `markdown+app-proposal`, `update-existing-ui`) | `auto` |
 | `--conversationContext` | Compact recent context used only by presentation routing | none |
-| `--activeArtifact` | Active artifact as JSON; pure show/view requests reuse a complete artifact, while other follow-ups route to `update-existing-ui` | none |
+| `--activeArtifact` | Active artifact as JSON; pure show/view requests reuse it, while JEV classifies other follow-ups as prose, create, or modify | none |
 | `--playbookFolder` | Folder containing learned playbooks | `.agent/playbooks` |
 | `--playbookThreshold` | Minimum JEV probability for automatic playbook replay | `0.15` |
 | `--classifierThreshold` | Minimum JEV probability for a UI presentation; lower confidence falls back to Markdown | `0.55` |
@@ -87,13 +87,13 @@ agent response.
 Use `--output json` when a client needs presentation metadata:
 
 ```bash
-aux4 agent ask "keep a grocery list for milk and eggs" --output json
+aux4 agent ask "build an editable packing checklist" --output json
 ```
 
 ```json
 {
   "version": 1,
-  "content": "I created the grocery list.",
+  "content": "I created the packing checklist.",
   "presentation": {
     "version": 1,
     "mode": "markdown+inline-ui",
@@ -105,17 +105,15 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
   },
   "artifacts": [
     {
-      "id": "grocery-list",
+      "id": "packing-checklist",
       "kind": "aux4.app",
       "version": 1,
       "presentation": "inline",
-      "ref": "builder://grocery-list",
-      "title": "Groceries",
-      "key": "list:grocery",
+      "ref": "builder://packing-checklist",
+      "title": "Conference packing",
+      "key": "checklist:packing:conference",
       "aliases": [
-        "grocery list",
-        "grocery",
-        "my grocery list"
+        "conference packing checklist"
       ],
       "schema": {
         "type": "List",
@@ -150,31 +148,35 @@ This lets the caller's user-scoped catalog resolve the same semantic UI across c
 Legacy artifacts without identity metadata remain valid, and update responses retain the active
 key and aliases when an older builder omits them.
 
-Explicit new-instance requests for an obvious mutable collection, such as “Create a separate picnic
-grocery list with juice and apples,” deterministically select inline UI before JEV classification.
-This avoids a low-confidence presentation result changing an explicit creation request into prose.
-After the builder succeeds, the harness also replaces contradictory model-side destination prose
-with a short confirmation that the new interactive list is ready.
-
-When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show me the
-list”, “Show my breakfast grocery list”, “View the current dashboard”, or “Open it” re-emits that
+When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show the current
+view”, “Display my project board”, or “Open it” re-emits that
 resolved artifact directly. The response keeps the same `id`, `ref`, optional `revision`, `schema`,
 `state`, and `data`, uses clean Markdown, and does not call the
-classifier, playbook hooks, model, or builder. Requests that change the artifact still use
-`update-existing-ui`; explanation and format-override requests are not treated as view requests.
+classifier, playbook hooks, model, or builder. Every other automatic decision is made by JEV from
+the generic structured-state criterion. With an active artifact, JEV distinguishes explanation from
+modification and a distinct new UI; without one, it distinguishes Markdown from creating a UI.
+Classifier failure falls back to Markdown rather than a domain vocabulary.
 
 The local adapter sends bounded JSON on stdin to `aux4 agent builder build`. The cloud adapter sends
 the same payload to `aux4 cloud builder generate`, adding `--scope` and `--apiUrl` when configured. User
 text is never interpolated into a shell command. The payload includes the request, compact context,
 active artifact/ref, and caller decisions.
 
-A successful builder response contains exactly one ordinary `artifact` or one
-`artifactTransaction`. A transaction describes one or more new complete artifacts followed by the
+A successful builder response contains exactly one ordinary `artifact`, one
+`artifactTransformation`, or one `artifactTransaction`. A transformation is a coarse, versioned
+create/modify plan containing an idempotency id, optional canonical source identity and revision,
+and one complete final typed artifact. The harness validates source identity, CAS revision, stable
+artifact identity, and mode-specific fields, then returns the plan unchanged with `artifacts: []`.
+It never interprets or executes path-level schema/state mutations. The caller owns idempotent,
+revision-checked persistence.
+
+A transaction describes one or more new complete artifacts followed by the
 revision-checked deletion of the active source. The harness validates its transaction id, canonical
 source identity and revision, operation order, semantic keys and aliases, and complete typed
 artifacts. It then returns the plan unchanged as `artifactTransaction` with `artifacts: []`. The
 harness never executes the plan; the caller owns the atomic catalog commit, conflict handling, and
-idempotent replay.
+idempotent replay. Fine-grained registry-aware planning stays inside the builder; cross-process
+contracts carry complete artifacts only.
 
 A `needs-decision` result preserves the partial artifact, appends a clear question to `content`, and
 returns the typed decisions in `builder.decisions`. Internal builder diagnostics remain in the
@@ -191,7 +193,7 @@ it automatically.
 Classify presentation without running the agent:
 
 ```bash
-aux4 agent route "keep a grocery list I can edit"
+aux4 agent route "build an editable packing checklist"
 ```
 
 The command prints one JSON decision with these stable modes:
@@ -203,11 +205,10 @@ The command prints one JSON decision with these stable modes:
 
 An explicit `--presentation` wins first. A pure show/view/open/display request reuses a complete
 active artifact next. A natural-language request for Markdown, an inline UI, or an app follows, and
-other active-artifact follow-ups select `update-existing-ui`. Otherwise JEV ranks the four known
-candidates using the request and compact conversation context. If JEV is unavailable, a
-conservative deterministic fallback recognizes obvious mutable structured-state requests such as
-“Keep a grocery list” and selects inline UI; explanation/research requests still return Markdown.
-A valid JEV result below `--classifierThreshold` always remains Markdown.
+JEV ranks the applicable known candidates using the request, compact conversation context, and
+whether a current artifact exists. The update candidate is unavailable without an active artifact.
+If JEV is unavailable, routing falls back to Markdown. A valid JEV result below
+`--classifierThreshold` also remains Markdown.
 
 ### `agent new`
 

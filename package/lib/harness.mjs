@@ -138,28 +138,40 @@ function parseBuilderOutput(stdout, activeArtifact = "") {
     return builderFailure("BUILDER_INVALID_OUTPUT");
   }
   if (!value || Array.isArray(value) || typeof value !== "object") return builderFailure("BUILDER_INVALID_OUTPUT");
-  const { status, reason, artifact, artifactTransaction, decisions } = value;
+  const { status, reason, artifact, artifactTransaction, artifactTransformation, decisions } = value;
   const hasArtifact = Object.prototype.hasOwnProperty.call(value, "artifact");
   const hasTransaction = Object.prototype.hasOwnProperty.call(value, "artifactTransaction");
+  const hasTransformation = Object.prototype.hasOwnProperty.call(value, "artifactTransformation");
   const typedArtifact = hasArtifact ? normalizeTypedArtifact(artifact) : null;
   const validTransaction = hasTransaction
     ? validateArtifactTransaction(artifactTransaction, activeArtifact)
     : false;
-  if (status === "done" && hasArtifact !== hasTransaction && typedArtifact) {
+  const validTransformation = hasTransformation
+    ? validateArtifactTransformation(artifactTransformation, activeArtifact)
+    : false;
+  const resultCount = Number(hasArtifact) + Number(hasTransaction) + Number(hasTransformation);
+  if (status === "done" && resultCount === 1 && hasArtifact && typedArtifact) {
     return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact };
   }
-  if (status === "done" && !hasArtifact && validTransaction) {
+  if (status === "done" && resultCount === 1 && validTransaction) {
     return {
       status,
       reason: typeof reason === "string" ? reason : "",
       artifactTransaction
     };
   }
-  if (status === "needs-decision" && hasArtifact && !hasTransaction
+  if (status === "done" && resultCount === 1 && validTransformation) {
+    return {
+      status,
+      reason: typeof reason === "string" ? reason : "",
+      artifactTransformation
+    };
+  }
+  if (status === "needs-decision" && hasArtifact && !hasTransaction && !hasTransformation
     && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
     return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact, decisions };
   }
-  if (status === "needs-input" && hasArtifact && !hasTransaction
+  if (status === "needs-input" && hasArtifact && !hasTransaction && !hasTransformation
     && typedArtifact && typeof reason === "string" && reason.trim()) {
     return { status, reason, artifact: typedArtifact };
   }
@@ -260,6 +272,46 @@ function validateArtifactTransaction(transaction, activeArtifact) {
   return true;
 }
 
+function validateArtifactTransformation(transformation, activeArtifact) {
+  if (!transformation || Array.isArray(transformation) || typeof transformation !== "object") return false;
+  const allowedKeys = new Set(["version", "transformationId", "mode", "source", "artifact"]);
+  if (Object.keys(transformation).some(key => !allowedKeys.has(key))) return false;
+  if (transformation.version !== 1) return false;
+  if (typeof transformation.transformationId !== "string"
+    || !/^[A-Za-z0-9._:-]{1,128}$/.test(transformation.transformationId)) return false;
+  if (transformation.mode !== "create" && transformation.mode !== "modify") return false;
+
+  const artifact = normalizeTypedArtifact(transformation.artifact);
+  if (!artifact) return false;
+  if (transformation.mode === "create") {
+    return transformation.source === undefined && artifact.revision === undefined;
+  }
+
+  const source = transformation.source;
+  if (!source || Array.isArray(source) || typeof source !== "object") return false;
+  const allowedSourceKeys = new Set(["id", "ref", "key", "revision"]);
+  if (Object.keys(source).some(key => !allowedSourceKeys.has(key))) return false;
+  if (typeof source.id !== "string" || source.id.length === 0) return false;
+  if (!Number.isInteger(source.revision) || source.revision <= 0) return false;
+  if (source.ref !== undefined && (typeof source.ref !== "string" || source.ref.length === 0)) return false;
+  if (source.key !== undefined && !validSemanticKey(source.key)) return false;
+
+  let current;
+  try {
+    current = parseOptionalJson(activeArtifact, null, "activeArtifact");
+  } catch {
+    return false;
+  }
+  const active = normalizeTypedArtifact(current);
+  if (!active || active.id !== source.id || active.revision !== source.revision) return false;
+  if (source.ref !== undefined && active.ref !== source.ref) return false;
+  if (source.key !== undefined && active.key !== source.key) return false;
+  if (artifact.id !== active.id || artifact.ref !== active.ref) return false;
+  if (active.key !== undefined && artifact.key !== active.key) return false;
+  if (artifact.revision !== active.revision) return false;
+  return true;
+}
+
 function invokeBuilder(options) {
   if (options.builderAdapter === "disabled") return builderFailure("BUILDER_DISABLED");
   let encoded;
@@ -348,17 +400,7 @@ function isActiveArtifactViewRequest(request) {
 
   const polite = "(?:(?:please |(?:can|could|would|will) you (?:please )?))?";
   const verb = "(?:show(?: me)?|view|open|display)";
-  const determiner = "(?:(?:the|this|that|my|our|current|active) )?";
-  const qualifier = "(?:(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) )?";
-  const target = "(?:list|checklist|app|application|ui|interface|view|dashboard|form|table|tracker|artifact|it|this|that)";
-  const namedList = "(?:(?:[a-z0-9-]+ ){0,4}(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) (?:list|checklist))";
-  return new RegExp(`^${polite}${verb} ${determiner}(?:${namedList}|${qualifier}${target})(?: again| now| please)?$`).test(text);
-}
-
-function isExplicitNewMutableStateRequest(request) {
-  const text = String(request || "").toLowerCase();
-  return /\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)
-    && inferObviousMutableStateMode(request) === "markdown+inline-ui";
+  return new RegExp(`^${polite}${verb}(?:\\s+.+)?(?: please)?$`).test(text);
 }
 
 function inferExplicitMode(request) {
@@ -367,28 +409,10 @@ function inferExplicitMode(request) {
   if (/\b(make|turn|publish|deploy|ship)\b.{0,50}\b(app|application)\b|\b(app|application)\b.{0,50}\b(publish|deploy|ship)\b/.test(text)) {
     return "markdown+app-proposal";
   }
-  if (/\b(inline|interactive)\b.{0,35}\b(ui|interface|widget|form|list|table|dashboard)\b|\b(show|build|create|give)\b.{0,35}\b(ui|interface|widget)\b/.test(text)) {
-    return "markdown+inline-ui";
-  }
-  if (isExplicitNewMutableStateRequest(request)) {
+  if (/\b(inline|interactive|editable)\b.{0,35}\b(ui|interface|widget|view|screen|experience|component)\b|\b(show|build|create|give)\b.{0,35}\b(ui|interface|widget)\b/.test(text)) {
     return "markdown+inline-ui";
   }
   return null;
-}
-
-function inferObviousMutableStateMode(request) {
-  const text = String(request || "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (!text) return null;
-
-  // A response about a structured tool is still prose when the user is asking
-  // to learn, compare, or draft. Keep these out of the offline UI fallback.
-  if (/^(?:explain|describe|research|summarize|compare|review|write|draft|tell me|what |why |how )\b/.test(text)) {
-    return null;
-  }
-
-  const mutableNoun = /\b(?:(?:grocery|shopping|to-?do|task|packing|reading|guest|check) list|checklist|tracker|inventory|kanban|dashboard|form|table|planner|budget|calendar|collection|board)\b/;
-  const manipulation = /\b(?:keep|maintain|manage|track|organize|create|make|build|set up|start|give me|i (?:need|want)|add|remove|update|edit|record|log|show)\b/;
-  return mutableNoun.test(text) && manipulation.test(text) ? "markdown+inline-ui" : null;
 }
 
 function fallback(reason, source = "fallback") {
@@ -455,27 +479,19 @@ function routePresentation({
     };
   }
 
-  if (hasActiveArtifact(activeArtifact)) {
-    return {
-      version: 1,
-      mode: "update-existing-ui",
-      source: "active-artifact",
-      confidence: 1,
-      reason: "follow-up-has-active-artifact",
-      criterion: "benefit-from-manipulating-structured-state",
-      requiresBuilder: true
-    };
-  }
-
+  const active = hasActiveArtifact(activeArtifact);
   const question = [
     "Choose the response presentation. The deciding question is: will the user benefit from manipulating structured state after this response?",
+    active
+      ? "A current typed artifact is available. Choose update-existing-ui only when the request changes that artifact; choose markdown for explanation or analysis, and markdown+inline-ui only for an explicitly distinct new interface."
+      : "No current typed artifact is available. Choose markdown+inline-ui when the request benefits from a new editable structured interface.",
     `Current request: ${String(request || "").slice(0, 4000)}`,
     conversationContext ? `Recent context: ${String(conversationContext).slice(0, 4000)}` : ""
   ].filter(Boolean).join("\n");
 
   const args = [
     "classify", "rank", "--provider", "jev", "--question", question,
-    "--blocks", JSON.stringify(CANDIDATES), "--top", "1"
+    "--blocks", JSON.stringify(active ? CANDIDATES : CANDIDATES.filter(candidate => candidate.id !== "update-existing-ui")), "--top", "1"
   ];
   if (classifyModel) args.push("--model", classifyModel);
   if (classifyBaseUrl) args.push("--baseUrl", classifyBaseUrl);
@@ -502,18 +518,6 @@ function routePresentation({
       requiresBuilder: best.id !== "markdown"
     };
   } catch {
-    const deterministicMode = inferObviousMutableStateMode(request);
-    if (deterministicMode) {
-      return {
-        version: 1,
-        mode: deterministicMode,
-        source: "deterministic-fallback",
-        confidence: 1,
-        reason: "obvious-mutable-structured-state-intent",
-        criterion: "benefit-from-manipulating-structured-state",
-        requiresBuilder: true
-      };
-    }
     return fallback("classifier-unavailable");
   }
 }
@@ -582,7 +586,7 @@ function ask(options) {
   const presentation = routePresentation(options);
   if (presentation.reuseActiveArtifact) {
     const artifact = completeActiveArtifact(options.activeArtifact);
-    const content = /\b(?:list|checklist)\b/i.test(options.request) ? "Here’s the list." : "Here’s the current interactive view.";
+    const content = "Here’s the current interactive view.";
     const envelope = {
       version: 1,
       content,
@@ -647,17 +651,15 @@ function ask(options) {
       if (builder.artifactTransaction) {
         envelope.artifactTransaction = builder.artifactTransaction;
         envelope.builder = { status: "done" };
+      } else if (builder.artifactTransformation) {
+        envelope.artifactTransformation = builder.artifactTransformation;
+        envelope.builder = { status: "done" };
       } else {
         const artifact = presentation.mode === "update-existing-ui"
           ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
           : builder.artifact;
         envelope.artifacts = [artifact];
         envelope.builder = { status: "done" };
-        if (isExplicitNewMutableStateRequest(options.request)) {
-          envelope.content = /\b(?:list|checklist)\b/i.test(options.request)
-            ? "Here’s your new list."
-            : "Here’s your new interactive view.";
-        }
         if (presentation.mode === "markdown+app-proposal") {
           envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
         }

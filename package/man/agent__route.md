@@ -11,14 +11,13 @@ The stable modes are:
 - `update-existing-ui` — a follow-up that modifies the active artifact.
 
 Precedence is deterministic: an explicit `--presentation`; then a pure show/view/open/display request
-that reuses a complete typed active artifact, including a resolved named collection such as
-“Show my breakfast grocery list”; then an explicit format request in the text; then other
-active-artifact follow-ups; then JEV classification over the known candidates. Artifact reuse emits
+that reuses a complete typed active artifact; then an explicit format request in the text; then JEV
+classification over the known candidates. Artifact reuse emits
 `source: active-artifact-reuse`, `reuseActiveArtifact: true`, and `requiresBuilder: false`. The core
-criterion is whether the user benefits from manipulating structured state after the response. When
-JEV is unavailable, a conservative deterministic fallback recognizes obvious mutable-state intents
-such as keeping a grocery list, tracker, or checklist; answer-shaped explanation and research
-requests remain Markdown. A valid probability below `--classifierThreshold`, a non-probability
+criterion is whether the user benefits from manipulating structured state after the response. With
+an active artifact, JEV distinguishes prose, modification, and a distinct new UI; without one, the
+update candidate is not offered. When JEV is unavailable, routing conservatively returns Markdown.
+A valid probability below `--classifierThreshold`, a non-probability
 score, or an unknown candidate returns `markdown`.
 
 #### Usage
@@ -43,16 +42,16 @@ aux4 agent route "<request>" [--presentation <mode>] \
 #### Example
 
 ```bash
-aux4 agent route "add eggs" --activeArtifact '{"id":"grocery-list","kind":"aux4.app"}'
+aux4 agent route "move the release card to shipped" --activeArtifact '{"id":"release-board","kind":"aux4.app"}'
 ```
 
 ```json
 {
   "version": 1,
   "mode": "update-existing-ui",
-  "source": "active-artifact",
-  "confidence": 1,
-  "reason": "follow-up-has-active-artifact",
+  "source": "classifier",
+  "confidence": 0.94,
+  "reason": "jev-selected-known-candidate",
   "criterion": "benefit-from-manipulating-structured-state",
   "requiresBuilder": true
 }

@@ -88,19 +88,19 @@ aux4 agent route --help
 Choose a stable response presentation mode
 ```
 
-### should emit a typed active-artifact decision
+### should emit a typed explicit update decision
 
 ```execute
-aux4 agent route "add eggs" --activeArtifact '{"id":"groceries"}'
+aux4 agent route "move the release card to shipped" --presentation update-existing-ui --activeArtifact '{"id":"release-board"}'
 ```
 
 ```expect:json
 {
   "version": 1,
   "mode": "update-existing-ui",
-  "source": "active-artifact",
+  "source": "explicit-override",
   "confidence": 1,
-  "reason": "follow-up-has-active-artifact",
+  "reason": "caller-selected-presentation",
   "criterion": "benefit-from-manipulating-structured-state",
   "requiresBuilder": true
 }

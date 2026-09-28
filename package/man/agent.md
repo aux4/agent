@@ -23,6 +23,6 @@ aux4 agent <subcommand> [options]
 ```bash
 aux4 agent start
 aux4 agent ask "set up a Node.js project with TypeScript"
-aux4 agent route "keep a grocery list I can edit"
+aux4 agent route "build an editable packing checklist"
 aux4 agent stop
 ```

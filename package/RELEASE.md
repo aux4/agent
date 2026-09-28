@@ -1,5 +1,12 @@
 # Release notes
 
+## Generic typed UI planning
+
+Presentation routing now uses the generic structured-state criterion instead of domain vocabulary
+to choose Markdown versus typed UI and create versus modify. Builder results may carry a validated
+`artifactTransformation` version 1 plan containing source CAS/idempotency metadata and one complete
+final artifact; the harness passes it through without executing it.
+
 ## Builder clarification responses remain interactive
 
 A valid builder `needs-input` response now preserves its typed artifact, retains stable active
@@ -9,7 +16,7 @@ fallback.
 
 ## Named canonical views and atomic artifact transaction plans
 
-Pure named view requests such as “Show my breakfast grocery list” now re-emit the complete resolved
+Pure named view requests now re-emit the complete resolved
 active artifact without invoking the builder. Canonical revision metadata is retained with the
 artifact's id, ref, semantic identity, schema, and state.
 
@@ -27,7 +34,7 @@ completed UI has already answered. The artifact, state, and semantic identity re
 
 ## Explicit separate collections bypass uncertain presentation classification
 
-An unmistakable request such as `Create a separate picnic grocery list with juice and apples`
+An unmistakable request for a separate mutable collection
 now selects inline UI before JEV classification. This narrow rule requires both explicit-new intent
 and a mutable structured-state noun plus manipulation verb, so explanation and comparison requests
 still use normal Markdown classification. It prevents a low-confidence classifier result from
@@ -51,7 +58,7 @@ builder. Mutation requests continue through the existing update path.
 ## Offline mutable-state routing and clean decision questions
 
 When JEV is unavailable, the presentation router now recognizes conservative, obvious requests to
-create or maintain mutable structured state—for example, “Keep a grocery list with milk and eggs”—
+create or maintain mutable structured state
 and selects inline UI. This fallback runs only when classification is unavailable; a valid low-score
 classification still returns Markdown, and explanation/research requests are excluded.
 

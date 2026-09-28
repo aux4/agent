@@ -24,9 +24,9 @@ function run(args, extraEnv = {}, cwd = process.cwd()) {
 
 function askArgs(overrides = {}) {
   const values = {
-    request: "build a grocery list", conversation: "default", config: "", configFile: "config.yaml",
+    request: "build an editable packing checklist", conversation: "default", config: "", configFile: "config.yaml",
     instructions: "", skills: "", image: "", tools: "", policy: '{"budget":{"calls":60}}',
-    permissions: "", output: "json", presentation: "markdown+inline-ui", conversationContext: "milk and eggs",
+    permissions: "", output: "json", presentation: "markdown+inline-ui", conversationContext: "passport and charger",
     activeArtifact: "", playbookFolder: ".agent/playbooks", playbookThreshold: "0.15",
     classifierThreshold: "0.55", classifyModel: "jev-1.13.0", classifyBaseUrl: "", classifyApiKey: "",
     brokerUrl: "", brokerToken: "", packageDir: path.resolve(harness, "../.."), builderAdapter: "local",
@@ -132,6 +132,64 @@ const activeGroceryArtifact = checklistArtifact({
   items: sourceItems
 });
 
+const activeBudgetArtifact = {
+  ...artifact,
+  id: "local/agent-ui-demo/monthly-budget-42",
+  ref: "artifact://agent-ui-demo/monthly-budget-42",
+  key: "tracker:budget:monthly",
+  aliases: ["monthly budget"],
+  revision: 3,
+  title: "Monthly budget",
+  state: {
+    categories: [
+      { id: "housing", name: "Housing", amount: 1800 },
+      { id: "travel", name: "Travel", amount: 250 }
+    ]
+  }
+};
+
+const budgetTransformation = {
+  version: 1,
+  transformationId: "budget-category-3",
+  mode: "modify",
+  source: {
+    id: activeBudgetArtifact.id,
+    ref: activeBudgetArtifact.ref,
+    key: activeBudgetArtifact.key,
+    revision: activeBudgetArtifact.revision
+  },
+  artifact: {
+    ...activeBudgetArtifact,
+    title: "Monthly budget by category",
+    state: {
+      categories: [
+        ...activeBudgetArtifact.state.categories,
+        { id: "food", name: "Food", amount: 400 }
+      ]
+    }
+  }
+};
+
+const packingTransformation = {
+  version: 1,
+  transformationId: "packing-create-1",
+  mode: "create",
+  artifact: {
+    ...artifact,
+    id: "builder://packing-checklist",
+    ref: "builder://packing-checklist",
+    key: "checklist:packing:conference",
+    aliases: ["conference packing checklist"],
+    title: "Conference packing",
+    state: {
+      items: [
+        { id: "passport", name: "Passport", completed: false },
+        { id: "charger", name: "Charger", completed: false }
+      ]
+    }
+  }
+};
+
 const splitTransaction = {
   transactionId: "split-grocery-7",
   source: {
@@ -189,12 +247,13 @@ test("explicit Markdown wins without calling the classifier", () => {
   });
 });
 
-test("an active artifact routes a follow-up to update-existing-ui", () => {
-  const result = run(["route", "add eggs", "auto", "", '{"id":"grocery-list"}']);
+test("JEV selects update-existing-ui for a state-changing active-artifact follow-up", () => {
+  const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"update-existing-ui",score:0.94}]}));');
+  const result = run(["route", "move the card to done", "auto", "", '{"id":"project-board"}'], { AUX4_BIN: fake });
   assert.equal(result.status, 0, result.stderr);
   const decision = JSON.parse(result.stdout);
   assert.equal(decision.mode, "update-existing-ui");
-  assert.equal(decision.source, "active-artifact");
+  assert.equal(decision.source, "classifier");
 });
 
 test("a show request deterministically reuses a complete active artifact", () => {
@@ -222,11 +281,12 @@ test("a named canonical list view reuses the resolved active artifact", () => {
 });
 
 test("a show request does not reuse incomplete active artifact metadata", () => {
-  const result = run(["route", "Show me the list", "auto", "", '{"id":"grocery-list","ref":"builder://grocery-list"}']);
+  const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"update-existing-ui",score:0.88}]}));');
+  const result = run(["route", "Display the current record", "auto", "", '{"id":"project-board","ref":"builder://project-board"}'], { AUX4_BIN: fake });
   assert.equal(result.status, 0, result.stderr);
   const decision = JSON.parse(result.stdout);
   assert.equal(decision.mode, "update-existing-ui");
-  assert.equal(decision.source, "active-artifact");
+  assert.equal(decision.source, "classifier");
   assert.equal(decision.requiresBuilder, true);
   assert.equal(decision.reuseActiveArtifact, undefined);
 });
@@ -250,7 +310,7 @@ process.exit(9);
   }), { AUX4_BIN: fake, CALL_LOG: log }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here’s the list.");
+  assert.equal(envelope.content, "Here’s the current interactive view.");
   assert.equal(envelope.presentation.source, "active-artifact-reuse");
   assert.equal(envelope.presentation.requiresBuilder, false);
   assert.deepEqual(envelope.artifacts, [current]);
@@ -276,13 +336,14 @@ process.exit(9);
   assert.equal(envelope.presentation.reuseActiveArtifact, true);
 });
 
-test("a show-shaped mutation does not reuse the active artifact", () => {
-  const result = run(["route", "Show me how to edit the list", "auto", "", JSON.stringify(artifact)]);
+test("an explanation request does not reuse or update the active artifact", () => {
+  const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.92}]}));');
+  const result = run(["route", "Explain how to change the current artifact", "auto", "", JSON.stringify(artifact)], { AUX4_BIN: fake });
   assert.equal(result.status, 0, result.stderr);
   const decision = JSON.parse(result.stdout);
-  assert.equal(decision.mode, "update-existing-ui");
-  assert.equal(decision.source, "active-artifact");
-  assert.equal(decision.requiresBuilder, true);
+  assert.equal(decision.mode, "markdown");
+  assert.equal(decision.source, "classifier");
+  assert.equal(decision.requiresBuilder, false);
   assert.equal(decision.reuseActiveArtifact, undefined);
 });
 
@@ -295,22 +356,22 @@ test("low JEV confidence falls back to Markdown", () => {
   assert.equal(decision.reason, "classifier-confidence-below-threshold");
 });
 
-test("an explicit separate collection routes to UI without consulting JEV", () => {
+test("a new structured interface is selected by JEV instead of domain shortcuts", () => {
   const { folder, fake } = makeFakeAux4(`
 const fs = require("node:fs");
 fs.writeFileSync(process.env.CALL_LOG, "classifier-called");
-process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.99}]}));
+process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown+inline-ui",score:0.93}]}));
 `);
   const log = path.join(folder, "calls.log");
   const result = run([
-    "route", "Create a separate picnic grocery list with juice and apples", "auto", "", "", "0.55"
+    "route", "Create a separate packing checklist for a winter trip", "auto", "", "", "0.55"
   ], { AUX4_BIN: fake, CALL_LOG: log });
   assert.equal(result.status, 0, result.stderr);
   const decision = JSON.parse(result.stdout);
   assert.equal(decision.mode, "markdown+inline-ui");
-  assert.equal(decision.source, "explicit-request");
+  assert.equal(decision.source, "classifier");
   assert.equal(decision.requiresBuilder, true);
-  assert.equal(fs.existsSync(log), false);
+  assert.equal(fs.readFileSync(log, "utf8"), "classifier-called");
 });
 
 test("a confident known JEV candidate selects inline UI", () => {
@@ -323,18 +384,79 @@ test("a confident known JEV candidate selects inline UI", () => {
   assert.equal(decision.confidence, 0.91);
 });
 
-test("an obvious mutable list uses deterministic UI fallback when JEV is unavailable", () => {
+test("cross-domain create and modify decisions come only from the generic classifier contract", () => {
+  const cases = [
+    {
+      request: "Build a packing checklist for the conference",
+      selected: "markdown+inline-ui",
+      active: ""
+    },
+    {
+      request: "Move the launch card to shipped status",
+      selected: "update-existing-ui",
+      active: JSON.stringify({ ...artifact, id: "release-board", ref: "artifact://agent/release-board", revision: 4 })
+    },
+    {
+      request: "Track my workout plan by day",
+      selected: "markdown+inline-ui",
+      active: ""
+    },
+    {
+      request: "Put travel under a separate budget category",
+      selected: "update-existing-ui",
+      active: JSON.stringify({ ...artifact, id: "monthly-budget", ref: "artifact://agent/monthly-budget", revision: 2 })
+    }
+  ];
+
+  for (const fixture of cases) {
+    const { folder, fake } = makeFakeAux4(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.writeFileSync(process.env.CALL_LOG, JSON.stringify(args));
+process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:process.env.SELECTED_MODE,score:0.96}]}));
+`);
+    const log = path.join(folder, "calls.json");
+    const result = run(["route", fixture.request, "auto", "", fixture.active, "0.55"], {
+      AUX4_BIN: fake,
+      CALL_LOG: log,
+      SELECTED_MODE: fixture.selected
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const decision = JSON.parse(result.stdout);
+    assert.equal(decision.mode, fixture.selected);
+    assert.equal(decision.source, "classifier");
+    assert.equal(decision.requiresBuilder, true);
+
+    const args = JSON.parse(fs.readFileSync(log, "utf8"));
+    const blocks = JSON.parse(args[args.indexOf("--blocks") + 1]);
+    assert.equal(blocks.some(block => block.id === "update-existing-ui"), Boolean(fixture.active));
+  }
+});
+
+test("an active artifact explanation stays Markdown when JEV selects prose", () => {
+  const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.97}]}));');
+  const result = run(["route", "Explain the totals in this view", "auto", "", JSON.stringify(activeGroceryArtifact)], {
+    AUX4_BIN: fake
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "markdown");
+  assert.equal(decision.source, "classifier");
+  assert.equal(decision.requiresBuilder, false);
+});
+
+test("classifier failure conservatively falls back to Markdown without domain shortcuts", () => {
   const { fake } = makeFakeAux4('process.stderr.write("broker unavailable"); process.exit(2);');
   const result = run(["route", "Keep a grocery list with milk and eggs", "auto", "", "", "0.55"], { AUX4_BIN: fake });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
     version: 1,
-    mode: "markdown+inline-ui",
-    source: "deterministic-fallback",
-    confidence: 1,
-    reason: "obvious-mutable-structured-state-intent",
+    mode: "markdown",
+    source: "fallback",
+    confidence: 0,
+    reason: "classifier-unavailable",
     criterion: "benefit-from-manipulating-structured-state",
-    requiresBuilder: true
+    requiresBuilder: false
   });
 });
 
@@ -429,8 +551,8 @@ test("inline UI uses local builder argv and preserves Markdown content", () => {
   const builder = calls.find(call => call.args.join(" ") === "agent builder build");
   assert.ok(builder);
   assert.deepEqual(JSON.parse(builder.input), {
-    request: "build a grocery list",
-    context: "milk and eggs",
+    request: "build an editable packing checklist",
+    context: "passport and charger",
     decisions: { backend: "aux4/todo" },
     auto: true,
     steps: 10
@@ -476,6 +598,91 @@ test("a valid builder transaction is preserved unchanged with an empty artifact 
   assert.deepEqual(envelope.artifacts, []);
   assert.deepEqual(envelope.artifactTransaction, splitTransaction);
   assert.deepEqual(envelope.builder, { status: "done" });
+});
+
+test("valid create and modify transformations pass through unchanged and are never executed", () => {
+  for (const [transformation, activeArtifact] of [
+    [packingTransformation, ""],
+    [budgetTransformation, JSON.stringify(activeBudgetArtifact)]
+  ]) {
+    const { folder, fake } = makeBuilderFake();
+    const log = path.join(folder, "calls.log");
+    const result = run(askArgs({
+      presentation: transformation.mode === "modify" ? "update-existing-ui" : "markdown+inline-ui",
+      activeArtifact
+    }), {
+      AUX4_BIN: fake,
+      CALL_LOG: log,
+      BUILDER_OUTPUT: JSON.stringify({
+        status: "done",
+        reason: "Typed transformation ready.",
+        artifactTransformation: transformation
+      })
+    }, folder);
+    assert.equal(result.status, 0, result.stderr);
+    const envelope = JSON.parse(result.stdout);
+    assert.deepEqual(envelope.artifacts, []);
+    assert.deepEqual(envelope.artifactTransformation, transformation);
+    assert.deepEqual(envelope.builder, { status: "done" });
+  }
+});
+
+test("ambiguous, stale, identity-changing, and path-operation transformations are rejected", () => {
+  const invalid = [
+    { status: "done", artifact, artifactTransformation: budgetTransformation },
+    { status: "done", artifactTransaction: splitTransaction, artifactTransformation: budgetTransformation },
+    { status: "done", artifactTransformation: { ...budgetTransformation, transformationId: "bad id" } },
+    {
+      status: "done",
+      artifactTransformation: {
+        ...budgetTransformation,
+        source: { ...budgetTransformation.source, revision: 2 }
+      }
+    },
+    {
+      status: "done",
+      artifactTransformation: {
+        ...budgetTransformation,
+        artifact: { ...budgetTransformation.artifact, id: "different-id" }
+      }
+    },
+    {
+      status: "done",
+      artifactTransformation: { ...packingTransformation, source: budgetTransformation.source }
+    },
+    {
+      status: "done",
+      artifactTransformation: {
+        ...packingTransformation,
+        artifact: { ...packingTransformation.artifact, revision: 1 }
+      }
+    },
+    {
+      status: "done",
+      artifactTransformation: {
+        ...budgetTransformation,
+        operations: [{ op: "replace", path: "/state/categories/0", value: {} }]
+      }
+    }
+  ];
+
+  for (const output of invalid) {
+    const { folder, fake } = makeBuilderFake();
+    const log = path.join(folder, "calls.log");
+    const result = run(askArgs({
+      presentation: "update-existing-ui",
+      activeArtifact: JSON.stringify(activeBudgetArtifact)
+    }), {
+      AUX4_BIN: fake,
+      CALL_LOG: log,
+      BUILDER_OUTPUT: JSON.stringify(output)
+    }, folder);
+    assert.equal(result.status, 0, result.stderr);
+    const envelope = JSON.parse(result.stdout);
+    assert.deepEqual(envelope.artifacts, []);
+    assert.equal(envelope.artifactTransformation, undefined);
+    assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_INVALID_OUTPUT" });
+  }
 });
 
 test("invalid or ambiguous builder transactions degrade to a safe builder error", () => {
@@ -531,7 +738,7 @@ test("invalid or ambiguous builder transactions degrade to a safe builder error"
   }
 });
 
-test("a successful separate collection build replaces contradictory model prose", () => {
+test("a successful UI build preserves the accompanying written response", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const semanticArtifact = {
@@ -540,8 +747,8 @@ test("a successful separate collection build replaces contradictory model prose"
     aliases: ["picnic grocery list", "picnic grocery"]
   };
   const result = run(askArgs({
-    request: "Create a separate picnic grocery list with juice and apples",
-    presentation: "auto"
+    request: "Create an interactive trip planner",
+    presentation: "markdown+inline-ui"
   }), {
     AUX4_BIN: fake,
     CALL_LOG: log,
@@ -549,8 +756,8 @@ test("a successful separate collection build replaces contradictory model prose"
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here’s your new list.");
-  assert.equal(envelope.presentation.source, "explicit-request");
+  assert.equal(envelope.content, "Here is your written answer.");
+  assert.equal(envelope.presentation.source, "explicit-override");
   assert.deepEqual(envelope.artifacts, [semanticArtifact]);
 });
 
