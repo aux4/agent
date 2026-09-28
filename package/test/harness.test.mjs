@@ -170,6 +170,24 @@ test("low JEV confidence falls back to Markdown", () => {
   assert.equal(decision.reason, "classifier-confidence-below-threshold");
 });
 
+test("an explicit separate collection routes to UI without consulting JEV", () => {
+  const { folder, fake } = makeFakeAux4(`
+const fs = require("node:fs");
+fs.writeFileSync(process.env.CALL_LOG, "classifier-called");
+process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.99}]}));
+`);
+  const log = path.join(folder, "calls.log");
+  const result = run([
+    "route", "Create a separate picnic grocery list with juice and apples", "auto", "", "", "0.55"
+  ], { AUX4_BIN: fake, CALL_LOG: log });
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "markdown+inline-ui");
+  assert.equal(decision.source, "explicit-request");
+  assert.equal(decision.requiresBuilder, true);
+  assert.equal(fs.existsSync(log), false);
+});
+
 test("a confident known JEV candidate selects inline UI", () => {
   const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown+inline-ui",score:0.91}]}));');
   const result = run(["route", "keep a grocery list", "auto", "milk and eggs", "", "0.55"], { AUX4_BIN: fake });

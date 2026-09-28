@@ -291,6 +291,10 @@ function inferExplicitMode(request) {
   if (/\b(inline|interactive)\b.{0,35}\b(ui|interface|widget|form|list|table|dashboard)\b|\b(show|build|create|give)\b.{0,35}\b(ui|interface|widget)\b/.test(text)) {
     return "markdown+inline-ui";
   }
+  if (/\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)
+    && inferObviousMutableStateMode(request) === "markdown+inline-ui") {
+    return "markdown+inline-ui";
+  }
   return null;
 }
 

@@ -1,5 +1,13 @@
 # Release notes
 
+## Explicit separate collections bypass uncertain presentation classification
+
+An unmistakable request such as `Create a separate picnic grocery list with juice and apples`
+now selects inline UI before JEV classification. This narrow rule requires both explicit-new intent
+and a mutable structured-state noun plus manipulation verb, so explanation and comparison requests
+still use normal Markdown classification. It prevents a low-confidence classifier result from
+turning an explicit new-list request into an unrelated destination question.
+
 ## Semantic artifact identity survives the harness boundary
 
 Typed `aux4.app` artifacts now preserve optional deterministic `key` and bounded `aliases`

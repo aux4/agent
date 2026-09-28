@@ -150,6 +150,10 @@ This lets the caller's user-scoped catalog resolve the same semantic UI across c
 Legacy artifacts without identity metadata remain valid, and update responses retain the active
 key and aliases when an older builder omits them.
 
+Explicit new-instance requests for an obvious mutable collection, such as “Create a separate picnic
+grocery list with juice and apples,” deterministically select inline UI before JEV classification.
+This avoids a low-confidence presentation result changing an explicit creation request into prose.
+
 When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show me the
 list”, “View the current dashboard”, or “Open it” re-emits that artifact directly. The response keeps
 the same `id`, `ref`, `schema`, `state`, and `data`, uses clean Markdown, and does not call the
