@@ -98,11 +98,16 @@ function makeBuilderPayload(options) {
   if (Buffer.byteLength(artifactJson, "utf8") > BUILDER_LIMITS.artifact) throw new Error("activeArtifact exceeds the builder payload limit");
   if (Buffer.byteLength(decisionsJson, "utf8") > BUILDER_LIMITS.decisions) throw new Error("builderDecisions exceeds the builder payload limit");
 
+  const hasCompleteArtifact = currentArtifact
+    && currentArtifact.schema && typeof currentArtifact.schema === "object"
+    && currentArtifact.data && typeof currentArtifact.data === "object"
+    && currentArtifact.data.app && currentArtifact.data.package;
+
   const payload = {
     request,
     ...(context ? { context } : {}),
     ...(currentArtifact?.ref ? { currentRef: currentArtifact.ref } : {}),
-    ...(currentArtifact ? { currentArtifact } : {}),
+    ...(hasCompleteArtifact ? { currentArtifact } : {}),
     ...(Object.keys(decisions).length ? { decisions } : {}),
     ...(backends.length ? { backends } : {}),
     auto: options.builderAuto !== "false",

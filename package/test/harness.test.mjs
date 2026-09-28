@@ -226,7 +226,7 @@ test("app proposal builds an artifact but never auto-deploys", () => {
 test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
-  const current = { ...artifact, id: "stable-id", ref: "builder://stable-id", title: "Existing" };
+  const current = { id: "stable-id", ref: "builder://stable-id", title: "Existing" };
   const changed = { ...artifact, id: "wrong-id", ref: "builder://wrong-id", title: "Updated" };
   const result = run(askArgs({
     presentation: "update-existing-ui",
@@ -251,7 +251,7 @@ test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
   assert.deepEqual(builder.args, ["cloud", "builder", "build", "--scope", "acme", "--apiUrl", "https://dev.api.aux4.cloud"]);
   const payload = JSON.parse(builder.input);
   assert.equal(payload.currentRef, "builder://stable-id");
-  assert.equal(payload.currentArtifact.id, "stable-id");
+  assert.equal(payload.currentArtifact, undefined);
 });
 
 test("needs-decision returns the partial typed artifact and a machine-readable question", () => {
