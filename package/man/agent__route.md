@@ -11,7 +11,8 @@ The stable modes are:
 - `update-existing-ui` — a follow-up that modifies the active artifact.
 
 Precedence is deterministic: an explicit `--presentation`; then a pure show/view/open/display request
-that reuses a complete typed active artifact; then an explicit format request in the text; then other
+that reuses a complete typed active artifact, including a resolved named collection such as
+“Show my breakfast grocery list”; then an explicit format request in the text; then other
 active-artifact follow-ups; then JEV classification over the known candidates. Artifact reuse emits
 `source: active-artifact-reuse`, `reuseActiveArtifact: true`, and `requiresBuilder: false`. The core
 criterion is whether the user benefits from manipulating structured state after the response. When

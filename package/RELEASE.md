@@ -1,5 +1,17 @@
 # Release notes
 
+## Named canonical views and atomic artifact transaction plans
+
+Pure named view requests such as “Show my breakfast grocery list” now re-emit the complete resolved
+active artifact without invoking the builder. Canonical revision metadata is retained with the
+artifact's id, ref, semantic identity, schema, and state.
+
+Builder results may now contain an `artifactTransaction` instead of one ordinary artifact. The
+harness validates the active source identity and revision, transaction id, create artifacts,
+semantic keys and aliases, and final matching delete, then passes the plan through unchanged with an
+empty `artifacts` array. It never executes the transaction; the caller owns the atomic commit and
+idempotent replay. Ambiguous or malformed plans fail through the existing safe builder error path.
+
 ## Successful separate collection builds use clean confirmation prose
 
 When an explicit new/separate collection successfully produces an inline artifact, the harness now

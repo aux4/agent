@@ -77,6 +77,96 @@ const artifact = {
   }
 };
 
+function checklistArtifact({ id, ref, key, aliases, revision, title, items }) {
+  const schema = {
+    type: "Page",
+    children: [{
+      type: "Checklist",
+      props: { field: "items", label: title, reorderable: true }
+    }]
+  };
+  return {
+    ...artifact,
+    id,
+    ref,
+    key,
+    aliases,
+    revision,
+    title,
+    schema,
+    state: { items },
+    data: {
+      app: { routes: { "/": schema } },
+      package: { scope: "generated", name: key.replaceAll(":", "-"), profiles: [] }
+    }
+  };
+}
+
+const sourceItems = [
+  { id: "water", name: "water", completed: false },
+  { id: "banana", name: "banana", completed: false },
+  { id: "onion", name: "onion", completed: false },
+  { id: "parsley", name: "parsley", completed: false },
+  { id: "cilantro", name: "cilantro", completed: false },
+  { id: "egg", name: "Egg", completed: false },
+  { id: "milk", name: "Milk", completed: false }
+];
+
+const activeBreakfastArtifact = checklistArtifact({
+  id: "local/agent-ui-demo/list-grocery-breakfast-42",
+  ref: "artifact://agent-ui-demo/list-grocery-breakfast-42",
+  key: "list:grocery:breakfast",
+  aliases: ["breakfast grocery list", "breakfast groceries"],
+  revision: 7,
+  title: "Breakfast grocery list",
+  items: sourceItems
+});
+
+const splitTransaction = {
+  transactionId: "split-grocery-7",
+  source: {
+    id: activeBreakfastArtifact.id,
+    ref: activeBreakfastArtifact.ref,
+    key: activeBreakfastArtifact.key,
+    revision: activeBreakfastArtifact.revision
+  },
+  operations: [
+    {
+      type: "create",
+      key: "list:grocery:pavilions",
+      aliases: ["pavilions grocery list", "pavilions groceries"],
+      artifact: checklistArtifact({
+        id: "builder://pavilions-groceries",
+        ref: "builder://pavilions-groceries",
+        key: "list:grocery:pavilions",
+        aliases: ["pavilions grocery list", "pavilions groceries"],
+        revision: 1,
+        title: "Pavilions grocery list",
+        items: sourceItems.filter(item => ["onion", "parsley", "cilantro", "egg"].includes(item.id))
+      })
+    },
+    {
+      type: "create",
+      key: "list:grocery:costco",
+      aliases: ["costco grocery list", "costco groceries"],
+      artifact: checklistArtifact({
+        id: "builder://costco-groceries",
+        ref: "builder://costco-groceries",
+        key: "list:grocery:costco",
+        aliases: ["costco grocery list", "costco groceries"],
+        revision: 1,
+        title: "Costco grocery list",
+        items: sourceItems.filter(item => ["water", "banana", "milk"].includes(item.id))
+      })
+    },
+    {
+      type: "delete",
+      id: activeBreakfastArtifact.id,
+      revision: activeBreakfastArtifact.revision
+    }
+  ]
+};
+
 test("explicit Markdown wins without calling the classifier", () => {
   const result = run(["route", "show me a dashboard", "markdown"]);
   assert.equal(result.status, 0, result.stderr);
@@ -114,6 +204,15 @@ test("a show request deterministically reuses a complete active artifact", () =>
   });
 });
 
+test("a named canonical list view reuses the resolved active artifact", () => {
+  const result = run(["route", "Show my breakfast grocery list", "auto", "", JSON.stringify(activeBreakfastArtifact)]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.source, "active-artifact-reuse");
+  assert.equal(decision.requiresBuilder, false);
+  assert.equal(decision.reuseActiveArtifact, true);
+});
+
 test("a show request does not reuse incomplete active artifact metadata", () => {
   const result = run(["route", "Show me the list", "auto", "", '{"id":"grocery-list","ref":"builder://grocery-list"}']);
   assert.equal(result.status, 0, result.stderr);
@@ -149,6 +248,24 @@ process.exit(9);
   assert.deepEqual(envelope.artifacts, [current]);
   assert.deepEqual(envelope.execution, { source: "active-artifact-reuse" });
   assert.equal(fs.existsSync(log), false);
+});
+
+test("ask preserves canonical identity and revision for a named list view without invoking aux4", () => {
+  const { folder, fake } = makeFakeAux4(`
+process.stderr.write("aux4 must not run");
+process.exit(9);
+`);
+  const result = run(askArgs({
+    request: "Show my breakfast grocery list",
+    presentation: "auto",
+    activeArtifact: JSON.stringify(activeBreakfastArtifact)
+  }), { AUX4_BIN: fake }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, [activeBreakfastArtifact]);
+  assert.equal(envelope.artifacts[0].revision, 7);
+  assert.equal(envelope.builder, undefined);
+  assert.equal(envelope.presentation.reuseActiveArtifact, true);
 });
 
 test("a show-shaped mutation does not reuse the active artifact", () => {
@@ -328,6 +445,82 @@ test("builder semantic key and bounded aliases survive the typed harness envelop
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
   assert.deepEqual(envelope.artifacts, [semanticArtifact]);
+});
+
+test("a valid builder transaction is preserved unchanged with an empty artifact list", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "Move vegetables to Pavilions and the rest to Costco",
+    presentation: "update-existing-ui",
+    activeArtifact: JSON.stringify(activeBreakfastArtifact)
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({
+      status: "done",
+      reason: "Grocery list split into Pavilions and Costco.",
+      artifactTransaction: splitTransaction
+    })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.artifactTransaction, splitTransaction);
+  assert.deepEqual(envelope.builder, { status: "done" });
+});
+
+test("invalid or ambiguous builder transactions degrade to a safe builder error", () => {
+  const invalidOutputs = [
+    { status: "done", artifact, artifactTransaction: splitTransaction },
+    { status: "done", artifact: null, artifactTransaction: splitTransaction },
+    { status: "done", artifactTransaction: { ...splitTransaction, transactionId: "bad transaction id" } },
+    {
+      status: "done",
+      artifactTransaction: {
+        ...splitTransaction,
+        source: { ...splitTransaction.source, revision: 8 }
+      }
+    },
+    {
+      status: "done",
+      artifactTransaction: {
+        ...splitTransaction,
+        operations: [splitTransaction.operations[0], splitTransaction.operations[2], splitTransaction.operations[1]]
+      }
+    },
+    {
+      status: "done",
+      artifactTransaction: {
+        ...splitTransaction,
+        operations: [
+          {
+            ...splitTransaction.operations[0],
+            aliases: ["different alias"]
+          },
+          splitTransaction.operations[2]
+        ]
+      }
+    }
+  ];
+
+  for (const output of invalidOutputs) {
+    const { folder, fake } = makeBuilderFake();
+    const log = path.join(folder, "calls.log");
+    const result = run(askArgs({
+      presentation: "update-existing-ui",
+      activeArtifact: JSON.stringify(activeBreakfastArtifact)
+    }), {
+      AUX4_BIN: fake,
+      CALL_LOG: log,
+      BUILDER_OUTPUT: JSON.stringify(output)
+    }, folder);
+    assert.equal(result.status, 0, result.stderr);
+    const envelope = JSON.parse(result.stdout);
+    assert.deepEqual(envelope.artifacts, []);
+    assert.equal(envelope.artifactTransaction, undefined);
+    assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_INVALID_OUTPUT" });
+  }
 });
 
 test("a successful separate collection build replaces contradictory model prose", () => {

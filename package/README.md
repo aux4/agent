@@ -157,8 +157,9 @@ After the builder succeeds, the harness also replaces contradictory model-side d
 with a short confirmation that the new interactive list is ready.
 
 When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show me the
-list”, “View the current dashboard”, or “Open it” re-emits that artifact directly. The response keeps
-the same `id`, `ref`, `schema`, `state`, and `data`, uses clean Markdown, and does not call the
+list”, “Show my breakfast grocery list”, “View the current dashboard”, or “Open it” re-emits that
+resolved artifact directly. The response keeps the same `id`, `ref`, optional `revision`, `schema`,
+`state`, and `data`, uses clean Markdown, and does not call the
 classifier, playbook hooks, model, or builder. Requests that change the artifact still use
 `update-existing-ui`; explanation and format-override requests are not treated as view requests.
 
@@ -166,6 +167,14 @@ The local adapter sends bounded JSON on stdin to `aux4 agent builder build`. The
 the same payload to `aux4 cloud builder generate`, adding `--scope` and `--apiUrl` when configured. User
 text is never interpolated into a shell command. The payload includes the request, compact context,
 active artifact/ref, and caller decisions.
+
+A successful builder response contains exactly one ordinary `artifact` or one
+`artifactTransaction`. A transaction describes one or more new complete artifacts followed by the
+revision-checked deletion of the active source. The harness validates its transaction id, canonical
+source identity and revision, operation order, semantic keys and aliases, and complete typed
+artifacts. It then returns the plan unchanged as `artifactTransaction` with `artifacts: []`. The
+harness never executes the plan; the caller owns the atomic catalog commit, conflict handling, and
+idempotent replay.
 
 A `needs-decision` result preserves the partial artifact, appends a clear question to `content`, and
 returns the typed decisions in `builder.decisions`. Internal builder diagnostics remain in the

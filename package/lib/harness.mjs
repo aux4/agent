@@ -130,7 +130,7 @@ function builderArgs(options) {
   throw new Error("builderAdapter must be local, cloud, or disabled");
 }
 
-function parseBuilderOutput(stdout) {
+function parseBuilderOutput(stdout, activeArtifact = "") {
   let value;
   try {
     value = JSON.parse(String(stdout || "").trim());
@@ -138,32 +138,51 @@ function parseBuilderOutput(stdout) {
     return builderFailure("BUILDER_INVALID_OUTPUT");
   }
   if (!value || Array.isArray(value) || typeof value !== "object") return builderFailure("BUILDER_INVALID_OUTPUT");
-  const { status, reason, artifact, decisions } = value;
-  const typedArtifact = normalizeTypedArtifact(artifact);
-  if (status === "done" && typedArtifact) {
+  const { status, reason, artifact, artifactTransaction, decisions } = value;
+  const hasArtifact = Object.prototype.hasOwnProperty.call(value, "artifact");
+  const hasTransaction = Object.prototype.hasOwnProperty.call(value, "artifactTransaction");
+  const typedArtifact = hasArtifact ? normalizeTypedArtifact(artifact) : null;
+  const validTransaction = hasTransaction
+    ? validateArtifactTransaction(artifactTransaction, activeArtifact)
+    : false;
+  if (status === "done" && hasArtifact !== hasTransaction && typedArtifact) {
     return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact };
   }
-  if (status === "needs-decision" && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
+  if (status === "done" && !hasArtifact && validTransaction) {
+    return {
+      status,
+      reason: typeof reason === "string" ? reason : "",
+      artifactTransaction
+    };
+  }
+  if (status === "needs-decision" && hasArtifact && !hasTransaction
+    && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
     return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact, decisions };
   }
   return builderFailure("BUILDER_INVALID_OUTPUT");
 }
 
-function normalizeTypedArtifact(artifact) {
-  const validKey = artifact?.key === undefined || (
-    typeof artifact.key === "string"
-    && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(artifact.key)
-    && !artifact.key.includes("..")
-    && !artifact.key.includes("//")
-    && !artifact.key.endsWith("/")
-  );
-  const validAliases = artifact?.aliases === undefined || (
-    Array.isArray(artifact.aliases)
-    && artifact.aliases.length <= 16
-    && artifact.aliases.every(alias => typeof alias === "string"
+function validSemanticKey(value) {
+  return typeof value === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(value)
+    && !value.includes("..")
+    && !value.includes("//")
+    && !value.endsWith("/");
+}
+
+function validAliases(value) {
+  return Array.isArray(value)
+    && value.length <= 16
+    && value.every(alias => typeof alias === "string"
       && alias.trim().length > 0
-      && Buffer.byteLength(alias, "utf8") <= 96)
-  );
+      && Buffer.byteLength(alias, "utf8") <= 96);
+}
+
+function normalizeTypedArtifact(artifact) {
+  const validKey = artifact?.key === undefined || validSemanticKey(artifact.key);
+  const aliasesValid = artifact?.aliases === undefined || validAliases(artifact.aliases);
+  const validRevision = artifact?.revision === undefined
+    || (Number.isInteger(artifact.revision) && artifact.revision > 0);
   const validArtifact = artifact && !Array.isArray(artifact) && typeof artifact === "object"
     && typeof artifact.id === "string" && artifact.id.length > 0
     && artifact.kind === "aux4.app"
@@ -174,7 +193,7 @@ function normalizeTypedArtifact(artifact) {
     && artifact.schema && !Array.isArray(artifact.schema) && typeof artifact.schema === "object"
     && artifact.state && !Array.isArray(artifact.state) && typeof artifact.state === "object"
     && artifact.data && !Array.isArray(artifact.data) && typeof artifact.data === "object"
-    && validKey && validAliases
+    && validKey && aliasesValid && validRevision
     && artifact.data.app && !Array.isArray(artifact.data.app) && typeof artifact.data.app === "object"
     && artifact.data.package && !Array.isArray(artifact.data.package) && typeof artifact.data.package === "object";
   return validArtifact ? {
@@ -186,10 +205,55 @@ function normalizeTypedArtifact(artifact) {
     title: artifact.title,
     ...(artifact.key !== undefined ? { key: artifact.key } : {}),
     ...(artifact.aliases !== undefined ? { aliases: [...artifact.aliases] } : {}),
+    ...(artifact.revision !== undefined ? { revision: artifact.revision } : {}),
     schema: artifact.schema,
     state: artifact.state,
     data: artifact.data
   } : null;
+}
+
+function validateArtifactTransaction(transaction, activeArtifact) {
+  if (!transaction || Array.isArray(transaction) || typeof transaction !== "object") return false;
+  if (typeof transaction.transactionId !== "string"
+    || !/^[A-Za-z0-9._:-]{1,128}$/.test(transaction.transactionId)) return false;
+
+  const source = transaction.source;
+  if (!source || Array.isArray(source) || typeof source !== "object") return false;
+  if (typeof source.id !== "string" || source.id.length === 0) return false;
+  if (!Number.isInteger(source.revision) || source.revision <= 0) return false;
+  if (source.ref !== undefined && (typeof source.ref !== "string" || source.ref.length === 0)) return false;
+  if (source.key !== undefined && !validSemanticKey(source.key)) return false;
+
+  let current;
+  try {
+    current = parseOptionalJson(activeArtifact, null, "activeArtifact");
+  } catch {
+    return false;
+  }
+  if (!current || Array.isArray(current) || typeof current !== "object") return false;
+  if (current.id !== source.id || current.revision !== source.revision) return false;
+  if (source.ref !== undefined && current.ref !== source.ref) return false;
+  if (source.key !== undefined && current.key !== source.key) return false;
+
+  const operations = transaction.operations;
+  if (!Array.isArray(operations) || operations.length < 2) return false;
+  const creates = operations.filter(operation => operation?.type === "create");
+  const deletes = operations.filter(operation => operation?.type === "delete");
+  if (creates.length < 1 || deletes.length !== 1 || operations.at(-1) !== deletes[0]) return false;
+  if (operations.some(operation => !operation || (operation.type !== "create" && operation.type !== "delete"))) return false;
+  if (deletes[0].id !== source.id || deletes[0].revision !== source.revision) return false;
+
+  const keys = new Set();
+  for (const operation of creates) {
+    if (!validSemanticKey(operation.key) || !validAliases(operation.aliases)) return false;
+    if (keys.has(operation.key)) return false;
+    keys.add(operation.key);
+    if (!normalizeTypedArtifact(operation.artifact)) return false;
+    if (operation.artifact.key !== operation.key) return false;
+    if (!Array.isArray(operation.artifact.aliases)
+      || JSON.stringify(operation.artifact.aliases) !== JSON.stringify(operation.aliases)) return false;
+  }
+  return true;
 }
 
 function invokeBuilder(options) {
@@ -217,7 +281,7 @@ function invokeBuilder(options) {
   if (result.error?.code === "ETIMEDOUT") return builderFailure("BUILDER_TIMEOUT");
   if (result.error?.code === "ENOBUFS") return builderFailure("BUILDER_OUTPUT_TOO_LARGE");
   if (result.error || result.status !== 0) return builderFailure("BUILDER_EXECUTION_FAILED");
-  return parseBuilderOutput(result.stdout);
+  return parseBuilderOutput(result.stdout, options.activeArtifact);
 }
 
 function decisionQuestion(result) {
@@ -279,7 +343,8 @@ function isActiveArtifactViewRequest(request) {
   const determiner = "(?:(?:the|this|that|my|our|current|active) )?";
   const qualifier = "(?:(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) )?";
   const target = "(?:list|checklist|app|application|ui|interface|view|dashboard|form|table|tracker|artifact|it|this|that)";
-  return new RegExp(`^${polite}${verb} ${determiner}${qualifier}${target}(?: again| now| please)?$`).test(text);
+  const namedList = "(?:(?:[a-z0-9-]+ ){0,4}(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) (?:list|checklist))";
+  return new RegExp(`^${polite}${verb} ${determiner}(?:${namedList}|${qualifier}${target})(?: again| now| please)?$`).test(text);
 }
 
 function isExplicitNewMutableStateRequest(request) {
@@ -571,18 +636,23 @@ function ask(options) {
   if (options.output === "json" && presentation.requiresBuilder) {
     const builder = invokeBuilder(options);
     if (builder.status === "done") {
-      const artifact = presentation.mode === "update-existing-ui"
-        ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
-        : builder.artifact;
-      envelope.artifacts = [artifact];
-      envelope.builder = { status: "done" };
-      if (isExplicitNewMutableStateRequest(options.request)) {
-        envelope.content = /\b(?:list|checklist)\b/i.test(options.request)
-          ? "Here’s your new list."
-          : "Here’s your new interactive view.";
-      }
-      if (presentation.mode === "markdown+app-proposal") {
-        envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
+      if (builder.artifactTransaction) {
+        envelope.artifactTransaction = builder.artifactTransaction;
+        envelope.builder = { status: "done" };
+      } else {
+        const artifact = presentation.mode === "update-existing-ui"
+          ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
+          : builder.artifact;
+        envelope.artifacts = [artifact];
+        envelope.builder = { status: "done" };
+        if (isExplicitNewMutableStateRequest(options.request)) {
+          envelope.content = /\b(?:list|checklist)\b/i.test(options.request)
+            ? "Here’s your new list."
+            : "Here’s your new interactive view.";
+        }
+        if (presentation.mode === "markdown+app-proposal") {
+          envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
+        }
       }
     } else if (builder.status === "needs-decision") {
       const artifact = presentation.mode === "update-existing-ui"

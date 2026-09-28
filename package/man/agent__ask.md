@@ -13,8 +13,9 @@ Failures inside these best-effort hooks fall through to the normal agent.
 
 Presentation routing asks whether the user benefits from manipulating structured state after the
 response. It chooses only a known mode and never generates a schema. Explicit format requests win.
-A pure show/view/open/display request with a complete active artifact re-emits that artifact without
-calling the classifier, playbook hooks, model, or builder. Other active-artifact follow-ups select
+A pure show/view/open/display request, including a named request such as “Show my breakfast grocery
+list”, with a complete resolved active artifact re-emits that artifact without calling the
+classifier, playbook hooks, model, or builder. Canonical `revision` metadata is preserved. Other active-artifact follow-ups select
 `update-existing-ui`, and low confidence or classifier failure falls back to `markdown`. The `json`
 output always retains the written response in `content`.
 
@@ -25,6 +26,13 @@ JSON on stdin, never shell-interpolated user input. The harness accepts only a v
 `aliases` semantic identity metadata is validated and preserved for caller-owned catalogs; legacy
 artifacts without these fields remain valid. Keys are bounded and path-safe, while aliases are
 limited to 16 nonempty strings of at most 96 bytes each.
+
+A successful builder result must contain exactly one ordinary artifact or one validated
+`artifactTransaction`. A transaction has a bounded transaction id, the active source's canonical
+id/ref/key and positive revision, one or more complete create operations, and one final delete that
+matches the source id and revision. Create keys and aliases must match their inline artifacts. The
+harness passes a valid plan through unchanged with `artifacts: []`; it never applies the operations.
+The caller is responsible for the atomic revision-checked commit and idempotent replay.
 
 An explicit new-instance request for an obvious mutable collection (`new`, `separate`, `another`,
 or equivalent) selects inline UI before classifier scoring. Explanation, comparison, and drafting
