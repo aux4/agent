@@ -294,6 +294,44 @@ test("inline UI uses local builder argv and preserves Markdown content", () => {
   });
 });
 
+test("builder semantic key and bounded aliases survive the typed harness envelope", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const semanticArtifact = {
+    ...artifact,
+    key: "list:grocery",
+    aliases: ["grocery list", "grocery", "my grocery list"]
+  };
+  const result = run(askArgs(), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact: semanticArtifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, [semanticArtifact]);
+});
+
+test("invalid semantic artifact metadata is rejected while legacy metadata remains optional", () => {
+  for (const invalid of [
+    { ...artifact, key: "bad key" },
+    { ...artifact, key: "list:grocery", aliases: [""] },
+    { ...artifact, key: "list:grocery", aliases: Array.from({ length: 17 }, (_, index) => `alias-${index}`) }
+  ]) {
+    const { folder, fake } = makeBuilderFake();
+    const log = path.join(folder, "calls.log");
+    const result = run(askArgs(), {
+      AUX4_BIN: fake,
+      CALL_LOG: log,
+      BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact: invalid })
+    }, folder);
+    assert.equal(result.status, 0, result.stderr);
+    const envelope = JSON.parse(result.stdout);
+    assert.deepEqual(envelope.artifacts, []);
+    assert.equal(envelope.builder.code, "BUILDER_INVALID_OUTPUT");
+  }
+});
+
 test("app proposal builds an artifact but never auto-deploys", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
@@ -312,7 +350,10 @@ test("app proposal builds an artifact but never auto-deploys", () => {
 test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
-  const current = { id: "stable-id", ref: "builder://stable-id", title: "Existing" };
+  const current = {
+    id: "stable-id", ref: "builder://stable-id", title: "Existing",
+    key: "list:grocery", aliases: ["grocery list", "my grocery list"]
+  };
   const changed = { ...artifact, id: "wrong-id", ref: "builder://wrong-id", title: "Updated" };
   const result = run(askArgs({
     presentation: "update-existing-ui",
@@ -332,6 +373,8 @@ test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
   assert.equal(envelope.artifacts[0].id, "stable-id");
   assert.equal(envelope.artifacts[0].ref, "builder://stable-id");
   assert.equal(envelope.artifacts[0].title, "Updated");
+  assert.equal(envelope.artifacts[0].key, "list:grocery");
+  assert.deepEqual(envelope.artifacts[0].aliases, ["grocery list", "my grocery list"]);
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
   const builder = calls.find(call => call.args[0] === "cloud");
   assert.deepEqual(builder.args, ["cloud", "builder", "generate", "--scope", "acme", "--apiUrl", "https://dev.api.aux4.cloud"]);

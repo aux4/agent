@@ -1,5 +1,13 @@
 # Release notes
 
+## Semantic artifact identity survives the harness boundary
+
+Typed `aux4.app` artifacts now preserve optional deterministic `key` and bounded `aliases`
+metadata from builder output through the JSON harness envelope. Strict validation rejects unsafe
+keys, empty aliases, oversized aliases, and more than 16 aliases. Legacy artifacts without these
+fields remain valid, and an update from an older builder inherits the active artifact's semantic
+metadata while retaining its stable id/ref.
+
 ## Active artifacts reappear without regeneration
 
 Pure requests such as “Show me the list”, “View the current dashboard”, and “Open it” now re-emit a

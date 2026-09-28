@@ -111,6 +111,12 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
       "presentation": "inline",
       "ref": "builder://grocery-list",
       "title": "Groceries",
+      "key": "list:grocery",
+      "aliases": [
+        "grocery list",
+        "grocery",
+        "my grocery list"
+      ],
       "schema": {
         "type": "List",
         "props": {
@@ -137,6 +143,12 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
 known presentation modes; it never creates a schema or artifact. In JSON mode, a UI decision calls
 the configured builder and accepts only its typed `aux4.app` artifact contract. Text output and
 `markdown` decisions never call the builder.
+
+Optional artifact `key` and `aliases` metadata survives the same strict typed boundary. Keys use a
+bounded path-safe grammar; aliases are limited to 16 nonempty strings of at most 96 bytes each.
+This lets the caller's user-scoped catalog resolve the same semantic UI across conversations.
+Legacy artifacts without identity metadata remain valid, and update responses retain the active
+key and aliases when an older builder omits them.
 
 When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show me the
 list”, “View the current dashboard”, or “Open it” re-emits that artifact directly. The response keeps

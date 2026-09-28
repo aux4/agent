@@ -21,7 +21,10 @@ output always retains the written response in `content`.
 In JSON mode, a decision with `requiresBuilder: true` invokes a bounded builder adapter. `local`
 runs `aux4 agent builder build`; `cloud` runs `aux4 cloud <builderVm> generate`. Both receive the same
 JSON on stdin, never shell-interpolated user input. The harness accepts only a version 1
-`aux4.app` artifact with `id`, `ref`, `title`, `schema`, `state`, and `data`.
+`aux4.app` artifact with `id`, `ref`, `title`, `schema`, `state`, and `data`. Optional `key` and
+`aliases` semantic identity metadata is validated and preserved for caller-owned catalogs; legacy
+artifacts without these fields remain valid. Keys are bounded and path-safe, while aliases are
+limited to 16 nonempty strings of at most 96 bytes each.
 
 Builder `needs-decision` results append a clean Markdown question and expose typed decision metadata.
 Internal validation and command-line diagnostics remain in `builder.reason`; they are not copied into

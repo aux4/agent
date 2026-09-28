@@ -150,6 +150,20 @@ function parseBuilderOutput(stdout) {
 }
 
 function normalizeTypedArtifact(artifact) {
+  const validKey = artifact?.key === undefined || (
+    typeof artifact.key === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(artifact.key)
+    && !artifact.key.includes("..")
+    && !artifact.key.includes("//")
+    && !artifact.key.endsWith("/")
+  );
+  const validAliases = artifact?.aliases === undefined || (
+    Array.isArray(artifact.aliases)
+    && artifact.aliases.length <= 16
+    && artifact.aliases.every(alias => typeof alias === "string"
+      && alias.trim().length > 0
+      && Buffer.byteLength(alias, "utf8") <= 96)
+  );
   const validArtifact = artifact && !Array.isArray(artifact) && typeof artifact === "object"
     && typeof artifact.id === "string" && artifact.id.length > 0
     && artifact.kind === "aux4.app"
@@ -160,6 +174,7 @@ function normalizeTypedArtifact(artifact) {
     && artifact.schema && !Array.isArray(artifact.schema) && typeof artifact.schema === "object"
     && artifact.state && !Array.isArray(artifact.state) && typeof artifact.state === "object"
     && artifact.data && !Array.isArray(artifact.data) && typeof artifact.data === "object"
+    && validKey && validAliases
     && artifact.data.app && !Array.isArray(artifact.data.app) && typeof artifact.data.app === "object"
     && artifact.data.package && !Array.isArray(artifact.data.package) && typeof artifact.data.package === "object";
   return validArtifact ? {
@@ -169,6 +184,8 @@ function normalizeTypedArtifact(artifact) {
     presentation: artifact.presentation,
     ref: artifact.ref,
     title: artifact.title,
+    ...(artifact.key !== undefined ? { key: artifact.key } : {}),
+    ...(artifact.aliases !== undefined ? { aliases: [...artifact.aliases] } : {}),
     schema: artifact.schema,
     state: artifact.state,
     data: artifact.data
@@ -221,7 +238,9 @@ function applyStableArtifactIdentity(artifact, activeArtifact) {
   return {
     ...artifact,
     ...(current.id ? { id: current.id } : {}),
-    ...(current.ref ? { ref: current.ref } : {})
+    ...(current.ref ? { ref: current.ref } : {}),
+    ...(artifact.key === undefined && current.key ? { key: current.key } : {}),
+    ...(artifact.aliases === undefined && Array.isArray(current.aliases) ? { aliases: [...current.aliases] } : {})
   };
 }
 
