@@ -122,7 +122,7 @@ function makeBuilderPayload(options) {
 function builderArgs(options) {
   if (options.builderAdapter === "local") return ["agent", "builder", "build"];
   if (options.builderAdapter === "cloud") {
-    const args = ["cloud", options.builderVm || "builder", "build"];
+    const args = ["cloud", options.builderVm || "builder", "generate"];
     if (options.builderScope) args.push("--scope", options.builderScope);
     if (options.builderApiUrl) args.push("--apiUrl", options.builderApiUrl);
     return args;

@@ -139,7 +139,7 @@ the configured builder and accepts only its typed `aux4.app` artifact contract. 
 `markdown` decisions never call the builder.
 
 The local adapter sends bounded JSON on stdin to `aux4 agent builder build`. The cloud adapter sends
-the same payload to `aux4 cloud builder build`, adding `--scope` and `--apiUrl` when configured. User
+the same payload to `aux4 cloud builder generate`, adding `--scope` and `--apiUrl` when configured. User
 text is never interpolated into a shell command. The payload includes the request, compact context,
 active artifact/ref, and caller decisions.
 

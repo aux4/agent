@@ -11,6 +11,9 @@ machine-readable decisions, updates retain their artifact id/ref, and app propos
 without a later explicit confirmation. Timeouts, command failures, and malformed builder output
 degrade safely to Markdown plus a non-secret error code.
 
+The cloud builder command is `generate` (not `build`) so it does not collide with package build
+commands installed on the command VM. The local developer command remains `agent builder build`.
+
 ## Internal harness: automatic playbooks and typed presentation routing
 
 `agent/agent` now installs `agent/skill-playbook` and runs its before/after lifecycle in the harness,

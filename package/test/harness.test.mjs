@@ -248,7 +248,7 @@ test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
   assert.equal(envelope.artifacts[0].title, "Updated");
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
   const builder = calls.find(call => call.args[0] === "cloud");
-  assert.deepEqual(builder.args, ["cloud", "builder", "build", "--scope", "acme", "--apiUrl", "https://dev.api.aux4.cloud"]);
+  assert.deepEqual(builder.args, ["cloud", "builder", "generate", "--scope", "acme", "--apiUrl", "https://dev.api.aux4.cloud"]);
   const payload = JSON.parse(builder.input);
   assert.equal(payload.currentRef, "builder://stable-id");
   assert.equal(payload.currentArtifact, undefined);

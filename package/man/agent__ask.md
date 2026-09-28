@@ -17,7 +17,7 @@ an active artifact selects `update-existing-ui`, and low confidence or classifie
 to `markdown`. The `json` output always retains the written response in `content`.
 
 In JSON mode, a decision with `requiresBuilder: true` invokes a bounded builder adapter. `local`
-runs `aux4 agent builder build`; `cloud` runs `aux4 cloud <builderVm> build`. Both receive the same
+runs `aux4 agent builder build`; `cloud` runs `aux4 cloud <builderVm> generate`. Both receive the same
 JSON on stdin, never shell-interpolated user input. The harness accepts only a version 1
 `aux4.app` artifact with `id`, `ref`, `title`, `schema`, `state`, and `data`.
 
