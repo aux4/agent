@@ -159,6 +159,10 @@ function parseBuilderOutput(stdout, activeArtifact = "") {
     && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
     return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact, decisions };
   }
+  if (status === "needs-input" && hasArtifact && !hasTransaction
+    && typedArtifact && typeof reason === "string" && reason.trim()) {
+    return { status, reason, artifact: typedArtifact };
+  }
   return builderFailure("BUILDER_INVALID_OUTPUT");
 }
 
@@ -294,6 +298,10 @@ function decisionQuestion(result) {
     return String(decision.question || decision.label || decision.id || "Choose one of the available options.");
   });
   return `${prompt}\n\n${labels.map(label => `- ${label}`).join("\n")}`;
+}
+
+function inputQuestion() {
+  return "I need a little more detail before I can finish the interactive view. Please describe the screen or interaction you want changed.";
 }
 
 function applyStableArtifactIdentity(artifact, activeArtifact) {
@@ -654,14 +662,16 @@ function ask(options) {
           envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
         }
       }
-    } else if (builder.status === "needs-decision") {
+    } else if (builder.status === "needs-decision" || builder.status === "needs-input") {
       const artifact = presentation.mode === "update-existing-ui"
         ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
         : builder.artifact;
       envelope.artifacts = [artifact];
-      const question = decisionQuestion(builder);
+      const question = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
       envelope.content = envelope.content ? `${envelope.content}\n\n${question}` : question;
-      envelope.builder = { status: "needs-decision", reason: builder.reason, decisions: builder.decisions };
+      envelope.builder = builder.status === "needs-decision"
+        ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
+        : { status: "needs-input", reason: builder.reason };
     } else {
       envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
       envelope.builder = { status: "error", code: builder.code };

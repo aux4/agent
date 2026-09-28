@@ -1,5 +1,12 @@
 # Release notes
 
+## Builder clarification responses remain interactive
+
+A valid builder `needs-input` response now preserves its typed artifact, retains stable active
+identity on updates, and asks the user for a clearer screen or interaction description. Internal
+builder diagnostics remain machine-readable and no longer become a misleading technical-error
+fallback.
+
 ## Named canonical views and atomic artifact transaction plans
 
 Pure named view requests such as “Show my breakfast grocery list” now re-emit the complete resolved

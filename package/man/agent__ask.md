@@ -41,7 +41,8 @@ harness emits a clean creation confirmation instead of retaining contradictory d
 
 Builder `needs-decision` results append a clean Markdown question and expose typed decision metadata.
 Internal validation and command-line diagnostics remain in `builder.reason`; they are not copied into
-the user-facing answer.
+the user-facing answer. A valid `needs-input` result preserves the typed artifact and asks for a
+clearer screen or interaction description rather than presenting it as a technical failure.
 Malformed output, timeout, and command failure retain the written response and expose only a stable,
 non-secret error code. Updates preserve the active artifact identity. App proposals never deploy;
 they carry explicit proposal metadata requiring confirmation.

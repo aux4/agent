@@ -178,7 +178,9 @@ idempotent replay.
 
 A `needs-decision` result preserves the partial artifact, appends a clear question to `content`, and
 returns the typed decisions in `builder.decisions`. Internal builder diagnostics remain in the
-machine-readable `builder.reason` and are never copied into user-facing Markdown. A timeout,
+machine-readable `builder.reason` and are never copied into user-facing Markdown. A valid
+`needs-input` result likewise preserves the typed artifact and asks for a clearer screen or
+interaction description instead of reporting a false technical failure. A timeout,
 malformed result, or failed command keeps the Markdown response and returns only a non-secret
 `builder.code`. Updates keep the active artifact's `id` and `ref`. An app proposal adds
 `deployment.status: proposal` and always requires explicit confirmation; the harness never deploys

@@ -91,7 +91,7 @@ function checklistArtifact({ id, ref, key, aliases, revision, title, items }) {
     ref,
     key,
     aliases,
-    revision,
+    ...(revision !== undefined ? { revision } : {}),
     title,
     schema,
     state: { items },
@@ -122,47 +122,55 @@ const activeBreakfastArtifact = checklistArtifact({
   items: sourceItems
 });
 
+const activeGroceryArtifact = checklistArtifact({
+  id: "local/agent-ui-demo/list-grocery-eeef28dea0",
+  ref: "artifact://agent-ui-demo/list-grocery-eeef28dea0",
+  key: "list:grocery",
+  aliases: ["grocery list", "grocery", "my grocery list"],
+  revision: 7,
+  title: "Grocery list",
+  items: sourceItems
+});
+
 const splitTransaction = {
   transactionId: "split-grocery-7",
   source: {
-    id: activeBreakfastArtifact.id,
-    ref: activeBreakfastArtifact.ref,
-    key: activeBreakfastArtifact.key,
-    revision: activeBreakfastArtifact.revision
+    id: activeGroceryArtifact.id,
+    ref: activeGroceryArtifact.ref,
+    key: activeGroceryArtifact.key,
+    revision: activeGroceryArtifact.revision
   },
   operations: [
     {
       type: "create",
       key: "list:grocery:pavilions",
-      aliases: ["pavilions grocery list", "pavilions groceries"],
+      aliases: ["Pavilions Grocery list", "Pavilions Grocery"],
       artifact: checklistArtifact({
-        id: "builder://pavilions-groceries",
-        ref: "builder://pavilions-groceries",
+        id: "local/list-grocery-pavilions",
+        ref: "builder://local/list-grocery-pavilions",
         key: "list:grocery:pavilions",
-        aliases: ["pavilions grocery list", "pavilions groceries"],
-        revision: 1,
-        title: "Pavilions grocery list",
+        aliases: ["Pavilions Grocery list", "Pavilions Grocery"],
+        title: "Pavilions Grocery list",
         items: sourceItems.filter(item => ["onion", "parsley", "cilantro", "egg"].includes(item.id))
       })
     },
     {
       type: "create",
       key: "list:grocery:costco",
-      aliases: ["costco grocery list", "costco groceries"],
+      aliases: ["Costco Grocery list", "Costco Grocery"],
       artifact: checklistArtifact({
-        id: "builder://costco-groceries",
-        ref: "builder://costco-groceries",
+        id: "local/list-grocery-costco",
+        ref: "builder://local/list-grocery-costco",
         key: "list:grocery:costco",
-        aliases: ["costco grocery list", "costco groceries"],
-        revision: 1,
-        title: "Costco grocery list",
+        aliases: ["Costco Grocery list", "Costco Grocery"],
+        title: "Costco Grocery list",
         items: sourceItems.filter(item => ["water", "banana", "milk"].includes(item.id))
       })
     },
     {
       type: "delete",
-      id: activeBreakfastArtifact.id,
-      revision: activeBreakfastArtifact.revision
+      id: activeGroceryArtifact.id,
+      revision: activeGroceryArtifact.revision
     }
   ]
 };
@@ -451,9 +459,9 @@ test("a valid builder transaction is preserved unchanged with an empty artifact 
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({
-    request: "Move vegetables to Pavilions and the rest to Costco",
+    request: "Can you split my list, the eggs and vegetables I always buy on Pavilions and the rest on Costco",
     presentation: "update-existing-ui",
-    activeArtifact: JSON.stringify(activeBreakfastArtifact)
+    activeArtifact: JSON.stringify(activeGroceryArtifact)
   }), {
     AUX4_BIN: fake,
     CALL_LOG: log,
@@ -509,7 +517,7 @@ test("invalid or ambiguous builder transactions degrade to a safe builder error"
     const log = path.join(folder, "calls.log");
     const result = run(askArgs({
       presentation: "update-existing-ui",
-      activeArtifact: JSON.stringify(activeBreakfastArtifact)
+      activeArtifact: JSON.stringify(activeGroceryArtifact)
     }), {
       AUX4_BIN: fake,
       CALL_LOG: log,
@@ -639,6 +647,29 @@ test("needs-decision returns the partial typed artifact and a machine-readable q
   assert.match(envelope.content, /I need one choice before I can finish the interactive view\.[\s\S]*Which list should store these items\?/);
   assert.doesNotMatch(envelope.content, /--decide|validate/);
   assert.match(envelope.builder.reason, /--decide/);
+});
+
+test("needs-input preserves the active artifact without a false technical-error fallback", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const reason = "no part of the instruction could be resolved into an app screen/route";
+  const result = run(askArgs({
+    request: "Can you split my list, the eggs and vegetables I always buy on Pavilions and the rest on Costco",
+    presentation: "update-existing-ui",
+    activeArtifact: JSON.stringify(activeGroceryArtifact)
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "needs-input", reason, artifact: activeGroceryArtifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.artifacts[0].id, activeGroceryArtifact.id);
+  assert.equal(envelope.artifacts[0].ref, activeGroceryArtifact.ref);
+  assert.equal(envelope.artifacts[0].revision, activeGroceryArtifact.revision);
+  assert.deepEqual(envelope.builder, { status: "needs-input", reason });
+  assert.match(envelope.content, /I need a little more detail before I can finish the interactive view/);
+  assert.doesNotMatch(envelope.content, /couldn't create or update|app screen\/route/);
 });
 
 test("malformed builder output safely degrades without exposing stderr", () => {
