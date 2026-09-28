@@ -118,6 +118,30 @@ test("a confident known JEV candidate selects inline UI", () => {
   assert.equal(decision.confidence, 0.91);
 });
 
+test("an obvious mutable list uses deterministic UI fallback when JEV is unavailable", () => {
+  const { fake } = makeFakeAux4('process.stderr.write("broker unavailable"); process.exit(2);');
+  const result = run(["route", "Keep a grocery list with milk and eggs", "auto", "", "", "0.55"], { AUX4_BIN: fake });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: 1,
+    mode: "markdown+inline-ui",
+    source: "deterministic-fallback",
+    confidence: 1,
+    reason: "obvious-mutable-structured-state-intent",
+    criterion: "benefit-from-manipulating-structured-state",
+    requiresBuilder: true
+  });
+});
+
+test("an answer about a list remains Markdown when JEV is unavailable", () => {
+  const { fake } = makeFakeAux4('process.exit(2);');
+  const result = run(["route", "Explain how to organize a grocery list", "auto", "", "", "0.55"], { AUX4_BIN: fake });
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "markdown");
+  assert.equal(decision.reason, "classifier-unavailable");
+});
+
 test("ask deterministically runs a confident complete playbook before the model", () => {
   const { folder, fake } = makeFakeAux4(`
 const fs = require("node:fs");
@@ -261,14 +285,21 @@ test("needs-decision returns the partial typed artifact and a machine-readable q
   const result = run(askArgs(), {
     AUX4_BIN: fake,
     CALL_LOG: log,
-    BUILDER_OUTPUT: JSON.stringify({ status: "needs-decision", reason: "Choose a backend.", artifact, decisions })
+    BUILDER_OUTPUT: JSON.stringify({
+      status: "needs-decision",
+      reason: '1 decision(s) need agent input -- answer with --decide <id>=<value> | validate: {"valid":true}',
+      artifact,
+      decisions
+    })
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
   assert.deepEqual(envelope.artifacts, [artifact]);
   assert.equal(envelope.builder.status, "needs-decision");
   assert.deepEqual(envelope.builder.decisions, decisions);
-  assert.match(envelope.content, /Choose a backend\.[\s\S]*Which list should store these items\?/);
+  assert.match(envelope.content, /I need one choice before I can finish the interactive view\.[\s\S]*Which list should store these items\?/);
+  assert.doesNotMatch(envelope.content, /--decide|validate/);
+  assert.match(envelope.builder.reason, /--decide/);
 });
 
 test("malformed builder output safely degrades without exposing stderr", () => {

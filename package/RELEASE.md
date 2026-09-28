@@ -1,5 +1,16 @@
 # Release notes
 
+## Offline mutable-state routing and clean decision questions
+
+When JEV is unavailable, the presentation router now recognizes conservative, obvious requests to
+create or maintain mutable structured state—for example, “Keep a grocery list with milk and eggs”—
+and selects inline UI. This fallback runs only when classification is unavailable; a valid low-score
+classification still returns Markdown, and explanation/research requests are excluded.
+
+Needs-decision answers now use a clean harness-authored question. Builder validation traces and
+`--decide` instructions stay machine-readable under `builder.reason` instead of leaking into the
+user-facing Markdown response.
+
 ## UI decisions now invoke the safe builder adapter
 
 `agent ask --output json` now turns UI presentation decisions into typed `aux4.app` artifacts.

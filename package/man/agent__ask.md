@@ -21,7 +21,9 @@ runs `aux4 agent builder build`; `cloud` runs `aux4 cloud <builderVm> generate`.
 JSON on stdin, never shell-interpolated user input. The harness accepts only a version 1
 `aux4.app` artifact with `id`, `ref`, `title`, `schema`, `state`, and `data`.
 
-Builder `needs-decision` results append a Markdown question and expose typed decision metadata.
+Builder `needs-decision` results append a clean Markdown question and expose typed decision metadata.
+Internal validation and command-line diagnostics remain in `builder.reason`; they are not copied into
+the user-facing answer.
 Malformed output, timeout, and command failure retain the written response and expose only a stable,
 non-secret error code. Updates preserve the active artifact identity. App proposals never deploy;
 they carry explicit proposal metadata requiring confirmation.

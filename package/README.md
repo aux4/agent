@@ -144,10 +144,12 @@ text is never interpolated into a shell command. The payload includes the reques
 active artifact/ref, and caller decisions.
 
 A `needs-decision` result preserves the partial artifact, appends a clear question to `content`, and
-returns the typed decisions in `builder.decisions`. A timeout, malformed result, or failed command
-keeps the Markdown response and returns only a non-secret `builder.code`. Updates keep the active
-artifact's `id` and `ref`. An app proposal adds `deployment.status: proposal` and always requires
-explicit confirmation; the harness never deploys it automatically.
+returns the typed decisions in `builder.decisions`. Internal builder diagnostics remain in the
+machine-readable `builder.reason` and are never copied into user-facing Markdown. A timeout,
+malformed result, or failed command keeps the Markdown response and returns only a non-secret
+`builder.code`. Updates keep the active artifact's `id` and `ref`. An app proposal adds
+`deployment.status: proposal` and always requires explicit confirmation; the harness never deploys
+it automatically.
 
 ### `agent route`
 
@@ -166,8 +168,10 @@ The command prints one JSON decision with these stable modes:
 
 An explicit `--presentation` wins first. A natural-language request for Markdown, an inline UI, or
 an app wins next. An active artifact then selects `update-existing-ui`. Otherwise JEV ranks the four
-known candidates using the request and compact conversation context. Missing JEV or confidence
-below `--classifierThreshold` returns `markdown`.
+known candidates using the request and compact conversation context. If JEV is unavailable, a
+conservative deterministic fallback recognizes obvious mutable structured-state requests such as
+“Keep a grocery list” and selects inline UI; explanation/research requests still return Markdown.
+A valid JEV result below `--classifierThreshold` always remains Markdown.
 
 ### `agent new`
 

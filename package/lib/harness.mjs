@@ -200,13 +200,15 @@ function invokeBuilder(options) {
 }
 
 function decisionQuestion(result) {
-  const reason = result.reason?.trim() || "I need one more choice before I can build the interactive view.";
+  const prompt = result.decisions.length === 1
+    ? "I need one choice before I can finish the interactive view."
+    : "I need a few choices before I can finish the interactive view.";
   const labels = result.decisions.map(decision => {
     if (typeof decision === "string") return decision;
     if (!decision || typeof decision !== "object") return "Choose one of the available options.";
     return String(decision.question || decision.label || decision.id || "Choose one of the available options.");
   });
-  return `${reason}\n\n${labels.map(label => `- ${label}`).join("\n")}`;
+  return `${prompt}\n\n${labels.map(label => `- ${label}`).join("\n")}`;
 }
 
 function applyStableArtifactIdentity(artifact, activeArtifact) {
@@ -239,6 +241,21 @@ function inferExplicitMode(request) {
     return "markdown+inline-ui";
   }
   return null;
+}
+
+function inferObviousMutableStateMode(request) {
+  const text = String(request || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!text) return null;
+
+  // A response about a structured tool is still prose when the user is asking
+  // to learn, compare, or draft. Keep these out of the offline UI fallback.
+  if (/^(?:explain|describe|research|summarize|compare|review|write|draft|tell me|what |why |how )\b/.test(text)) {
+    return null;
+  }
+
+  const mutableNoun = /\b(?:(?:grocery|shopping|to-?do|task|packing|reading|guest|check) list|checklist|tracker|inventory|kanban|dashboard|form|table|planner|budget|calendar|collection|board)\b/;
+  const manipulation = /\b(?:keep|maintain|manage|track|organize|create|make|build|set up|start|give me|i (?:need|want)|add|remove|update|edit|record|log|show)\b/;
+  return mutableNoun.test(text) && manipulation.test(text) ? "markdown+inline-ui" : null;
 }
 
 function fallback(reason, source = "fallback") {
@@ -338,6 +355,18 @@ function routePresentation({
       requiresBuilder: best.id !== "markdown"
     };
   } catch {
+    const deterministicMode = inferObviousMutableStateMode(request);
+    if (deterministicMode) {
+      return {
+        version: 1,
+        mode: deterministicMode,
+        source: "deterministic-fallback",
+        confidence: 1,
+        reason: "obvious-mutable-structured-state-intent",
+        criterion: "benefit-from-manipulating-structured-state",
+        requiresBuilder: true
+      };
+    }
     return fallback("classifier-unavailable");
   }
 }

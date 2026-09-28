@@ -12,9 +12,11 @@ The stable modes are:
 
 Precedence is deterministic: an explicit `--presentation`, then an explicit format request in the
 text, then active artifact metadata, then JEV classification over the known candidates. The core
-criterion is whether the user benefits from manipulating structured state after the response. JEV
-failure, a non-probability score, an unknown candidate, or a score below `--classifierThreshold`
-returns `markdown`.
+criterion is whether the user benefits from manipulating structured state after the response. When
+JEV is unavailable, a conservative deterministic fallback recognizes obvious mutable-state intents
+such as keeping a grocery list, tracker, or checklist; answer-shaped explanation and research
+requests remain Markdown. A valid probability below `--classifierThreshold`, a non-probability
+score, or an unknown candidate returns `markdown`.
 
 #### Usage
 
