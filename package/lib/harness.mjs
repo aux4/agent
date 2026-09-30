@@ -387,6 +387,16 @@ function isRetryAfterInteractiveRefusal(request, conversationContext) {
     && /\b(?:custom|interactive|ui|widget|interface|form|input|button|web app)\b/.test(context);
 }
 
+function builderRequestFor(options) {
+  if (!isRetryAfterInteractiveRefusal(options.request, options.conversationContext)) return options.request;
+  const prior = String(options.conversationContext || "")
+    .split(/\n+/)
+    .map(line => line.replace(/^user:\s*/i, "").trim())
+    .filter(line => line && !/^assistant:\s*/i.test(line))
+    .filter(line => /\b(?:custom|interactive|ui|widget|interface|form|input|button|web app)\b/i.test(line));
+  return prior.at(-1) || "Create the interactive UI requested earlier in this conversation.";
+}
+
 function inferExplicitMode(request, conversationContext = "") {
   const text = String(request || "").toLowerCase();
   if (/\b(markdown|plain text|text only|no ui|without (a |the )?ui)\b/.test(text)) return "markdown";
@@ -671,7 +681,7 @@ function ask(options) {
     execution
   };
   if (options.output === "json" && presentation.requiresBuilder) {
-    const builder = invokeBuilder(options);
+    const builder = invokeBuilder({ ...options, request: builderRequestFor(options) });
     if (builder.status === "done") {
       if (builder.artifactTransaction) {
         envelope.artifactTransaction = builder.artifactTransaction;

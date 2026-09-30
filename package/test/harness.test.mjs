@@ -462,6 +462,27 @@ test("inline UI replaces a contradictory model refusal when the builder returns 
   assert.deepEqual(envelope.artifacts, [artifact]);
 });
 
+test("a retry after a UI refusal sends the prior UI request to the builder", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "You can do it, try again",
+    conversationContext: "user: Can you create a custom UI for entering a ZIP code?\nassistant: I cannot create a custom UI. My interface is limited to text."
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    MODEL_OUTPUT: "I cannot create a custom UI. My interface is limited to text.",
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.content, "Here’s the interactive view.");
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const builder = calls.find(call => call.args.join(" ") === "agent builder build");
+  assert.ok(builder);
+  assert.equal(JSON.parse(builder.input).request, "Can you create a custom UI for entering a ZIP code?");
+});
+
 test("builder semantic key and bounded aliases survive the typed harness envelope", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");

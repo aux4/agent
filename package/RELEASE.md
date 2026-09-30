@@ -1,5 +1,11 @@
 # Release notes
 
+## Reconstruct the original UI request on short retries
+
+When a user follows an earlier UI refusal with a short retry such as “You can do it, try again,”
+the harness now sends the prior UI request—not the vague retry phrase—to the builder. This lets the
+builder produce a renderable artifact while the chat still reflects the user's latest turn.
+
 ## Retry UI refusals through the builder
 
 Short follow-ups such as “Try again” now inherit an earlier interactive-UI request when the
