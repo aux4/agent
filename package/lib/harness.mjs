@@ -359,6 +359,7 @@ function genericBrokeredArtifact(request, conversation = "") {
     version: 1,
     presentation: "inline",
     ref: `builder://${id}`,
+    key: `agent-action:${suffix}`,
     title: "Interactive tool",
     schema: { type: "Page" },
     state: {},

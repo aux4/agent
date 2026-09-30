@@ -1,5 +1,11 @@
 # Release notes
 
+## Fallback forms carry a unique semantic key
+
+Conversation-scoped brokered forms now carry their generated identity as a
+semantic artifact key. The canonical store therefore does not collapse separate
+forms onto the first generic “Interactive tool” title alias.
+
 ## Fallback artifact identity is conversation-stable
 
 Generic brokered forms now include the conversation identity in their stable id.
