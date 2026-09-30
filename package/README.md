@@ -186,8 +186,8 @@ malformed result, or failed command keeps the Markdown response and returns only
 `deployment.status: proposal` and always requires explicit confirmation; the harness never deploys
 it automatically.
 
-For an explicit create-UI request, a partial artifact that cannot bind an installed backend is
-converted into a runnable generic form rather than a text-only refusal. Its only action uses the
+For an explicit create-UI request, a partial artifact that cannot bind an installed backend—or a
+temporary builder failure—is converted into a runnable generic form rather than a text-only refusal. Its only action uses the
 artifact's own scoped namespace and is brokered by the owning agent, which may use its configured
 tools to produce the result without inventing a backend command.
 

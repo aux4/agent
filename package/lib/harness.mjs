@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 const MODES = [
@@ -347,6 +348,22 @@ function brokeredFallbackArtifact(artifact, request) {
       runtime: { version: 1, broker: "agent", actions: ["run"], request: String(request || "").slice(0, 16384) }
     }
   };
+}
+
+function genericBrokeredArtifact(request) {
+  const suffix = createHash("sha256").update(String(request || "interactive-tool")).digest("hex").slice(0, 16);
+  const id = `local/agent-action-${suffix}`;
+  return brokeredFallbackArtifact({
+    id,
+    kind: "aux4.app",
+    version: 1,
+    presentation: "inline",
+    ref: `builder://${id}`,
+    title: "Interactive tool",
+    schema: { type: "Page" },
+    state: {},
+    data: { source: "agent-action-broker" }
+  }, request);
 }
 
 function applyStableArtifactIdentity(artifact, activeArtifact) {
@@ -759,8 +776,17 @@ function ask(options) {
           : { status: "needs-input", reason: builder.reason };
       }
     } else {
-      envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
-      envelope.builder = { status: "error", code: builder.code };
+      const fallback = presentation.mode === "markdown+inline-ui"
+        ? genericBrokeredArtifact(options.request)
+        : null;
+      if (fallback) {
+        envelope.artifacts = [fallback];
+        envelope.content = interactiveConfirmation(presentation);
+        envelope.builder = { status: "done", fallback: "agent-action-broker" };
+      } else {
+        envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
+        envelope.builder = { status: "error", code: builder.code };
+      }
     }
   }
   process.stdout.write(options.output === "json" ? `${JSON.stringify(envelope)}\n` : `${content}\n`);

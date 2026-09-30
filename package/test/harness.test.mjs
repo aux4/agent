@@ -624,8 +624,8 @@ test("invalid semantic artifact metadata is rejected while legacy metadata remai
     }, folder);
     assert.equal(result.status, 0, result.stderr);
     const envelope = JSON.parse(result.stdout);
-    assert.deepEqual(envelope.artifacts, []);
-    assert.equal(envelope.builder.code, "BUILDER_INVALID_OUTPUT");
+    assert.equal(envelope.artifacts[0].schema.type, "Form");
+    assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
   }
 });
 
@@ -744,8 +744,8 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.deepEqual(envelope.artifacts, []);
-  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_INVALID_OUTPUT" });
+  assert.equal(envelope.artifacts[0].schema.type, "Form");
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
   assert.doesNotMatch(envelope.content, /secret-token/);
 });
 
@@ -760,5 +760,6 @@ test("builder timeout safely degrades with a structured code", () => {
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_TIMEOUT" });
+  assert.equal(envelope.artifacts[0].schema.type, "Form");
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
 });

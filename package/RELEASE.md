@@ -1,5 +1,12 @@
 # Release notes
 
+## Builder outage fallback remains interactive
+
+An explicit create-UI request now receives the same scoped agent-action form when
+the configured builder is temporarily unavailable, not only when the builder
+returns a partial artifact. The agent never repeats its text-only refusal while
+the UI service is recovering.
+
 ## Runnable fallback artifacts
 
 When a cloud builder returns a valid partial artifact because no installed backend
