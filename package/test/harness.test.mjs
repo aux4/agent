@@ -680,7 +680,7 @@ test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
   assert.equal(payload.currentArtifact, undefined);
 });
 
-test("needs-decision returns the partial typed artifact and a machine-readable question", () => {
+test("an inline build with an unresolved backend becomes a runnable brokered artifact", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const decisions = [{ id: "backend", question: "Which list should store these items?", options: [{ value: "groceries" }] }];
@@ -696,12 +696,19 @@ test("needs-decision returns the partial typed artifact and a machine-readable q
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.deepEqual(envelope.artifacts, [artifact]);
-  assert.equal(envelope.builder.status, "needs-decision");
-  assert.deepEqual(envelope.builder.decisions, decisions);
-  assert.match(envelope.content, /I need one choice before I can finish the interactive view\.[\s\S]*Which list should store these items\?/);
-  assert.doesNotMatch(envelope.content, /--decide|validate/);
-  assert.match(envelope.builder.reason, /--decide/);
+  const runnable = envelope.artifacts[0];
+  assert.equal(runnable.id, artifact.id);
+  assert.equal(runnable.schema.type, "Form");
+  assert.equal(runnable.schema.props.onSubmit, `artifact:${artifact.id}:run`);
+  assert.deepEqual(runnable.state, { input: "", result: "" });
+  assert.deepEqual(runnable.data.runtime, {
+    version: 1,
+    broker: "agent",
+    actions: ["run"],
+    request: "build a grocery list"
+  });
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+  assert.doesNotMatch(envelope.content, /choice|--decide|validate/i);
 });
 
 test("needs-input preserves the active artifact without a false technical-error fallback", () => {

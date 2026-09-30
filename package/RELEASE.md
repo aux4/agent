@@ -1,5 +1,13 @@
 # Release notes
 
+## Runnable fallback artifacts
+
+When a cloud builder returns a valid partial artifact because no installed backend
+command matches the requested interaction, an explicit create-UI request now still
+produces a runnable form. Its single scoped action is brokered by the owning agent,
+so the form can perform the requested lookup or tool-backed operation without
+inventing an uninstalled command or falling back to a text-only refusal.
+
 ## Recognize display-and-input UI requests
 
 Requests phrased as “display a UI where I can enter…” now deterministically select the inline

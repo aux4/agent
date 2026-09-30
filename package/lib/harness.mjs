@@ -317,6 +317,38 @@ function interactiveConfirmation(presentation) {
     : "Here’s the interactive view.";
 }
 
+function brokeredFallbackArtifact(artifact, request) {
+  if (!artifact || typeof artifact !== "object" || !artifact.id || !artifact.data) return null;
+  const namespace = `artifact:${artifact.id}`;
+  return {
+    ...artifact,
+    schema: {
+      type: "Form",
+      props: {
+        onSubmit: `${namespace}:run`,
+        submitLabel: "Run",
+        fullWidth: true
+      },
+      children: [
+        {
+          type: "TextField",
+          props: { field: "input", label: "Input", required: true, fullWidth: true }
+        },
+        {
+          type: "Textarea",
+          props: { field: "result", label: "Result", readOnly: true, minRows: 2, fullWidth: true },
+          behaviors: [{ do: "show", when: { field: "result", is: "truthy" } }]
+        }
+      ]
+    },
+    state: { input: "", result: "" },
+    data: {
+      ...artifact.data,
+      runtime: { version: 1, broker: "agent", actions: ["run"], request: String(request || "").slice(0, 16384) }
+    }
+  };
+}
+
 function applyStableArtifactIdentity(artifact, activeArtifact) {
   const current = parseOptionalJson(activeArtifact, null, "activeArtifact");
   if (!current || Array.isArray(current) || typeof current !== "object") return artifact;
@@ -709,16 +741,23 @@ function ask(options) {
       const artifact = presentation.mode === "update-existing-ui"
         ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
         : builder.artifact;
-      envelope.artifacts = [artifact];
-      const question = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
-      if (isContradictoryInteractiveProse(envelope.content)
-        && (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui")) {
+      const fallback = brokeredFallbackArtifact(artifact, options.request);
+      if (fallback && presentation.mode === "markdown+inline-ui") {
+        envelope.artifacts = [fallback];
         envelope.content = interactiveConfirmation(presentation);
+        envelope.builder = { status: "done", fallback: "agent-action-broker" };
+      } else {
+        envelope.artifacts = [artifact];
+        const question = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
+        if (isContradictoryInteractiveProse(envelope.content)
+          && (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui")) {
+          envelope.content = interactiveConfirmation(presentation);
+        }
+        envelope.content = envelope.content ? `${envelope.content}\n\n${question}` : question;
+        envelope.builder = builder.status === "needs-decision"
+          ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
+          : { status: "needs-input", reason: builder.reason };
       }
-      envelope.content = envelope.content ? `${envelope.content}\n\n${question}` : question;
-      envelope.builder = builder.status === "needs-decision"
-        ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
-        : { status: "needs-input", reason: builder.reason };
     } else {
       envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
       envelope.builder = { status: "error", code: builder.code };
