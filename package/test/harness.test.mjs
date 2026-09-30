@@ -199,6 +199,15 @@ test("a retry after a UI refusal routes through the inline builder", () => {
   assert.equal(decision.requiresBuilder, true);
 });
 
+test("displaying a UI with an input field routes through the inline builder", () => {
+  const result = run(["route", "Can you display an ui where I can enter the zip code and it shows the city", "auto"]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "markdown+inline-ui");
+  assert.equal(decision.source, "explicit-request");
+  assert.equal(decision.requiresBuilder, true);
+});
+
 test("an active artifact routes a follow-up to update-existing-ui", () => {
   const result = run(["route", "add eggs", "auto", "", '{"id":"grocery-list"}']);
   assert.equal(result.status, 0, result.stderr);

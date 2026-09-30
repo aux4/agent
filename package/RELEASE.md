@@ -1,5 +1,11 @@
 # Release notes
 
+## Recognize display-and-input UI requests
+
+Requests phrased as “display a UI where I can enter…” now deterministically select the inline
+builder path, including `display`, `render`, `input`, and `field` wording. This prevents the model's
+text-only capability disclaimer from handling an explicit interactive request.
+
 ## Reconstruct the original UI request on short retries
 
 When a user follows an earlier UI refusal with a short retry such as “You can do it, try again,”

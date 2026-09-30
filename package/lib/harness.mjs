@@ -403,7 +403,7 @@ function inferExplicitMode(request, conversationContext = "") {
   if (/\b(make|turn|publish|deploy|ship)\b.{0,50}\b(app|application)\b|\b(app|application)\b.{0,50}\b(publish|deploy|ship)\b/.test(text)) {
     return "markdown+app-proposal";
   }
-  if (/\b(inline|interactive)\b.{0,35}\b(ui|interface|widget|form|list|table|dashboard)\b|\b(show|build|create|give)\b.{0,35}\b(ui|interface|widget)\b/.test(text)) {
+  if (/\b(inline|interactive)\b.{0,35}\b(ui|interface|widget|form|list|table|dashboard)\b|\b(show|display|render|build|create|give|make)\b.{0,80}\b(?:an?\s+)?(?:ui|interface|widget|form|input|field|web app)\b|\b(?:ui|interface|widget|form)\b.{0,80}\b(?:enter|input|type|zip code|field|button)\b/.test(text)) {
     return "markdown+inline-ui";
   }
   if (isExplicitNewMutableStateRequest(request)) {
