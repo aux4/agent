@@ -706,7 +706,9 @@ test("an inline build with an unresolved backend becomes a runnable brokered art
     broker: "agent",
     actions: ["run"],
     request: "build a grocery list",
-    operation: "Perform the non-UI operation implied by this request after the user submits the form: build a grocery list"
+    operation: "Perform the non-UI operation implied by this request after the user submits the form: build a grocery list",
+    inputField: "input",
+    outputField: "result"
   });
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
   assert.doesNotMatch(envelope.content, /choice|--decide|validate/i);
@@ -746,7 +748,12 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
   assert.equal(envelope.artifacts[0].schema.type, "Form");
+  assert.equal(envelope.artifacts[0].title, "ZIP Code Lookup");
+  assert.equal(envelope.artifacts[0].schema.props.submitLabel, "Find city");
+  assert.deepEqual(envelope.artifacts[0].schema.children.map(child => child.props.label), ["ZIP code", "City"]);
+  assert.deepEqual(envelope.artifacts[0].state, { zipCode: "", city: "" });
   assert.equal(envelope.artifacts[0].data.runtime.operation, "Given the zip code, return the city.");
+  assert.deepEqual(envelope.artifacts[0].data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
   assert.doesNotMatch(envelope.content, /secret-token/);
 });

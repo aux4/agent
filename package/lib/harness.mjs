@@ -325,31 +325,65 @@ export function interactiveOperation(request) {
   return `Perform the non-UI operation implied by this request after the user submits the form: ${text}`.slice(0, 16384);
 }
 
+function interactivePresentation(request) {
+  const text = String(request || "");
+  const zipToCity = /\b(?:zip|postal)\s*code\b/i.test(text) && /\bcit(?:y|ies)\b/i.test(text);
+  if (zipToCity) {
+    return {
+      title: "ZIP Code Lookup",
+      inputField: "zipCode",
+      inputLabel: "ZIP code",
+      inputPlaceholder: "e.g. 90405",
+      outputField: "city",
+      outputLabel: "City",
+      submitLabel: "Find city",
+      handler: { type: "us-zip-city", timeoutMs: 8000 }
+    };
+  }
+  return {
+    title: "Interactive tool",
+    inputField: "input",
+    inputLabel: "Input",
+    inputPlaceholder: "",
+    outputField: "result",
+    outputLabel: "Result",
+    submitLabel: "Run",
+    handler: null
+  };
+}
+
 function brokeredFallbackArtifact(artifact, request) {
   if (!artifact || typeof artifact !== "object" || !artifact.id || !artifact.data) return null;
   const namespace = `artifact:${artifact.id}`;
+  const presentation = interactivePresentation(request);
   return {
     ...artifact,
     schema: {
       type: "Form",
       props: {
         onSubmit: `${namespace}:run`,
-        submitLabel: "Run",
+        submitLabel: presentation.submitLabel,
         fullWidth: true
       },
       children: [
         {
           type: "TextField",
-          props: { field: "input", label: "Input", required: true, fullWidth: true }
+          props: {
+            field: presentation.inputField,
+            label: presentation.inputLabel,
+            ...(presentation.inputPlaceholder ? { placeholder: presentation.inputPlaceholder } : {}),
+            required: true,
+            fullWidth: true
+          }
         },
         {
           type: "Textarea",
-          props: { field: "result", label: "Result", readOnly: true, minRows: 2, fullWidth: true },
-          behaviors: [{ do: "show", when: { field: "result", is: "truthy" } }]
+          props: { field: presentation.outputField, label: presentation.outputLabel, readOnly: true, minRows: 2, fullWidth: true },
+          behaviors: [{ do: "show", when: { field: presentation.outputField, is: "truthy" } }]
         }
       ]
     },
-    state: { input: "", result: "" },
+    state: { [presentation.inputField]: "", [presentation.outputField]: "" },
     data: {
       ...artifact.data,
       runtime: {
@@ -357,7 +391,10 @@ function brokeredFallbackArtifact(artifact, request) {
         broker: "agent",
         actions: ["run"],
         request: String(request || "").slice(0, 16384),
-        operation: interactiveOperation(request)
+        operation: interactiveOperation(request),
+        inputField: presentation.inputField,
+        outputField: presentation.outputField,
+        ...(presentation.handler ? { handler: presentation.handler } : {})
       }
     }
   };
@@ -366,6 +403,7 @@ function brokeredFallbackArtifact(artifact, request) {
 function genericBrokeredArtifact(request, conversation = "") {
   const suffix = createHash("sha256").update(`${String(conversation)}\n${String(request || "interactive-tool")}`).digest("hex").slice(0, 16);
   const id = `local/agent-action-${suffix}`;
+  const presentation = interactivePresentation(request);
   return brokeredFallbackArtifact({
     id,
     kind: "aux4.app",
@@ -373,7 +411,7 @@ function genericBrokeredArtifact(request, conversation = "") {
     presentation: "inline",
     ref: `builder://${id}`,
     key: `agent-action:${suffix}`,
-    title: "Interactive tool",
+    title: presentation.title,
     schema: { type: "Page" },
     state: {},
     data: { source: "agent-action-broker" }

@@ -189,7 +189,9 @@ it automatically.
 For an explicit create-UI request, a partial artifact that cannot bind an installed backend—or a
 temporary builder failure—is converted into a runnable generic form rather than a text-only refusal. Its only action uses the
 artifact's own scoped namespace and is brokered by the owning agent, which may use its configured
-tools to produce the result without inventing a backend command.
+tools to produce the result without inventing a backend command. Recognized interactions use
+task-specific copy and fields; for example, a ZIP-to-city request renders “ZIP Code Lookup”,
+“ZIP code”, “City”, and “Find city” rather than generic input/result labels.
 
 ### `agent route`
 

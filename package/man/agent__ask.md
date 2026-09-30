@@ -47,6 +47,10 @@ Malformed output, timeout, and command failure retain the written response and e
 non-secret error code. Updates preserve the active artifact identity. App proposals never deploy;
 they carry explicit proposal metadata requiring confirmation.
 
+If an explicit UI request falls back to the runnable action broker, recognized interactions keep
+task-specific labels and field names. A ZIP-to-city form, for example, is labeled “ZIP Code
+Lookup” with “ZIP code”, “City”, and “Find city” controls.
+
 The queue server must be running before executing this command.
 
 #### Usage
