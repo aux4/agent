@@ -304,6 +304,19 @@ function inputQuestion() {
   return "I need a little more detail before I can finish the interactive view. Please describe the screen or interaction you want changed.";
 }
 
+function isContradictoryInteractiveProse(content) {
+  const text = String(content || "").toLowerCase();
+  return /(?:cannot|can't|do not have|don't have|unable to|not able to).{0,100}(?:custom|interactive|hosted|ui|widget|interface|web app)/.test(text)
+    || /(?:capabilities|interface).{0,80}(?:limited to|only).{0,80}(?:text|specific tools)/.test(text)
+    || /only (?:respond|reply) to (?:the )?text/.test(text);
+}
+
+function interactiveConfirmation(presentation) {
+  return presentation.mode === "update-existing-ui"
+    ? "I updated the interactive view."
+    : "Here’s the interactive view.";
+}
+
 function applyStableArtifactIdentity(artifact, activeArtifact) {
   const current = parseOptionalJson(activeArtifact, null, "activeArtifact");
   if (!current || Array.isArray(current) || typeof current !== "object") return artifact;
@@ -653,6 +666,10 @@ function ask(options) {
           : builder.artifact;
         envelope.artifacts = [artifact];
         envelope.builder = { status: "done" };
+        if (isContradictoryInteractiveProse(envelope.content)
+          && (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui")) {
+          envelope.content = interactiveConfirmation(presentation);
+        }
         if (isExplicitNewMutableStateRequest(options.request)) {
           envelope.content = /\b(?:list|checklist)\b/i.test(options.request)
             ? "Here’s your new list."
@@ -668,6 +685,10 @@ function ask(options) {
         : builder.artifact;
       envelope.artifacts = [artifact];
       const question = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
+      if (isContradictoryInteractiveProse(envelope.content)
+        && (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui")) {
+        envelope.content = interactiveConfirmation(presentation);
+      }
       envelope.content = envelope.content ? `${envelope.content}\n\n${question}` : question;
       envelope.builder = builder.status === "needs-decision"
         ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }

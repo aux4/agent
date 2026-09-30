@@ -53,7 +53,7 @@ fs.appendFileSync(process.env.CALL_LOG, JSON.stringify({args,input}) + "\\n");
 const command = args.join(" ");
 if (command.includes("config get")) process.stdout.write("{}\\n");
 else if (command.includes("playbook hook-before")) process.stdout.write("");
-else if (command.includes("ai agent ask")) process.stdout.write("Here is your written answer.\\n");
+else if (command.includes("ai agent ask")) process.stdout.write((process.env.MODEL_OUTPUT || "Here is your written answer.") + "\\n");
 else if (command.includes("playbook hook-after")) process.stdout.write("");
 else if (command === "agent builder build" || command.startsWith("cloud ")) {
   if (process.env.BUILDER_DELAY_MS) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.BUILDER_DELAY_MS));
@@ -435,6 +435,21 @@ test("inline UI uses local builder argv and preserves Markdown content", () => {
     auto: true,
     steps: 10
   });
+});
+
+test("inline UI replaces a contradictory model refusal when the builder returns an artifact", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({ request: "create a custom UI for entering a ZIP code" }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    MODEL_OUTPUT: "I cannot create a custom UI. My capabilities are limited to text-based communication.",
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.content, "Here’s the interactive view.");
+  assert.deepEqual(envelope.artifacts, [artifact]);
 });
 
 test("builder semantic key and bounded aliases survive the typed harness envelope", () => {
