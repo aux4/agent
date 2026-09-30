@@ -350,8 +350,8 @@ function brokeredFallbackArtifact(artifact, request) {
   };
 }
 
-function genericBrokeredArtifact(request) {
-  const suffix = createHash("sha256").update(String(request || "interactive-tool")).digest("hex").slice(0, 16);
+function genericBrokeredArtifact(request, conversation = "") {
+  const suffix = createHash("sha256").update(`${String(conversation)}\n${String(request || "interactive-tool")}`).digest("hex").slice(0, 16);
   const id = `local/agent-action-${suffix}`;
   return brokeredFallbackArtifact({
     id,
@@ -777,7 +777,7 @@ function ask(options) {
       }
     } else {
       const fallback = presentation.mode === "markdown+inline-ui"
-        ? genericBrokeredArtifact(options.request)
+        ? genericBrokeredArtifact(options.request, options.conversation)
         : null;
       if (fallback) {
         envelope.artifacts = [fallback];

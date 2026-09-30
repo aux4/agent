@@ -1,5 +1,11 @@
 # Release notes
 
+## Fallback artifact identity is conversation-stable
+
+Generic brokered forms now include the conversation identity in their stable id.
+The same UI request in a new conversation therefore creates a distinct canonical
+artifact instead of conflicting with an older conversation's saved form.
+
 ## Builder outage fallback remains interactive
 
 An explicit create-UI request now receives the same scoped agent-action form when
