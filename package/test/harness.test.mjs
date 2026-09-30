@@ -705,7 +705,8 @@ test("an inline build with an unresolved backend becomes a runnable brokered art
     version: 1,
     broker: "agent",
     actions: ["run"],
-    request: "build a grocery list"
+    request: "build a grocery list",
+    operation: "Perform the non-UI operation implied by this request after the user submits the form: build a grocery list"
   });
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
   assert.doesNotMatch(envelope.content, /choice|--decide|validate/i);
@@ -737,7 +738,7 @@ test("needs-input preserves the active artifact without a false technical-error 
 test("malformed builder output safely degrades without exposing stderr", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
-  const result = run(askArgs(), {
+  const result = run(askArgs({ request: "Can you display an ui where I can enter the zip code and it shows the city" }), {
     AUX4_BIN: fake,
     CALL_LOG: log,
     BUILDER_OUTPUT: "not-json secret-token"
@@ -745,6 +746,7 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
   assert.equal(envelope.artifacts[0].schema.type, "Form");
+  assert.equal(envelope.artifacts[0].data.runtime.operation, "Given the zip code, return the city.");
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
   assert.doesNotMatch(envelope.content, /secret-token/);
 });

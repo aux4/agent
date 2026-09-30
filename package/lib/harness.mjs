@@ -318,6 +318,13 @@ function interactiveConfirmation(presentation) {
     : "Here’s the interactive view.";
 }
 
+export function interactiveOperation(request) {
+  const text = String(request || "").trim();
+  const match = text.match(/(?:where|so)\s+(?:i|the user)\s+can\s+(?:enter|input|provide|choose|select)\s+(.+?)\s+and\s+(?:it\s+)?(?:shows?|returns?|displays?|calculates?|finds?)\s+(.+?)(?:[?.!]|$)/i);
+  if (match) return `Given ${match[1].trim()}, return ${match[2].trim()}.`;
+  return `Perform the non-UI operation implied by this request after the user submits the form: ${text}`.slice(0, 16384);
+}
+
 function brokeredFallbackArtifact(artifact, request) {
   if (!artifact || typeof artifact !== "object" || !artifact.id || !artifact.data) return null;
   const namespace = `artifact:${artifact.id}`;
@@ -345,7 +352,13 @@ function brokeredFallbackArtifact(artifact, request) {
     state: { input: "", result: "" },
     data: {
       ...artifact.data,
-      runtime: { version: 1, broker: "agent", actions: ["run"], request: String(request || "").slice(0, 16384) }
+      runtime: {
+        version: 1,
+        broker: "agent",
+        actions: ["run"],
+        request: String(request || "").slice(0, 16384),
+        operation: interactiveOperation(request)
+      }
     }
   };
 }
