@@ -374,7 +374,20 @@ function isExplicitNewMutableStateRequest(request) {
     && inferObviousMutableStateMode(request) === "markdown+inline-ui";
 }
 
-function inferExplicitMode(request) {
+function isRetryAfterInteractiveRefusal(request, conversationContext) {
+  const retry = String(request || "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!/^(?:try again|you can do it(?:,? try again)?|do it|go ahead|please try again|retry)$/.test(retry)) return false;
+  const context = String(conversationContext || "").toLowerCase();
+  return /(?:cannot|can't|do not have|don't have|unable to|not able to).{0,120}(?:custom|interactive|hosted|ui|widget|interface|web app)/.test(context)
+    && /\b(?:custom|interactive|ui|widget|interface|form|input|button|web app)\b/.test(context);
+}
+
+function inferExplicitMode(request, conversationContext = "") {
   const text = String(request || "").toLowerCase();
   if (/\b(markdown|plain text|text only|no ui|without (a |the )?ui)\b/.test(text)) return "markdown";
   if (/\b(make|turn|publish|deploy|ship)\b.{0,50}\b(app|application)\b|\b(app|application)\b.{0,50}\b(publish|deploy|ship)\b/.test(text)) {
@@ -384,6 +397,9 @@ function inferExplicitMode(request) {
     return "markdown+inline-ui";
   }
   if (isExplicitNewMutableStateRequest(request)) {
+    return "markdown+inline-ui";
+  }
+  if (isRetryAfterInteractiveRefusal(request, conversationContext)) {
     return "markdown+inline-ui";
   }
   return null;
@@ -455,7 +471,7 @@ function routePresentation({
     };
   }
 
-  const naturalOverride = inferExplicitMode(request);
+  const naturalOverride = inferExplicitMode(request, conversationContext);
   if (naturalOverride) {
     return {
       version: 1,

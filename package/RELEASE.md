@@ -1,5 +1,11 @@
 # Release notes
 
+## Retry UI refusals through the builder
+
+Short follow-ups such as “Try again” now inherit an earlier interactive-UI request when the
+conversation context contains the agent's contradictory UI refusal. The presentation router then
+selects the inline builder path instead of accepting another text-only refusal.
+
 ## Builder clarification responses remain interactive
 
 A valid builder `needs-input` response now preserves its typed artifact, retains stable active
