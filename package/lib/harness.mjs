@@ -508,7 +508,7 @@ function isActiveArtifactViewRequest(request) {
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return false;
-  if (/\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|deploy|publish|ship|same)\b|\b(?:instead of|not working|doesnt work|does not work)\b/.test(text)) return false;
+  if (/\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|deploy|publish|ship)\b|\b(?:instead of|not working|doesnt work|does not work)\b/.test(text)) return false;
   if (/\b(?:markdown|plain text|text only|no ui|without (?:a |the )?ui|how to|how do|why|explain)\b/.test(text)) return false;
 
   const polite = "(?:(?:please |(?:can|could|would|will) you (?:please )?))?";
@@ -528,7 +528,7 @@ function isArtifactUpdateRequest(request) {
     .replace(/\s+/g, " ")
     .trim();
   if (!text || /\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)) return false;
-  const mutation = /\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|fix|improve|modify|adjust|same)\b|\b(?:instead of|not working|doesn?t work|does not work)\b/;
+  const mutation = /\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|fix|improve|modify|adjust)\b|\b(?:instead of|not working|doesn?t work|does not work)\b/;
   const target = /\b(?:ui|interface|widget|form|view|app|application|artifact|it|this|that)\b/;
   return mutation.test(text) && target.test(text);
 }
