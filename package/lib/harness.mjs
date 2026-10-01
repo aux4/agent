@@ -103,12 +103,19 @@ function makeBuilderPayload(options) {
     && currentArtifact.schema && typeof currentArtifact.schema === "object"
     && currentArtifact.data && typeof currentArtifact.data === "object"
     && currentArtifact.data.app && currentArtifact.data.package;
+  // Brokered inline artifacts intentionally carry only non-executable runtime
+  // metadata, not a builder package. They are still complete renderable UIs and
+  // must be sent to the builder on an update so it can modify the existing form
+  // instead of treating the request as a new application.
+  const hasBrokeredArtifact = currentArtifact?.data?.source === "agent-action-broker"
+    && currentArtifact.schema && typeof currentArtifact.schema === "object"
+    && currentArtifact.state && typeof currentArtifact.state === "object";
 
   const payload = {
     request,
     ...(context ? { context } : {}),
     ...(currentArtifact?.ref ? { currentRef: currentArtifact.ref } : {}),
-    ...(hasCompleteArtifact ? { currentArtifact } : {}),
+    ...((hasCompleteArtifact || hasBrokeredArtifact) ? { currentArtifact } : {}),
     ...(Object.keys(decisions).length ? { decisions } : {}),
     ...(backends.length ? { backends } : {}),
     auto: options.builderAuto !== "false",
@@ -188,6 +195,9 @@ function normalizeTypedArtifact(artifact) {
   const aliasesValid = artifact?.aliases === undefined || validAliases(artifact.aliases);
   const validRevision = artifact?.revision === undefined
     || (Number.isInteger(artifact.revision) && artifact.revision > 0);
+  const brokeredArtifact = artifact?.data?.source === "agent-action-broker"
+    && artifact.schema && typeof artifact.schema === "object"
+    && artifact.state && typeof artifact.state === "object";
   const validArtifact = artifact && !Array.isArray(artifact) && typeof artifact === "object"
     && typeof artifact.id === "string" && artifact.id.length > 0
     && artifact.kind === "aux4.app"
@@ -199,8 +209,10 @@ function normalizeTypedArtifact(artifact) {
     && artifact.state && !Array.isArray(artifact.state) && typeof artifact.state === "object"
     && artifact.data && !Array.isArray(artifact.data) && typeof artifact.data === "object"
     && validKey && aliasesValid && validRevision
-    && artifact.data.app && !Array.isArray(artifact.data.app) && typeof artifact.data.app === "object"
-    && artifact.data.package && !Array.isArray(artifact.data.package) && typeof artifact.data.package === "object";
+    && (brokeredArtifact || (
+      artifact.data.app && !Array.isArray(artifact.data.app) && typeof artifact.data.app === "object"
+      && artifact.data.package && !Array.isArray(artifact.data.package) && typeof artifact.data.package === "object"
+    ));
   return validArtifact ? {
     id: artifact.id,
     kind: artifact.kind,
@@ -327,15 +339,20 @@ export function interactiveOperation(request) {
 
 function interactivePresentation(request) {
   const text = String(request || "");
-  const zipToCity = /\b(?:zip|postal)\s*code\b/i.test(text) && /\bcit(?:y|ies)\b/i.test(text);
+  // Treat both singular and plural wording as the ZIP lookup operation. The
+  // update request commonly says “zip codes” and “cities”; missing the plural
+  // form would silently fall back to the generic input/result artifact and
+  // discard the existing ZIP handler.
+  const zipToCity = /\b(?:zip|postal)\s*codes?\b/i.test(text) && /\bcit(?:y|ies)\b/i.test(text);
   if (zipToCity) {
+    const multipleCities = /\b(?:possible|multiple|more than one|cities)\b/i.test(text);
     return {
       title: "ZIP Code Lookup",
       inputField: "zipCode",
       inputLabel: "ZIP code",
       inputPlaceholder: "e.g. 90405",
       outputField: "city",
-      outputLabel: "City",
+      outputLabel: multipleCities ? "Cities" : "City",
       submitLabel: "Find city",
       handler: { type: "us-zip-city", timeoutMs: 8000 }
     };
@@ -352,10 +369,44 @@ function interactivePresentation(request) {
   };
 }
 
+function brokeredPresentation(artifact, request) {
+  const requested = interactivePresentation(request);
+  if (requested.handler) return requested;
+
+  const runtime = artifact?.data?.runtime || {};
+  const identity = [artifact?.title, ...(Array.isArray(artifact?.aliases) ? artifact.aliases : [])]
+    .filter(Boolean).join(" ").toLowerCase();
+  const isZipArtifact = runtime.handler?.type === "us-zip-city"
+    || /\b(?:zip|postal)\b/.test(identity)
+    || /\bzip-code\b/.test(identity);
+  if (!isZipArtifact) return requested;
+
+  // A follow-up may describe the desired result (“show a list of cities”) without
+  // repeating the original ZIP operation. Rebuild the brokered form from the
+  // existing operation instead of dropping back to generic Input/Result fields.
+  const children = Array.isArray(artifact?.schema?.children) ? artifact.schema.children : [];
+  const fieldChild = field => children.find(child => child?.props?.field === field);
+  const inputField = runtime.inputField === "zipCode" ? "zipCode" : "zipCode";
+  const outputField = runtime.outputField === "city" ? "city" : "city";
+  const inputChild = fieldChild(runtime.inputField) || fieldChild("zipCode");
+  const outputChild = fieldChild(runtime.outputField) || fieldChild("city");
+  const multipleCities = /\bcit(?:y|ies)\b|\b(?:possible|multiple|more than one|list)\b/i.test(String(request || ""));
+  return {
+    title: "ZIP Code Lookup",
+    inputField,
+    inputLabel: "ZIP code",
+    inputPlaceholder: inputChild?.props?.placeholder || "e.g. 90405",
+    outputField,
+    outputLabel: multipleCities ? "Cities" : outputChild?.props?.label || "City",
+    submitLabel: "Find city",
+    handler: { type: "us-zip-city", timeoutMs: 8000 }
+  };
+}
+
 function brokeredFallbackArtifact(artifact, request) {
   if (!artifact || typeof artifact !== "object" || !artifact.id || !artifact.data) return null;
   const namespace = `artifact:${artifact.id}`;
-  const presentation = interactivePresentation(request);
+  const presentation = brokeredPresentation(artifact, request);
   return {
     ...artifact,
     schema: {
@@ -457,7 +508,7 @@ function isActiveArtifactViewRequest(request) {
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return false;
-  if (/\b(?:add|append|remove|delete|update|edit|change|replace|rename|filter|sort|clear|complete|check|uncheck|deploy|publish|ship)\b/.test(text)) return false;
+  if (/\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|deploy|publish|ship|same)\b|\b(?:instead of|not working|doesnt work|does not work)\b/.test(text)) return false;
   if (/\b(?:markdown|plain text|text only|no ui|without (?:a |the )?ui|how to|how do|why|explain)\b/.test(text)) return false;
 
   const polite = "(?:(?:please |(?:can|could|would|will) you (?:please )?))?";
@@ -467,6 +518,19 @@ function isActiveArtifactViewRequest(request) {
   const target = "(?:list|checklist|app|application|ui|interface|view|dashboard|form|table|tracker|artifact|it|this|that)";
   const namedList = "(?:(?:[a-z0-9-]+ ){0,4}(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) (?:list|checklist))";
   return new RegExp(`^${polite}${verb} ${determiner}(?:${namedList}|${qualifier}${target})(?: again| now| please)?$`).test(text);
+}
+
+function isArtifactUpdateRequest(request) {
+  const text = String(request || "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text || /\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)) return false;
+  const mutation = /\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|fix|improve|modify|adjust|same)\b|\b(?:instead of|not working|doesn?t work|does not work)\b/;
+  const target = /\b(?:ui|interface|widget|form|view|app|application|artifact|it|this|that)\b/;
+  return mutation.test(text) && target.test(text);
 }
 
 function isExplicitNewMutableStateRequest(request) {
@@ -579,6 +643,21 @@ function routePresentation({
       criterion: "benefit-from-manipulating-structured-state",
       requiresBuilder: false,
       reuseActiveArtifact: true
+    };
+  }
+
+  // Mutation requests must win over the generic "show/build a form" heuristic.
+  // Otherwise a request such as "update the UI" is classified as a fresh
+  // markdown+inline-ui turn and the fallback creates a second artifact.
+  if (reusableArtifact && isArtifactUpdateRequest(request)) {
+    return {
+      version: 1,
+      mode: "update-existing-ui",
+      source: "active-artifact",
+      confidence: 1,
+      reason: "request-updates-active-artifact",
+      criterion: "benefit-from-manipulating-structured-state",
+      requiresBuilder: true
     };
   }
 
@@ -811,6 +890,10 @@ function ask(options) {
         ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
         : builder.artifact;
       const fallback = brokeredFallbackArtifact(artifact, options.request);
+      // A builder clarification is intentionally user-visible. Do not turn a
+      // needs-input/needs-decision response for an existing artifact into a
+      // new generic form; that loses the builder's requested context and makes
+      // an update look like a replacement UI.
       if (fallback && presentation.mode === "markdown+inline-ui") {
         envelope.artifacts = [fallback];
         envelope.content = interactiveConfirmation(presentation);
@@ -828,9 +911,14 @@ function ask(options) {
           : { status: "needs-input", reason: builder.reason };
       }
     } else {
-      const fallback = presentation.mode === "markdown+inline-ui"
-        ? genericBrokeredArtifact(options.request, options.conversation)
-        : null;
+      const active = completeActiveArtifact(options.activeArtifact);
+      const fallback = presentation.mode === "update-existing-ui"
+        && builder.code !== "BUILDER_INVALID_OUTPUT"
+        && active
+        ? brokeredFallbackArtifact(active, options.request)
+        : presentation.mode === "markdown+inline-ui"
+          ? genericBrokeredArtifact(options.request, options.conversation)
+          : null;
       if (fallback) {
         envelope.artifacts = [fallback];
         envelope.content = interactiveConfirmation(presentation);

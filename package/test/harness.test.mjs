@@ -132,6 +132,30 @@ const activeGroceryArtifact = checklistArtifact({
   items: sourceItems
 });
 
+const activeZipArtifact = {
+  id: "local/agent-ui-demo/agent-action-77fdfe8fd7ef46d0-d341520c2e",
+  kind: "aux4.app",
+  version: 1,
+  presentation: "inline",
+  ref: "artifact://agent-ui-demo/agent-action-77fdfe8fd7ef46d0-d341520c2e",
+  title: "ZIP Code Lookup",
+  schema: { type: "Form" },
+  state: { zipCode: "", city: "" },
+  data: {
+    source: "agent-action-broker",
+    runtime: {
+      version: 1,
+      broker: "agent",
+      actions: ["run"],
+      request: "look up a ZIP code",
+      operation: "Given the zip code, return the city.",
+      inputField: "zipCode",
+      outputField: "city",
+      handler: { type: "us-zip-city", timeoutMs: 8000 }
+    }
+  }
+};
+
 const splitTransaction = {
   transactionId: "split-grocery-7",
   source: {
@@ -205,6 +229,15 @@ test("displaying a UI with an input field routes through the inline builder", ()
   const decision = JSON.parse(result.stdout);
   assert.equal(decision.mode, "markdown+inline-ui");
   assert.equal(decision.source, "explicit-request");
+  assert.equal(decision.requiresBuilder, true);
+});
+
+test("a plural ZIP/cities update keeps the active brokered artifact", () => {
+  const result = run(["route", "Can show a list of possible cities, some zip codes may return more than one, update the ui", "auto", "", JSON.stringify(activeZipArtifact)]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "update-existing-ui");
+  assert.equal(decision.source, "active-artifact");
   assert.equal(decision.requiresBuilder, true);
 });
 
@@ -757,6 +790,52 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.deepEqual(envelope.artifacts[0].data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
   assert.doesNotMatch(envelope.content, /secret-token/);
+});
+
+test("an update fallback preserves the ZIP artifact and plural result label", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "Can show a list of possible cities, some zip codes may return more than one, update the ui",
+    presentation: "auto",
+    activeArtifact: JSON.stringify(activeZipArtifact),
+    builderTimeoutMs: "1000"
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_DELAY_MS: "1500"
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  const updated = envelope.artifacts[0];
+  assert.equal(updated.id, activeZipArtifact.id);
+  assert.equal(updated.ref, activeZipArtifact.ref);
+  assert.equal(updated.title, "ZIP Code Lookup");
+  assert.deepEqual(updated.schema.children.map(child => child.props.label), ["ZIP code", "Cities"]);
+  assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+});
+
+test("an update that only mentions cities reuses the existing ZIP operation", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "Can you update the ui to show a list of cities instead of only one, there are a few cases it returns more than one",
+    presentation: "auto",
+    activeArtifact: JSON.stringify(activeZipArtifact),
+    builderTimeoutMs: "1000"
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_DELAY_MS: "1500"
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  const updated = envelope.artifacts[0];
+  assert.equal(updated.title, "ZIP Code Lookup");
+  assert.deepEqual(updated.schema.children.map(child => child.props.field), ["zipCode", "city"]);
+  assert.deepEqual(updated.schema.children.map(child => child.props.label), ["ZIP code", "Cities"]);
+  assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
 });
 
 test("builder timeout safely degrades with a structured code", () => {
