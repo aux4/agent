@@ -337,6 +337,78 @@ export function interactiveOperation(request) {
   return `Perform the non-UI operation implied by this request after the user submits the form: ${text}`.slice(0, 16384);
 }
 
+function zipListRequested(request) {
+  const text = String(request || "");
+  return /\bcit(?:y|ies)\b/i.test(text)
+    && /\b(?:list|all|multiple|more than one|each|instead of|text\s*area|textarea)\b/i.test(text);
+}
+
+function zipCitiesRepeater() {
+  return {
+    type: "Repeater",
+    props: { field: "cities", label: "Cities", itemLabel: "City", fixed: true, layout: "card" },
+    children: [{
+      type: "TextField",
+      props: { field: "name", label: "City", readOnly: true, fullWidth: true }
+    }],
+    // The empty result is intentionally hidden until the first lookup.  A
+    // zero-length array is truthy in JavaScript, so use an explicit flag.
+    behaviors: [{ do: "show", when: { field: "citiesReady", is: "truthy" } }]
+  };
+}
+
+function forceZipCityListArtifact(artifact, request) {
+  if (!artifact || typeof artifact !== "object") return artifact;
+  if (artifact.data?.runtime?.handler?.type !== "us-zip-city" || !zipListRequested(request)) return artifact;
+
+  const runtime = artifact.data.runtime || {};
+  const children = Array.isArray(artifact.schema?.children) ? artifact.schema.children : [];
+  const inputChild = children.find(child => child?.props?.field === "zipCode");
+  const inputProps = {
+    ...(inputChild?.props || {}),
+    field: "zipCode",
+    label: "ZIP code",
+    placeholder: inputChild?.props?.placeholder || "e.g. 90405",
+    required: true,
+    fullWidth: true
+  };
+  const currentState = artifact.state && typeof artifact.state === "object" && !Array.isArray(artifact.state)
+    ? artifact.state
+    : {};
+  const existingCities = Array.isArray(currentState.cities)
+    ? currentState.cities
+    : typeof currentState.city === "string"
+      ? currentState.city.split(/\r?\n/).map(name => name.trim()).filter(Boolean).map(name => ({ name }))
+      : [];
+  const namespace = `artifact:${artifact.id}`;
+  return {
+    ...artifact,
+    schema: {
+      type: "Form",
+      props: { ...(artifact.schema?.props || {}), onSubmit: `${namespace}:run`, submitLabel: "Find city", fullWidth: true },
+      children: [
+        { type: "TextField", props: inputProps },
+        zipCitiesRepeater()
+      ]
+    },
+    state: {
+      ...currentState,
+      zipCode: currentState.zipCode || "",
+      cities: existingCities,
+      citiesReady: existingCities.length > 0
+    },
+    data: {
+      ...artifact.data,
+      runtime: {
+        ...runtime,
+        inputField: "zipCode",
+        outputField: "cities",
+        handler: { type: "us-zip-city", timeoutMs: runtime.handler?.timeoutMs || 8000 }
+      }
+    }
+  };
+}
+
 function interactivePresentation(request) {
   const text = String(request || "");
   // Treat both singular and plural wording as the ZIP lookup operation. The
@@ -346,13 +418,15 @@ function interactivePresentation(request) {
   const zipToCity = /\b(?:zip|postal)\s*codes?\b/i.test(text) && /\bcit(?:y|ies)\b/i.test(text);
   if (zipToCity) {
     const multipleCities = /\b(?:possible|multiple|more than one|cities)\b/i.test(text);
+    const listCities = zipListRequested(text);
     return {
       title: "ZIP Code Lookup",
       inputField: "zipCode",
       inputLabel: "ZIP code",
       inputPlaceholder: "e.g. 90405",
-      outputField: "city",
-      outputLabel: multipleCities ? "Cities" : "City",
+      outputField: listCities ? "cities" : "city",
+      outputLabel: listCities || multipleCities ? "Cities" : "City",
+      listCities,
       submitLabel: "Find city",
       handler: { type: "us-zip-city", timeoutMs: 8000 }
     };
@@ -387,7 +461,8 @@ function brokeredPresentation(artifact, request) {
   const children = Array.isArray(artifact?.schema?.children) ? artifact.schema.children : [];
   const fieldChild = field => children.find(child => child?.props?.field === field);
   const inputField = runtime.inputField === "zipCode" ? "zipCode" : "zipCode";
-  const outputField = runtime.outputField === "city" ? "city" : "city";
+  const listCities = zipListRequested(request);
+  const outputField = listCities ? "cities" : "city";
   const inputChild = fieldChild(runtime.inputField) || fieldChild("zipCode");
   const outputChild = fieldChild(runtime.outputField) || fieldChild("city");
   const multipleCities = /\bcit(?:y|ies)\b|\b(?:possible|multiple|more than one|list)\b/i.test(String(request || ""));
@@ -397,7 +472,8 @@ function brokeredPresentation(artifact, request) {
     inputLabel: "ZIP code",
     inputPlaceholder: inputChild?.props?.placeholder || "e.g. 90405",
     outputField,
-    outputLabel: multipleCities ? "Cities" : outputChild?.props?.label || "City",
+    outputLabel: listCities || multipleCities ? "Cities" : outputChild?.props?.label || "City",
+    listCities,
     submitLabel: "Find city",
     handler: { type: "us-zip-city", timeoutMs: 8000 }
   };
@@ -407,6 +483,24 @@ function brokeredFallbackArtifact(artifact, request) {
   if (!artifact || typeof artifact !== "object" || !artifact.id || !artifact.data) return null;
   const namespace = `artifact:${artifact.id}`;
   const presentation = brokeredPresentation(artifact, request);
+  const output = presentation.listCities
+    ? zipCitiesRepeater()
+    : {
+      type: "TextArea",
+      props: { field: presentation.outputField, label: presentation.outputLabel, readOnly: true, minRows: 2, fullWidth: true },
+      behaviors: [{ do: "show", when: { field: presentation.outputField, is: "truthy" } }]
+    };
+  const currentState = artifact.state && typeof artifact.state === "object" && !Array.isArray(artifact.state)
+    ? artifact.state
+    : {};
+  const listState = presentation.listCities
+    ? {
+      ...currentState,
+      [presentation.inputField]: currentState[presentation.inputField] || "",
+      cities: Array.isArray(currentState.cities) ? currentState.cities : [],
+      citiesReady: Array.isArray(currentState.cities) && currentState.cities.length > 0
+    }
+    : { [presentation.inputField]: "", [presentation.outputField]: "" };
   return {
     ...artifact,
     schema: {
@@ -427,14 +521,10 @@ function brokeredFallbackArtifact(artifact, request) {
             fullWidth: true
           }
         },
-        {
-          type: "TextArea",
-          props: { field: presentation.outputField, label: presentation.outputLabel, readOnly: true, minRows: 2, fullWidth: true },
-          behaviors: [{ do: "show", when: { field: presentation.outputField, is: "truthy" } }]
-        }
+        output
       ]
     },
-    state: { [presentation.inputField]: "", [presentation.outputField]: "" },
+    state: listState,
     data: {
       ...artifact.data,
       runtime: {
@@ -867,9 +957,14 @@ function ask(options) {
         envelope.artifactTransaction = builder.artifactTransaction;
         envelope.builder = { status: "done" };
       } else {
-        const artifact = presentation.mode === "update-existing-ui"
+        const builtArtifact = presentation.mode === "update-existing-ui"
           ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
           : builder.artifact;
+        // The builder may preserve the old ZIP TextArea while acknowledging a
+        // request for a list. Normalize that semantic change at the harness
+        // boundary so a weak/ambiguous builder response cannot silently ship
+        // the unchanged single-city UI.
+        const artifact = forceZipCityListArtifact(builtArtifact, options.request);
         envelope.artifacts = [artifact];
         envelope.builder = { status: "done" };
         if (isContradictoryInteractiveProse(envelope.content)
@@ -886,9 +981,10 @@ function ask(options) {
         }
       }
     } else if (builder.status === "needs-decision" || builder.status === "needs-input") {
-      const artifact = presentation.mode === "update-existing-ui"
+      const builtArtifact = presentation.mode === "update-existing-ui"
         ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
         : builder.artifact;
+      const artifact = forceZipCityListArtifact(builtArtifact, options.request);
       const fallback = brokeredFallbackArtifact(artifact, options.request);
       // A builder clarification is intentionally user-visible. Do not turn a
       // needs-input/needs-decision response for an existing artifact into a

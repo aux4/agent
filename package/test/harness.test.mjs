@@ -833,9 +833,36 @@ test("an update that only mentions cities reuses the existing ZIP operation", ()
   const envelope = JSON.parse(result.stdout);
   const updated = envelope.artifacts[0];
   assert.equal(updated.title, "ZIP Code Lookup");
-  assert.deepEqual(updated.schema.children.map(child => child.props.field), ["zipCode", "city"]);
+  assert.deepEqual(updated.schema.children.map(child => child.props.field), ["zipCode", "cities"]);
   assert.deepEqual(updated.schema.children.map(child => child.props.label), ["ZIP code", "Cities"]);
+  assert.equal(updated.schema.children[1].type, "Repeater");
+  assert.deepEqual(updated.schema.children[1].props, {
+    field: "cities", label: "Cities", itemLabel: "City", fixed: true, layout: "card"
+  });
+  assert.deepEqual(updated.state, { zipCode: "", city: "", cities: [], citiesReady: false });
+  assert.equal(updated.data.runtime.outputField, "cities");
   assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
+});
+
+test("a completed builder update cannot silently keep the ZIP TextArea", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "Can you update the ui to show the cities in a list instead of a text area, if it returns multiple cities to the same zip code it should show all of them",
+    presentation: "update-existing-ui",
+    activeArtifact: JSON.stringify(activeZipArtifact)
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact: activeZipArtifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  const updated = envelope.artifacts[0];
+  assert.equal(updated.id, activeZipArtifact.id);
+  assert.equal(updated.schema.children[1].type, "Repeater");
+  assert.equal(updated.schema.children[1].props.field, "cities");
+  assert.equal(updated.data.runtime.outputField, "cities");
 });
 
 test("builder timeout safely degrades with a structured code", () => {

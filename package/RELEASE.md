@@ -1,5 +1,12 @@
 # Release notes
 
+## ZIP city updates use a real list
+
+Requests to show all cities for a ZIP code now replace the single output text area
+with a structured `Repeater`. The harness enforces this schema change even when a
+builder returns the prior artifact unchanged, and the agent action returns one
+structured row per distinct city.
+
 ## ZIP result field uses the registered component name
 
 Brokered ZIP lookup forms now emit the registered `TextArea` schema type for the City output.
