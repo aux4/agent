@@ -141,7 +141,8 @@ aux4 agent ask "keep a grocery list for milk and eggs" --output json
 
 `content` is always the accompanying Markdown response. The classifier chooses only one of the
 known presentation modes; it never creates a schema or artifact. In JSON mode, a UI decision calls
-the configured builder and accepts only its typed `aux4.app` artifact contract. Text output and
+the configured builder and accepts only its typed `aux4.app` artifact contract. Builder owns the
+layout and runtime action schema; the harness does not rewrite a successful artifact. Text output and
 `markdown` decisions never call the builder.
 
 Optional artifact `key` and `aliases` metadata survives the same strict typed boundary. Keys use a

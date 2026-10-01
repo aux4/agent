@@ -851,7 +851,7 @@ test("an update that only mentions cities reuses the existing ZIP operation", ()
   assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
 });
 
-test("a completed builder update cannot silently keep the ZIP TextArea", () => {
+test("the harness does not rewrite a successful builder artifact", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({
@@ -867,10 +867,8 @@ test("a completed builder update cannot silently keep the ZIP TextArea", () => {
   const envelope = JSON.parse(result.stdout);
   const updated = envelope.artifacts[0];
   assert.equal(updated.id, activeZipArtifact.id);
-  assert.equal(updated.schema.children[1].type, "Box");
-  assert.equal(updated.schema.children[1].children[1].type, "Repeat");
-  assert.equal(updated.schema.children[1].children[1].props.field, "cities");
-  assert.equal(updated.data.runtime.outputField, "cities");
+  assert.deepEqual(updated.schema, activeZipArtifact.schema);
+  assert.equal(updated.data.runtime.outputField, "city");
 });
 
 test("builder timeout safely degrades with a structured code", () => {

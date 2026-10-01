@@ -365,58 +365,6 @@ function zipCitiesList() {
   };
 }
 
-function forceZipCityListArtifact(artifact, request) {
-  if (!artifact || typeof artifact !== "object") return artifact;
-  if (artifact.data?.runtime?.handler?.type !== "us-zip-city" || !zipListRequested(request)) return artifact;
-
-  const runtime = artifact.data.runtime || {};
-  const children = Array.isArray(artifact.schema?.children) ? artifact.schema.children : [];
-  const inputChild = children.find(child => child?.props?.field === "zipCode");
-  const inputProps = {
-    ...(inputChild?.props || {}),
-    field: "zipCode",
-    label: "ZIP code",
-    placeholder: inputChild?.props?.placeholder || "e.g. 90405",
-    required: true,
-    fullWidth: true
-  };
-  const currentState = artifact.state && typeof artifact.state === "object" && !Array.isArray(artifact.state)
-    ? artifact.state
-    : {};
-  const existingCities = Array.isArray(currentState.cities)
-    ? currentState.cities
-    : typeof currentState.city === "string"
-      ? currentState.city.split(/\r?\n/).map(name => name.trim()).filter(Boolean).map(name => ({ name }))
-      : [];
-  const namespace = `artifact:${artifact.id}`;
-  return {
-    ...artifact,
-    schema: {
-      type: "Form",
-      props: { ...(artifact.schema?.props || {}), onSubmit: `${namespace}:run`, submitLabel: "Find city", fullWidth: true },
-      children: [
-        { type: "TextField", props: inputProps },
-        zipCitiesList()
-      ]
-    },
-    state: {
-      ...currentState,
-      zipCode: currentState.zipCode || "",
-      cities: existingCities,
-      citiesReady: existingCities.length > 0
-    },
-    data: {
-      ...artifact.data,
-      runtime: {
-        ...runtime,
-        inputField: "zipCode",
-        outputField: "cities",
-        handler: { type: "us-zip-city", timeoutMs: runtime.handler?.timeoutMs || 8000 }
-      }
-    }
-  };
-}
-
 function interactivePresentation(request) {
   const text = String(request || "");
   // Treat both singular and plural wording as the ZIP lookup operation. The
@@ -968,11 +916,9 @@ function ask(options) {
         const builtArtifact = presentation.mode === "update-existing-ui"
           ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
           : builder.artifact;
-        // The builder may preserve the old ZIP TextArea while acknowledging a
-        // request for a list. Normalize that semantic change at the harness
-        // boundary so a weak/ambiguous builder response cannot silently ship
-        // the unchanged single-city UI.
-        const artifact = forceZipCityListArtifact(builtArtifact, options.request);
+        // Layout ownership stays inside builder. The harness only applies
+        // stable identity; it never rewrites a successful builder artifact.
+        const artifact = builtArtifact;
         envelope.artifacts = [artifact];
         envelope.builder = { status: "done" };
         if (isContradictoryInteractiveProse(envelope.content)
@@ -992,7 +938,7 @@ function ask(options) {
       const builtArtifact = presentation.mode === "update-existing-ui"
         ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
         : builder.artifact;
-      const artifact = forceZipCityListArtifact(builtArtifact, options.request);
+      const artifact = builtArtifact;
       const fallback = brokeredFallbackArtifact(artifact, options.request);
       // A builder clarification is intentionally user-visible. Do not turn a
       // needs-input/needs-decision response for an existing artifact into a
