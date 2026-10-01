@@ -377,7 +377,7 @@ function brokeredFallbackArtifact(artifact, request) {
           }
         },
         {
-          type: "Textarea",
+          type: "TextArea",
           props: { field: presentation.outputField, label: presentation.outputLabel, readOnly: true, minRows: 2, fullWidth: true },
           behaviors: [{ do: "show", when: { field: presentation.outputField, is: "truthy" } }]
         }

@@ -1,5 +1,10 @@
 # Release notes
 
+## ZIP result field uses the registered component name
+
+Brokered ZIP lookup forms now emit the registered `TextArea` schema type for the City output.
+Successful lookups therefore have a real output control to display the returned city.
+
 ## Fallback forms carry a unique semantic key
 
 Conversation-scoped brokered forms now carry their generated identity as a

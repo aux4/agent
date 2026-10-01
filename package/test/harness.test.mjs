@@ -751,6 +751,7 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.equal(envelope.artifacts[0].title, "ZIP Code Lookup");
   assert.equal(envelope.artifacts[0].schema.props.submitLabel, "Find city");
   assert.deepEqual(envelope.artifacts[0].schema.children.map(child => child.props.label), ["ZIP code", "City"]);
+  assert.equal(envelope.artifacts[0].schema.children[1].type, "TextArea");
   assert.deepEqual(envelope.artifacts[0].state, { zipCode: "", city: "" });
   assert.equal(envelope.artifacts[0].data.runtime.operation, "Given the zip code, return the city.");
   assert.deepEqual(envelope.artifacts[0].data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
