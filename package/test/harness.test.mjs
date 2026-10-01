@@ -811,7 +811,10 @@ test("an update fallback preserves the ZIP artifact and plural result label", ()
   assert.equal(updated.id, activeZipArtifact.id);
   assert.equal(updated.ref, activeZipArtifact.ref);
   assert.equal(updated.title, "ZIP Code Lookup");
-  assert.deepEqual(updated.schema.children.map(child => child.props.label), ["ZIP code", "Cities"]);
+  assert.equal(updated.schema.children[0].props.label, "ZIP code");
+  assert.equal(updated.schema.children[1].type, "Box");
+  assert.equal(updated.schema.children[1].children[0].props.text, "Cities");
+  assert.equal(updated.schema.children[1].children[1].type, "Repeat");
   assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
 });
@@ -833,12 +836,16 @@ test("an update that only mentions cities reuses the existing ZIP operation", ()
   const envelope = JSON.parse(result.stdout);
   const updated = envelope.artifacts[0];
   assert.equal(updated.title, "ZIP Code Lookup");
-  assert.deepEqual(updated.schema.children.map(child => child.props.field), ["zipCode", "cities"]);
-  assert.deepEqual(updated.schema.children.map(child => child.props.label), ["ZIP code", "Cities"]);
-  assert.equal(updated.schema.children[1].type, "Repeater");
-  assert.deepEqual(updated.schema.children[1].props, {
-    field: "cities", label: "Cities", itemLabel: "City", fixed: true, layout: "card"
+  assert.deepEqual(updated.schema.children.map(child => child.props?.field), ["zipCode", undefined]);
+  assert.equal(updated.schema.children[0].props.label, "ZIP code");
+  assert.equal(updated.schema.children[1].type, "Box");
+  assert.equal(updated.schema.children[1].children[0].props.text, "Cities");
+  assert.equal(updated.schema.children[1].children[1].type, "Repeat");
+  assert.deepEqual(updated.schema.children[1].children[1].props, {
+    field: "cities", gap: 8, empty: "No cities found."
   });
+  assert.equal(updated.schema.children[1].children[1].children[0].children[0].type, "Label");
+  assert.equal(updated.schema.children[1].children[1].children[0].children[0].props.field, "name");
   assert.deepEqual(updated.state, { zipCode: "", city: "", cities: [], citiesReady: false });
   assert.equal(updated.data.runtime.outputField, "cities");
   assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
@@ -860,8 +867,9 @@ test("a completed builder update cannot silently keep the ZIP TextArea", () => {
   const envelope = JSON.parse(result.stdout);
   const updated = envelope.artifacts[0];
   assert.equal(updated.id, activeZipArtifact.id);
-  assert.equal(updated.schema.children[1].type, "Repeater");
-  assert.equal(updated.schema.children[1].props.field, "cities");
+  assert.equal(updated.schema.children[1].type, "Box");
+  assert.equal(updated.schema.children[1].children[1].type, "Repeat");
+  assert.equal(updated.schema.children[1].children[1].props.field, "cities");
   assert.equal(updated.data.runtime.outputField, "cities");
 });
 

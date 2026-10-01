@@ -343,17 +343,25 @@ function zipListRequested(request) {
     && /\b(?:list|all|multiple|more than one|each|instead of|text\s*area|textarea)\b/i.test(text);
 }
 
-function zipCitiesRepeater() {
+function zipCitiesList() {
   return {
-    type: "Repeater",
-    props: { field: "cities", label: "Cities", itemLabel: "City", fixed: true, layout: "card" },
-    children: [{
-      type: "TextField",
-      props: { field: "name", label: "City", readOnly: true, fullWidth: true }
-    }],
-    // The empty result is intentionally hidden until the first lookup.  A
+    type: "Box",
+    props: { border: true, radius: "md", padding: "sm", gap: 8 },
+    // The empty result is intentionally hidden until the first lookup. A
     // zero-length array is truthy in JavaScript, so use an explicit flag.
-    behaviors: [{ do: "show", when: { field: "citiesReady", is: "truthy" } }]
+    behaviors: [{ do: "show", when: { field: "citiesReady", is: "truthy" } }],
+    children: [
+      { type: "Label", props: { text: "Cities", size: "md", weight: "semibold" } },
+      {
+        type: "Repeat",
+        props: { field: "cities", gap: 8, empty: "No cities found." },
+        children: [{
+          type: "Box",
+          props: { background: "surface", border: true, radius: "sm", padding: "sm" },
+          children: [{ type: "Label", props: { field: "name", size: "md" } }]
+        }]
+      }
+    ]
   };
 }
 
@@ -388,7 +396,7 @@ function forceZipCityListArtifact(artifact, request) {
       props: { ...(artifact.schema?.props || {}), onSubmit: `${namespace}:run`, submitLabel: "Find city", fullWidth: true },
       children: [
         { type: "TextField", props: inputProps },
-        zipCitiesRepeater()
+        zipCitiesList()
       ]
     },
     state: {
@@ -484,7 +492,7 @@ function brokeredFallbackArtifact(artifact, request) {
   const namespace = `artifact:${artifact.id}`;
   const presentation = brokeredPresentation(artifact, request);
   const output = presentation.listCities
-    ? zipCitiesRepeater()
+    ? zipCitiesList()
     : {
       type: "TextArea",
       props: { field: presentation.outputField, label: presentation.outputLabel, readOnly: true, minRows: 2, fullWidth: true },
