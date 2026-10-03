@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.2.34
+
+- Log a bounded, credential-redacted builder transport error when the cloud builder process exits unsuccessfully, so fallback updates can be diagnosed from VM logs.
+
 ## 4.2.33
 
 - Remove the legacy broker-only `data.source` marker from the strict builder transport while preserving runtime actions and synthesized app/package documents.

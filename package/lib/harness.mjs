@@ -363,7 +363,12 @@ function invokeBuilder(options) {
   });
   if (result.error?.code === "ETIMEDOUT") return builderFailure("BUILDER_TIMEOUT");
   if (result.error?.code === "ENOBUFS") return builderFailure("BUILDER_OUTPUT_TOO_LARGE");
-  if (result.error || result.status !== 0) return builderFailure("BUILDER_EXECUTION_FAILED");
+  if (result.error || result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || result.error?.message || "")
+      .trim().replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 300);
+    console.error(`[agent-builder] execution failed status=${result.status ?? "error"}${detail ? ` detail=${detail}` : ""}`);
+    return builderFailure("BUILDER_EXECUTION_FAILED");
+  }
   return parseBuilderOutput(result.stdout, options.activeArtifact);
 }
 
