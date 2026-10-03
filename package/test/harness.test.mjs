@@ -899,6 +899,31 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.doesNotMatch(envelope.content, /secret-token/);
 });
 
+test("a first-turn ZIP city list stays a result below the action when the builder needs input", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const request = "Can you create a form where I enter the zip code and it displays the list of cities for that zip code";
+  const result = run(askArgs({ request }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({
+      status: "needs-input",
+      reason: "backend action needs clarification",
+      artifact: activeZipArtifact
+    })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  const schema = envelope.artifacts[0].schema;
+  assert.equal(schema.props.noSubmit, true);
+  assert.deepEqual(schema.children.map(child => child.type), ["TextField", "Button", "Box"]);
+  assert.equal(schema.children[2].children[1].type, "Repeat");
+  assert.equal(schema.children[2].children[1].props.field, "cities");
+  assert.deepEqual(envelope.artifacts[0].state.cities, []);
+  assert.equal(envelope.artifacts[0].state.citiesReady, false);
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+});
+
 test("an update fallback preserves the ZIP artifact and plural result label", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
