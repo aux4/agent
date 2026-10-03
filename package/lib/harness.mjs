@@ -90,10 +90,11 @@ function builderReadyArtifact(artifact) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 63) || "interactive-view";
+  const { source: _legacySource, ...builderData } = artifact.data;
   return {
     ...artifact,
     data: {
-      ...artifact.data,
+      ...builderData,
       app: { name: artifact.title || name, routes: { "/": artifact.schema } },
       package: { scope: "local", name }
     }

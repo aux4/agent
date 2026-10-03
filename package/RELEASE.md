@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.2.33
+
+- Remove the legacy broker-only `data.source` marker from the strict builder transport while preserving runtime actions and synthesized app/package documents.
+- Prevent strict request decoding from rejecting upgraded brokered artifacts before layout planning.
+
 ## 4.2.32
 
 - Upgrade legacy brokered inline artifacts to the builder's complete `aux4.app` input contract before requesting an update.

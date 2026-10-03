@@ -278,6 +278,7 @@ test("a brokered artifact is upgraded to the builder's complete artifact contrac
   assert.equal(payload.currentArtifact.data.package.scope, "local");
   assert.match(payload.currentArtifact.data.package.name, /^[a-z0-9-]+$/);
   assert.deepEqual(payload.currentArtifact.data.runtime, activeZipArtifact.data.runtime);
+  assert.equal(payload.currentArtifact.data.source, undefined);
 });
 
 test("an active artifact routes a follow-up to update-existing-ui", () => {
