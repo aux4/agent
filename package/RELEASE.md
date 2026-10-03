@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.2.32
+
+- Upgrade legacy brokered inline artifacts to the builder's complete `aux4.app` input contract before requesting an update.
+- Preserve the brokered runtime action metadata while adding deterministic app and package documents, allowing validated layout transformations to replace older fallback forms.
+
 ## 4.2.31
 
 - Accept, validate, and forward the builder's typed `artifactTransformation` response.

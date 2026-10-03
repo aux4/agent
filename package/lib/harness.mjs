@@ -80,8 +80,29 @@ function builderFailure(code) {
   };
 }
 
+function builderReadyArtifact(artifact) {
+  if (!artifact || artifact?.data?.source !== "agent-action-broker") return artifact;
+  if (artifact.data.app && artifact.data.package) return artifact;
+  if (!artifact.schema || Array.isArray(artifact.schema) || typeof artifact.schema !== "object") return artifact;
+
+  const rawName = String(artifact.key || artifact.id || "interactive-view").toLowerCase();
+  const name = rawName
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 63) || "interactive-view";
+  return {
+    ...artifact,
+    data: {
+      ...artifact.data,
+      app: { name: artifact.title || name, routes: { "/": artifact.schema } },
+      package: { scope: "local", name }
+    }
+  };
+}
+
 function makeBuilderPayload(options) {
-  const currentArtifact = parseOptionalJson(options.activeArtifact, null, "activeArtifact");
+  const parsedArtifact = parseOptionalJson(options.activeArtifact, null, "activeArtifact");
+  const currentArtifact = builderReadyArtifact(parsedArtifact);
   const decisions = parseOptionalJson(options.builderDecisions, {}, "builderDecisions");
   const backends = parseOptionalJson(options.builderBackends, [], "builderBackends");
   if (currentArtifact !== null && (Array.isArray(currentArtifact) || typeof currentArtifact !== "object")) {
@@ -103,19 +124,11 @@ function makeBuilderPayload(options) {
     && currentArtifact.schema && typeof currentArtifact.schema === "object"
     && currentArtifact.data && typeof currentArtifact.data === "object"
     && currentArtifact.data.app && currentArtifact.data.package;
-  // Brokered inline artifacts intentionally carry only non-executable runtime
-  // metadata, not a builder package. They are still complete renderable UIs and
-  // must be sent to the builder on an update so it can modify the existing form
-  // instead of treating the request as a new application.
-  const hasBrokeredArtifact = currentArtifact?.data?.source === "agent-action-broker"
-    && currentArtifact.schema && typeof currentArtifact.schema === "object"
-    && currentArtifact.state && typeof currentArtifact.state === "object";
-
   const payload = {
     request,
     ...(context ? { context } : {}),
     ...(currentArtifact?.ref ? { currentRef: currentArtifact.ref } : {}),
-    ...((hasCompleteArtifact || hasBrokeredArtifact) ? { currentArtifact } : {}),
+    ...(hasCompleteArtifact ? { currentArtifact } : {}),
     ...(Object.keys(decisions).length ? { decisions } : {}),
     ...(backends.length ? { backends } : {}),
     auto: options.builderAuto !== "false",

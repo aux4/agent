@@ -257,6 +257,29 @@ test("a plural ZIP/cities update keeps the active brokered artifact", () => {
   assert.equal(decision.requiresBuilder, true);
 });
 
+test("a brokered artifact is upgraded to the builder's complete artifact contract", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "Move the cities below the Find city button",
+    presentation: "update-existing-ui",
+    activeArtifact: JSON.stringify(activeZipArtifact)
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "error", reason: "fixture" })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const builder = calls.find(call => call.args.join(" ") === "agent builder build");
+  assert.ok(builder);
+  const payload = JSON.parse(builder.input);
+  assert.deepEqual(payload.currentArtifact.data.app.routes["/"], activeZipArtifact.schema);
+  assert.equal(payload.currentArtifact.data.package.scope, "local");
+  assert.match(payload.currentArtifact.data.package.name, /^[a-z0-9-]+$/);
+  assert.deepEqual(payload.currentArtifact.data.runtime, activeZipArtifact.data.runtime);
+});
+
 test("an active artifact routes a follow-up to update-existing-ui", () => {
   const result = run(["route", "add eggs", "auto", "", '{"id":"grocery-list"}']);
   assert.equal(result.status, 0, result.stderr);
