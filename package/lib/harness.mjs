@@ -370,6 +370,9 @@ function invokeBuilder(options) {
     return builderFailure("BUILDER_EXECUTION_FAILED");
   }
   const parsed = parseBuilderOutput(result.stdout, options.activeArtifact);
+  const kind = parsed.artifactTransformation ? "transformation"
+    : parsed.artifactTransaction ? "transaction" : parsed.artifact ? "artifact" : "none";
+  console.error(`[agent-builder] response status=${parsed.status} kind=${kind}`);
   if (parsed.status === "error") {
     console.error(`[agent-builder] response rejected code=${parsed.code || "BUILDER_INVALID_OUTPUT"}`);
   }

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.2.36
+
+- Log the accepted builder response status and typed result kind without payload content.
+
 ## 4.2.35
 
 - Emit a bounded diagnostic when a successful builder process returns a response that fails the typed response contract.
