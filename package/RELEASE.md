@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.2.37
+
+- Preserve the non-secret builder failure code in fallback metadata so successful compatibility fallbacks remain diagnosable.
+
 ## 4.2.36
 
 - Log the accepted builder response status and typed result kind without payload content.

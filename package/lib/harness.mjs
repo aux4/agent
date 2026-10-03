@@ -1053,7 +1053,7 @@ function ask(options) {
       if (fallback) {
         envelope.artifacts = [fallback];
         envelope.content = interactiveConfirmation(presentation);
-        envelope.builder = { status: "done", fallback: "agent-action-broker" };
+        envelope.builder = { status: "done", fallback: "agent-action-broker", code: builder.code };
       } else {
         envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
         envelope.builder = { status: "error", code: builder.code };

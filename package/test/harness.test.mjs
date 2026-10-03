@@ -759,7 +759,7 @@ test("invalid semantic artifact metadata is rejected while legacy metadata remai
     assert.equal(result.status, 0, result.stderr);
     const envelope = JSON.parse(result.stdout);
     assert.equal(envelope.artifacts[0].schema.type, "Form");
-    assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+    assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_INVALID_OUTPUT" });
   }
 });
 
@@ -889,7 +889,7 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.deepEqual(envelope.artifacts[0].state, { zipCode: "", city: "" });
   assert.equal(envelope.artifacts[0].data.runtime.operation, "Given the zip code, return the city.");
   assert.deepEqual(envelope.artifacts[0].data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_INVALID_OUTPUT" });
   assert.doesNotMatch(envelope.content, /secret-token/);
 });
 
@@ -917,7 +917,7 @@ test("an update fallback preserves the ZIP artifact and plural result label", ()
   assert.equal(updated.schema.children[1].children[0].props.text, "Cities");
   assert.equal(updated.schema.children[1].children[1].type, "Repeat");
   assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_TIMEOUT" });
 });
 
 test("an update that only mentions cities reuses the existing ZIP operation", () => {
@@ -984,5 +984,5 @@ test("builder timeout safely degrades with a structured code", () => {
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
   assert.equal(envelope.artifacts[0].schema.type, "Form");
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_TIMEOUT" });
 });
