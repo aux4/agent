@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.2.31
+
+- Accept, validate, and forward the builder's typed `artifactTransformation` response.
+- Preserve the complete validated transformation for the artifact authority instead of treating it as invalid builder output and falling back to an older locally generated form.
+
 ## ZIP city updates use a real list
 
 Requests to show all cities for a ZIP code now replace the single output text area

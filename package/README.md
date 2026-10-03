@@ -169,8 +169,11 @@ the same payload to `aux4 cloud builder generate`, adding `--scope` and `--apiUr
 text is never interpolated into a shell command. The payload includes the request, compact context,
 active artifact/ref, and caller decisions.
 
-A successful builder response contains exactly one ordinary `artifact` or one
-`artifactTransaction`. A transaction describes one or more new complete artifacts followed by the
+A successful builder response contains exactly one ordinary `artifact`, one
+`artifactTransaction`, or one `artifactTransformation`. A transformation carries a complete
+validated replacement artifact plus the exact source identity and revision; the harness validates
+and forwards it unchanged with `artifacts: []` for the artifact authority to commit. A transaction
+describes one or more new complete artifacts followed by the
 revision-checked deletion of the active source. The harness validates its transaction id, canonical
 source identity and revision, operation order, semantic keys and aliases, and complete typed
 artifacts. It then returns the plan unchanged as `artifactTransaction` with `artifacts: []`. The

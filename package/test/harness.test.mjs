@@ -132,6 +132,22 @@ const activeGroceryArtifact = checklistArtifact({
   items: sourceItems
 });
 
+const groceryTransformation = {
+  version: 1,
+  transformationId: "grocery-layout-7",
+  mode: "modify",
+  source: {
+    id: activeGroceryArtifact.id,
+    ref: activeGroceryArtifact.ref,
+    key: activeGroceryArtifact.key,
+    revision: activeGroceryArtifact.revision
+  },
+  artifact: {
+    ...activeGroceryArtifact,
+    title: "Grocery list by aisle"
+  }
+};
+
 const activeZipArtifact = {
   id: "local/agent-ui-demo/agent-action-77fdfe8fd7ef46d0-d341520c2e",
   kind: "aux4.app",
@@ -564,6 +580,67 @@ test("a valid builder transaction is preserved unchanged with an empty artifact 
   assert.deepEqual(envelope.artifacts, []);
   assert.deepEqual(envelope.artifactTransaction, splitTransaction);
   assert.deepEqual(envelope.builder, { status: "done" });
+});
+
+test("a valid builder transformation is preserved unchanged with an empty artifact list", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs({
+    request: "Move the grocery results below the button",
+    presentation: "update-existing-ui",
+    activeArtifact: JSON.stringify(activeGroceryArtifact)
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({
+      status: "done",
+      reason: "Layout updated.",
+      artifactTransformation: groceryTransformation
+    })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.artifactTransformation, groceryTransformation);
+  assert.deepEqual(envelope.builder, { status: "done" });
+});
+
+test("stale and ambiguous builder transformations degrade to a safe builder error", () => {
+  const invalidOutputs = [
+    { status: "done", artifact, artifactTransformation: groceryTransformation },
+    {
+      status: "done",
+      artifactTransformation: {
+        ...groceryTransformation,
+        source: { ...groceryTransformation.source, revision: 6 }
+      }
+    },
+    {
+      status: "done",
+      artifactTransformation: {
+        ...groceryTransformation,
+        artifact: { ...groceryTransformation.artifact, id: "different-id" }
+      }
+    }
+  ];
+
+  for (const output of invalidOutputs) {
+    const { folder, fake } = makeBuilderFake();
+    const log = path.join(folder, "calls.log");
+    const result = run(askArgs({
+      presentation: "update-existing-ui",
+      activeArtifact: JSON.stringify(activeGroceryArtifact)
+    }), {
+      AUX4_BIN: fake,
+      CALL_LOG: log,
+      BUILDER_OUTPUT: JSON.stringify(output)
+    }, folder);
+    assert.equal(result.status, 0, result.stderr);
+    const envelope = JSON.parse(result.stdout);
+    assert.deepEqual(envelope.artifacts, []);
+    assert.equal(envelope.artifactTransformation, undefined);
+    assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_INVALID_OUTPUT" });
+  }
 });
 
 test("invalid or ambiguous builder transactions degrade to a safe builder error", () => {

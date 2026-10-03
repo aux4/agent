@@ -146,28 +146,40 @@ function parseBuilderOutput(stdout, activeArtifact = "") {
     return builderFailure("BUILDER_INVALID_OUTPUT");
   }
   if (!value || Array.isArray(value) || typeof value !== "object") return builderFailure("BUILDER_INVALID_OUTPUT");
-  const { status, reason, artifact, artifactTransaction, decisions } = value;
+  const { status, reason, artifact, artifactTransaction, artifactTransformation, decisions } = value;
   const hasArtifact = Object.prototype.hasOwnProperty.call(value, "artifact");
   const hasTransaction = Object.prototype.hasOwnProperty.call(value, "artifactTransaction");
+  const hasTransformation = Object.prototype.hasOwnProperty.call(value, "artifactTransformation");
   const typedArtifact = hasArtifact ? normalizeTypedArtifact(artifact) : null;
   const validTransaction = hasTransaction
     ? validateArtifactTransaction(artifactTransaction, activeArtifact)
     : false;
-  if (status === "done" && hasArtifact !== hasTransaction && typedArtifact) {
+  const validTransformation = hasTransformation
+    ? validateArtifactTransformation(artifactTransformation, activeArtifact)
+    : false;
+  const resultCount = Number(hasArtifact) + Number(hasTransaction) + Number(hasTransformation);
+  if (status === "done" && resultCount === 1 && hasArtifact && typedArtifact) {
     return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact };
   }
-  if (status === "done" && !hasArtifact && validTransaction) {
+  if (status === "done" && resultCount === 1 && validTransaction) {
     return {
       status,
       reason: typeof reason === "string" ? reason : "",
       artifactTransaction
     };
   }
-  if (status === "needs-decision" && hasArtifact && !hasTransaction
+  if (status === "done" && resultCount === 1 && validTransformation) {
+    return {
+      status,
+      reason: typeof reason === "string" ? reason : "",
+      artifactTransformation
+    };
+  }
+  if (status === "needs-decision" && hasArtifact && !hasTransaction && !hasTransformation
     && typedArtifact && Array.isArray(decisions) && decisions.length > 0) {
     return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact, decisions };
   }
-  if (status === "needs-input" && hasArtifact && !hasTransaction
+  if (status === "needs-input" && hasArtifact && !hasTransaction && !hasTransformation
     && typedArtifact && typeof reason === "string" && reason.trim()) {
     return { status, reason, artifact: typedArtifact };
   }
@@ -270,6 +282,46 @@ function validateArtifactTransaction(transaction, activeArtifact) {
     if (!Array.isArray(operation.artifact.aliases)
       || JSON.stringify(operation.artifact.aliases) !== JSON.stringify(operation.aliases)) return false;
   }
+  return true;
+}
+
+function validateArtifactTransformation(transformation, activeArtifact) {
+  if (!transformation || Array.isArray(transformation) || typeof transformation !== "object") return false;
+  const allowedKeys = new Set(["version", "transformationId", "mode", "source", "artifact"]);
+  if (Object.keys(transformation).some(key => !allowedKeys.has(key))) return false;
+  if (transformation.version !== 1) return false;
+  if (typeof transformation.transformationId !== "string"
+    || !/^[A-Za-z0-9._:-]{1,128}$/.test(transformation.transformationId)) return false;
+  if (transformation.mode !== "create" && transformation.mode !== "modify") return false;
+
+  const artifact = normalizeTypedArtifact(transformation.artifact);
+  if (!artifact) return false;
+  if (transformation.mode === "create") {
+    return transformation.source === undefined && artifact.revision === undefined;
+  }
+
+  const source = transformation.source;
+  if (!source || Array.isArray(source) || typeof source !== "object") return false;
+  const allowedSourceKeys = new Set(["id", "ref", "key", "revision"]);
+  if (Object.keys(source).some(key => !allowedSourceKeys.has(key))) return false;
+  if (typeof source.id !== "string" || source.id.length === 0) return false;
+  if (!Number.isInteger(source.revision) || source.revision <= 0) return false;
+  if (source.ref !== undefined && (typeof source.ref !== "string" || source.ref.length === 0)) return false;
+  if (source.key !== undefined && !validSemanticKey(source.key)) return false;
+
+  let current;
+  try {
+    current = parseOptionalJson(activeArtifact, null, "activeArtifact");
+  } catch {
+    return false;
+  }
+  const active = normalizeTypedArtifact(current);
+  if (!active || active.id !== source.id || active.revision !== source.revision) return false;
+  if (source.ref !== undefined && active.ref !== source.ref) return false;
+  if (source.key !== undefined && active.key !== source.key) return false;
+  if (artifact.id !== active.id || artifact.ref !== active.ref) return false;
+  if (active.key !== undefined && artifact.key !== active.key) return false;
+  if (artifact.revision !== active.revision) return false;
   return true;
 }
 
@@ -911,6 +963,9 @@ function ask(options) {
     if (builder.status === "done") {
       if (builder.artifactTransaction) {
         envelope.artifactTransaction = builder.artifactTransaction;
+        envelope.builder = { status: "done" };
+      } else if (builder.artifactTransformation) {
+        envelope.artifactTransformation = builder.artifactTransformation;
         envelope.builder = { status: "done" };
       } else {
         const builtArtifact = presentation.mode === "update-existing-ui"
