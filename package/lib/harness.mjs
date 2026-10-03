@@ -369,7 +369,11 @@ function invokeBuilder(options) {
     console.error(`[agent-builder] execution failed status=${result.status ?? "error"}${detail ? ` detail=${detail}` : ""}`);
     return builderFailure("BUILDER_EXECUTION_FAILED");
   }
-  return parseBuilderOutput(result.stdout, options.activeArtifact);
+  const parsed = parseBuilderOutput(result.stdout, options.activeArtifact);
+  if (parsed.status === "error") {
+    console.error(`[agent-builder] response rejected code=${parsed.code || "BUILDER_INVALID_OUTPUT"}`);
+  }
+  return parsed;
 }
 
 function decisionQuestion(result) {

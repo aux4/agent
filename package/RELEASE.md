@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.2.35
+
+- Emit a bounded diagnostic when a successful builder process returns a response that fails the typed response contract.
+
 ## 4.2.34
 
 - Log a bounded, credential-redacted builder transport error when the cloud builder process exits unsuccessfully, so fallback updates can be diagnosed from VM logs.
