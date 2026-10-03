@@ -542,7 +542,9 @@ function brokeredFallbackArtifact(artifact, request) {
       props: {
         onSubmit: `${namespace}:run`,
         submitLabel: presentation.submitLabel,
-        fullWidth: true
+        fullWidth: true,
+        noSubmit: true,
+        actionTimeoutMs: 27000
       },
       children: [
         {
@@ -552,6 +554,14 @@ function brokeredFallbackArtifact(artifact, request) {
             label: presentation.inputLabel,
             ...(presentation.inputPlaceholder ? { placeholder: presentation.inputPlaceholder } : {}),
             required: true,
+            fullWidth: true
+          }
+        },
+        {
+          type: "Button",
+          props: {
+            label: presentation.submitLabel,
+            onClick: `${namespace}:run`,
             fullWidth: true
           }
         },
@@ -1014,6 +1024,13 @@ function ask(options) {
         if (presentation.mode === "markdown+app-proposal") {
           envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
         }
+      }
+      // The builder's typed artifact is the UI response. Model prose generated
+      // before the builder ran can contain speculative HTML/JS or describe a
+      // layout that differs from the validated artifact. Never render that
+      // implementation draft beside a successful inline UI result.
+      if (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui") {
+        envelope.content = interactiveConfirmation(presentation);
       }
     } else if (builder.status === "needs-decision" || builder.status === "needs-input") {
       const builtArtifact = presentation.mode === "update-existing-ui"

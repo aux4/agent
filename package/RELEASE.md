@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.2.38
+
+- Put the explicit action button before the result region in brokered fallback forms, matching the builder layout contract.
+- Replace speculative model implementation prose with a short confirmation whenever the builder returns a valid interactive artifact, preventing HTML, CSS, or JavaScript from leaking into chat.
+
 ## 4.2.37
 
 - Preserve the non-secret builder failure code in fallback metadata so successful compatibility fallbacks remain diagnosable.

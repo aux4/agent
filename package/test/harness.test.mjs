@@ -504,7 +504,7 @@ test("Markdown mode never invokes the builder", () => {
   assert.equal(calls.some(call => call.args.join(" ").includes("builder build")), false);
 });
 
-test("inline UI uses local builder argv and preserves Markdown content", () => {
+test("inline UI uses local builder argv and replaces model prose with a confirmation", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({ builderDecisions: '{"backend":"aux4/todo"}' }), {
@@ -514,7 +514,7 @@ test("inline UI uses local builder argv and preserves Markdown content", () => {
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here is your written answer.");
+  assert.equal(envelope.content, "Here’s the interactive view.");
   assert.deepEqual(envelope.artifacts, [artifact]);
   assert.deepEqual(envelope.builder, { status: "done" });
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
@@ -604,6 +604,7 @@ test("a valid builder transaction is preserved unchanged with an empty artifact 
   assert.deepEqual(envelope.artifacts, []);
   assert.deepEqual(envelope.artifactTransaction, splitTransaction);
   assert.deepEqual(envelope.builder, { status: "done" });
+  assert.equal(envelope.content, "I updated the interactive view.");
 });
 
 test("a valid builder transformation is preserved unchanged with an empty artifact list", () => {
@@ -616,6 +617,7 @@ test("a valid builder transformation is preserved unchanged with an empty artifa
   }), {
     AUX4_BIN: fake,
     CALL_LOG: log,
+    MODEL_OUTPUT: "```html\n<div>speculative implementation</div>\n```",
     BUILDER_OUTPUT: JSON.stringify({
       status: "done",
       reason: "Layout updated.",
@@ -627,6 +629,8 @@ test("a valid builder transformation is preserved unchanged with an empty artifa
   assert.deepEqual(envelope.artifacts, []);
   assert.deepEqual(envelope.artifactTransformation, groceryTransformation);
   assert.deepEqual(envelope.builder, { status: "done" });
+  assert.equal(envelope.content, "I updated the interactive view.");
+  assert.doesNotMatch(envelope.content, /html|speculative implementation/);
 });
 
 test("stale and ambiguous builder transformations degrade to a safe builder error", () => {
@@ -738,7 +742,7 @@ test("a successful separate collection build replaces contradictory model prose"
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here’s your new list.");
+  assert.equal(envelope.content, "Here’s the interactive view.");
   assert.equal(envelope.presentation.source, "explicit-request");
   assert.deepEqual(envelope.artifacts, [semanticArtifact]);
 });
@@ -884,8 +888,10 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.equal(envelope.artifacts[0].schema.type, "Form");
   assert.equal(envelope.artifacts[0].title, "ZIP Code Lookup");
   assert.equal(envelope.artifacts[0].schema.props.submitLabel, "Find city");
-  assert.deepEqual(envelope.artifacts[0].schema.children.map(child => child.props.label), ["ZIP code", "City"]);
-  assert.equal(envelope.artifacts[0].schema.children[1].type, "TextArea");
+  assert.equal(envelope.artifacts[0].schema.props.noSubmit, true);
+  assert.deepEqual(envelope.artifacts[0].schema.children.map(child => child.props.label), ["ZIP code", "Find city", "City"]);
+  assert.equal(envelope.artifacts[0].schema.children[1].type, "Button");
+  assert.equal(envelope.artifacts[0].schema.children[2].type, "TextArea");
   assert.deepEqual(envelope.artifacts[0].state, { zipCode: "", city: "" });
   assert.equal(envelope.artifacts[0].data.runtime.operation, "Given the zip code, return the city.");
   assert.deepEqual(envelope.artifacts[0].data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
@@ -913,9 +919,11 @@ test("an update fallback preserves the ZIP artifact and plural result label", ()
   assert.equal(updated.ref, activeZipArtifact.ref);
   assert.equal(updated.title, "ZIP Code Lookup");
   assert.equal(updated.schema.children[0].props.label, "ZIP code");
-  assert.equal(updated.schema.children[1].type, "Box");
-  assert.equal(updated.schema.children[1].children[0].props.text, "Cities");
-  assert.equal(updated.schema.children[1].children[1].type, "Repeat");
+  assert.equal(updated.schema.props.noSubmit, true);
+  assert.equal(updated.schema.children[1].type, "Button");
+  assert.equal(updated.schema.children[2].type, "Box");
+  assert.equal(updated.schema.children[2].children[0].props.text, "Cities");
+  assert.equal(updated.schema.children[2].children[1].type, "Repeat");
   assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_TIMEOUT" });
 });
@@ -937,16 +945,17 @@ test("an update that only mentions cities reuses the existing ZIP operation", ()
   const envelope = JSON.parse(result.stdout);
   const updated = envelope.artifacts[0];
   assert.equal(updated.title, "ZIP Code Lookup");
-  assert.deepEqual(updated.schema.children.map(child => child.props?.field), ["zipCode", undefined]);
+  assert.deepEqual(updated.schema.children.map(child => child.props?.field), ["zipCode", undefined, undefined]);
   assert.equal(updated.schema.children[0].props.label, "ZIP code");
-  assert.equal(updated.schema.children[1].type, "Box");
-  assert.equal(updated.schema.children[1].children[0].props.text, "Cities");
-  assert.equal(updated.schema.children[1].children[1].type, "Repeat");
-  assert.deepEqual(updated.schema.children[1].children[1].props, {
+  assert.equal(updated.schema.children[1].type, "Button");
+  assert.equal(updated.schema.children[2].type, "Box");
+  assert.equal(updated.schema.children[2].children[0].props.text, "Cities");
+  assert.equal(updated.schema.children[2].children[1].type, "Repeat");
+  assert.deepEqual(updated.schema.children[2].children[1].props, {
     field: "cities", gap: 8, empty: "No cities found."
   });
-  assert.equal(updated.schema.children[1].children[1].children[0].children[0].type, "Label");
-  assert.equal(updated.schema.children[1].children[1].children[0].children[0].props.field, "name");
+  assert.equal(updated.schema.children[2].children[1].children[0].children[0].type, "Label");
+  assert.equal(updated.schema.children[2].children[1].children[0].children[0].props.field, "name");
   assert.deepEqual(updated.state, { zipCode: "", city: "", cities: [], citiesReady: false });
   assert.equal(updated.data.runtime.outputField, "cities");
   assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
