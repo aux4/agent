@@ -679,6 +679,17 @@ function isExplicitNewMutableStateRequest(request) {
     && inferObviousMutableStateMode(request) === "markdown+inline-ui";
 }
 
+function isClearlyProseRequest(request) {
+  const text = String(request || "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return false;
+  return /^(?:what(?:s| is| are)\b|who\b|when\b|where\b|why\b|how (?:do|does|can|should)\b|explain\b|tell me\b|summarize\b|compare\b|research\b|write\b|draft\b|translate\b|calculate\b)/.test(text);
+}
+
 function isRetryAfterInteractiveRefusal(request, conversationContext) {
   const retry = String(request || "")
     .toLowerCase()
@@ -811,6 +822,22 @@ function routePresentation({
       reason: "request-explicitly-selected-format",
       criterion: "benefit-from-manipulating-structured-state",
       requiresBuilder: naturalOverride !== "markdown"
+    };
+  }
+
+  // Once a conversation has an artifact, generic prose questions must not be
+  // pulled back into the UI merely because the recent context mentions it.
+  // Explicit views and mutations were handled above, so this guard only
+  // applies to clearly unrelated explanatory/informational requests.
+  if (hasActiveArtifact(activeArtifact) && isClearlyProseRequest(request)) {
+    return {
+      version: 1,
+      mode: "markdown",
+      source: "active-artifact-prose-guard",
+      confidence: 1,
+      reason: "current-request-is-unrelated-prose",
+      criterion: "benefit-from-manipulating-structured-state",
+      requiresBuilder: false
     };
   }
 

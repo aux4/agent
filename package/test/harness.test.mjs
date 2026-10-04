@@ -379,7 +379,7 @@ test("a show-shaped mutation does not reuse the active artifact", () => {
 });
 
 test("an unrelated question with an active artifact stays Markdown", () => {
-  const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.96}]}));');
+  const { fake } = makeFakeAux4('process.stderr.write("classifier must not run"); process.exit(9);');
   const result = run([
     "route", "What is the weather like today?", "auto",
     "user: Show me my grocery list\\nassistant: Here it is.", JSON.stringify(artifact)
@@ -387,7 +387,8 @@ test("an unrelated question with an active artifact stays Markdown", () => {
   assert.equal(result.status, 0, result.stderr);
   const decision = JSON.parse(result.stdout);
   assert.equal(decision.mode, "markdown");
-  assert.equal(decision.source, "classifier");
+  assert.equal(decision.source, "active-artifact-prose-guard");
+  assert.equal(decision.reason, "current-request-is-unrelated-prose");
   assert.equal(decision.requiresBuilder, false);
 });
 
