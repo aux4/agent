@@ -663,8 +663,14 @@ function isArtifactUpdateRequest(request) {
     .trim();
   if (!text || /\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)) return false;
   const mutation = /\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|fix|improve|modify|adjust)\b|\b(?:instead of|not working|doesn?t work|does not work)\b/;
-  const target = /\b(?:ui|interface|widget|form|view|app|application|artifact|it|this|that)\b/;
-  return mutation.test(text) && target.test(text);
+  const target = /\b(?:ui|interface|widget|form|view|app|application|artifact|list|checklist|dashboard|table|tracker|it|this|that)\b/;
+  if (!mutation.test(text)) return false;
+  if (target.test(text)) return true;
+
+  // Short imperative state changes such as "add eggs" or "check milk"
+  // refer to the active artifact through the conversation, even when the
+  // request does not repeat "the list" or "the UI".
+  return /^(?:add|append|remove|delete|complete|check|uncheck)\b/.test(text);
 }
 
 function isExplicitNewMutableStateRequest(request) {
@@ -783,7 +789,7 @@ function routePresentation({
   // Mutation requests must win over the generic "show/build a form" heuristic.
   // Otherwise a request such as "update the UI" is classified as a fresh
   // markdown+inline-ui turn and the fallback creates a second artifact.
-  if (reusableArtifact && isArtifactUpdateRequest(request)) {
+  if (hasActiveArtifact(activeArtifact) && isArtifactUpdateRequest(request)) {
     return {
       version: 1,
       mode: "update-existing-ui",
@@ -808,13 +814,16 @@ function routePresentation({
     };
   }
 
-  if (hasActiveArtifact(activeArtifact)) {
+  // A view request against incomplete artifact metadata still needs the
+  // builder to materialize the view. Only complete artifacts can be emitted
+  // directly above; unrelated requests continue to the classifier below.
+  if (hasActiveArtifact(activeArtifact) && isActiveArtifactViewRequest(request)) {
     return {
       version: 1,
       mode: "update-existing-ui",
       source: "active-artifact",
       confidence: 1,
-      reason: "follow-up-has-active-artifact",
+      reason: "active-artifact-needs-materialization",
       criterion: "benefit-from-manipulating-structured-state",
       requiresBuilder: true
     };
@@ -823,7 +832,10 @@ function routePresentation({
   const question = [
     "Choose the response presentation. The deciding question is: will the user benefit from manipulating structured state after this response?",
     `Current request: ${String(request || "").slice(0, 4000)}`,
-    conversationContext ? `Recent context: ${String(conversationContext).slice(0, 4000)}` : ""
+    conversationContext ? `Recent context: ${String(conversationContext).slice(0, 4000)}` : "",
+    hasActiveArtifact(activeArtifact)
+      ? "An active interactive artifact exists from an earlier turn. Reuse or update it only when the current request clearly refers to or changes that artifact; an unrelated question must remain a normal Markdown answer."
+      : ""
   ].filter(Boolean).join("\n");
 
   const args = [
@@ -845,14 +857,18 @@ function routePresentation({
     if (!Number.isFinite(best.score) || best.score < (Number.isFinite(threshold) ? threshold : 0.55)) {
       return fallback("classifier-confidence-below-threshold");
     }
+    const mode = hasActiveArtifact(activeArtifact)
+      && (best.id === "markdown+inline-ui" || best.id === "update-existing-ui")
+      ? "update-existing-ui"
+      : best.id;
     return {
       version: 1,
-      mode: best.id,
+      mode,
       source: "classifier",
       confidence: best.score,
       reason: "jev-selected-known-candidate",
       criterion: "benefit-from-manipulating-structured-state",
-      requiresBuilder: best.id !== "markdown"
+      requiresBuilder: mode !== "markdown"
     };
   } catch {
     const deterministicMode = inferObviousMutableStateMode(request);

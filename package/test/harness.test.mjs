@@ -378,6 +378,28 @@ test("a show-shaped mutation does not reuse the active artifact", () => {
   assert.equal(decision.reuseActiveArtifact, undefined);
 });
 
+test("an unrelated question with an active artifact stays Markdown", () => {
+  const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.96}]}));');
+  const result = run([
+    "route", "What is the weather like today?", "auto",
+    "user: Show me my grocery list\\nassistant: Here it is.", JSON.stringify(artifact)
+  ], { AUX4_BIN: fake });
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "markdown");
+  assert.equal(decision.source, "classifier");
+  assert.equal(decision.requiresBuilder, false);
+});
+
+test("a short imperative mutation still updates the active artifact", () => {
+  const result = run(["route", "add eggs", "auto", "", JSON.stringify(artifact)]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "update-existing-ui");
+  assert.equal(decision.source, "active-artifact");
+  assert.equal(decision.requiresBuilder, true);
+});
+
 test("low JEV confidence falls back to Markdown", () => {
   const { fake } = makeFakeAux4('process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown+inline-ui",score:0.31}]}));');
   const result = run(["route", "organize groceries", "auto", "", "", "0.55"], { AUX4_BIN: fake });
