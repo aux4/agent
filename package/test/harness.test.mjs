@@ -848,7 +848,7 @@ test("a successful separate collection build replaces contradictory model prose"
   assert.deepEqual(envelope.artifacts, [semanticArtifact]);
 });
 
-test("invalid semantic artifact metadata is rejected while legacy metadata remains optional", () => {
+test("invalid semantic artifact metadata is rejected without synthesizing a UI", () => {
   for (const invalid of [
     { ...artifact, key: "bad key" },
     { ...artifact, key: "list:grocery", aliases: [""] },
@@ -863,8 +863,8 @@ test("invalid semantic artifact metadata is rejected while legacy metadata remai
     }, folder);
     assert.equal(result.status, 0, result.stderr);
     const envelope = JSON.parse(result.stdout);
-    assert.equal(envelope.artifacts[0].schema.type, "Form");
-    assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_INVALID_OUTPUT" });
+    assert.deepEqual(envelope.artifacts, []);
+    assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_INVALID_OUTPUT" });
   }
 });
 
@@ -964,7 +964,7 @@ test("needs-input preserves the active artifact without a false technical-error 
   assert.doesNotMatch(envelope.content, /couldn't create or update|app screen\/route/);
 });
 
-test("malformed builder output safely degrades without exposing stderr", () => {
+test("malformed builder output fails without exposing stderr or synthesizing a UI", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({ request: "Can you display an ui where I can enter the zip code and it shows the city" }), {
@@ -974,17 +974,8 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.artifacts[0].schema.type, "Form");
-  assert.equal(envelope.artifacts[0].title, "ZIP Code Lookup");
-  assert.equal(envelope.artifacts[0].schema.props.submitLabel, "Find city");
-  assert.equal(envelope.artifacts[0].schema.props.noSubmit, true);
-  assert.deepEqual(envelope.artifacts[0].schema.children.map(child => child.props.label), ["ZIP code", "Find city", "City"]);
-  assert.equal(envelope.artifacts[0].schema.children[1].type, "Button");
-  assert.equal(envelope.artifacts[0].schema.children[2].type, "TextArea");
-  assert.deepEqual(envelope.artifacts[0].state, { zipCode: "", city: "" });
-  assert.equal(envelope.artifacts[0].data.runtime.operation, "Given the zip code, return the city.");
-  assert.deepEqual(envelope.artifacts[0].data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_INVALID_OUTPUT" });
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_INVALID_OUTPUT" });
   assert.doesNotMatch(envelope.content, /secret-token/);
 });
 
@@ -1008,7 +999,7 @@ test("a first-turn ZIP city list stays a result below the action when the builde
   assert.match(envelope.content, /I need a little more detail before I can finish the interactive view/);
 });
 
-test("an update fallback preserves the ZIP artifact and plural result label", () => {
+test("an update timeout fails without preserving a stale ZIP artifact", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({
@@ -1023,21 +1014,11 @@ test("an update fallback preserves the ZIP artifact and plural result label", ()
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  const updated = envelope.artifacts[0];
-  assert.equal(updated.id, activeZipArtifact.id);
-  assert.equal(updated.ref, activeZipArtifact.ref);
-  assert.equal(updated.title, "ZIP Code Lookup");
-  assert.equal(updated.schema.children[0].props.label, "ZIP code");
-  assert.equal(updated.schema.props.noSubmit, true);
-  assert.equal(updated.schema.children[1].type, "Button");
-  assert.equal(updated.schema.children[2].type, "Box");
-  assert.equal(updated.schema.children[2].children[0].props.text, "Cities");
-  assert.equal(updated.schema.children[2].children[1].type, "Repeat");
-  assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_TIMEOUT" });
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_TIMEOUT" });
 });
 
-test("an update that only mentions cities reuses the existing ZIP operation", () => {
+test("an update timeout does not reuse the existing ZIP operation", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({
@@ -1052,22 +1033,8 @@ test("an update that only mentions cities reuses the existing ZIP operation", ()
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  const updated = envelope.artifacts[0];
-  assert.equal(updated.title, "ZIP Code Lookup");
-  assert.deepEqual(updated.schema.children.map(child => child.props?.field), ["zipCode", undefined, undefined]);
-  assert.equal(updated.schema.children[0].props.label, "ZIP code");
-  assert.equal(updated.schema.children[1].type, "Button");
-  assert.equal(updated.schema.children[2].type, "Box");
-  assert.equal(updated.schema.children[2].children[0].props.text, "Cities");
-  assert.equal(updated.schema.children[2].children[1].type, "Repeat");
-  assert.deepEqual(updated.schema.children[2].children[1].props, {
-    field: "cities", gap: 8, empty: "No cities found."
-  });
-  assert.equal(updated.schema.children[2].children[1].children[0].children[0].type, "Label");
-  assert.equal(updated.schema.children[2].children[1].children[0].children[0].props.field, "name");
-  assert.deepEqual(updated.state, { zipCode: "", city: "", cities: [], citiesReady: false });
-  assert.equal(updated.data.runtime.outputField, "cities");
-  assert.deepEqual(updated.data.runtime.handler, { type: "us-zip-city", timeoutMs: 8000 });
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_TIMEOUT" });
 });
 
 test("the harness does not rewrite a successful builder artifact", () => {
@@ -1090,7 +1057,7 @@ test("the harness does not rewrite a successful builder artifact", () => {
   assert.equal(updated.data.runtime.outputField, "city");
 });
 
-test("builder timeout safely degrades with a structured code", () => {
+test("builder timeout returns a structured error without synthesizing a UI", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const result = run(askArgs({ builderTimeoutMs: "1000" }), {
@@ -1101,6 +1068,6 @@ test("builder timeout safely degrades with a structured code", () => {
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.artifacts[0].schema.type, "Form");
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_TIMEOUT" });
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.builder, { status: "error", code: "BUILDER_TIMEOUT" });
 });

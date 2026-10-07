@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.2.52
+
+- Require a successful builder-owned backend contract for interactive UIs; builder failures no longer produce a local-only compatibility form.
+- Run agent commands from a generic durable user-scoped state directory so backend state survives across conversations without domain-specific injection.
+
 ## 4.2.51
 
 - Route legacy Repeater artifacts through the builder migration path using the current builder contract.

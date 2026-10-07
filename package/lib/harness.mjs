@@ -1201,22 +1201,14 @@ async function ask(options) {
         ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
         : { status: "needs-input", reason: builder.reason };
     } else {
-      const active = completeActiveArtifact(options.activeArtifact);
-      const fallback = presentation.mode === "update-existing-ui"
-        && builder.code !== "BUILDER_INVALID_OUTPUT"
-        && active
-        ? brokeredFallbackArtifact(active, options.request)
-        : presentation.mode === "markdown+inline-ui"
-          ? genericBrokeredArtifact(options.request, options.conversation)
-          : null;
-      if (fallback) {
-        envelope.artifacts = [fallback];
-        envelope.content = interactiveConfirmation(presentation);
-        envelope.builder = { status: "done", fallback: "agent-action-broker", code: builder.code };
-      } else {
-        envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
-        envelope.builder = { status: "error", code: builder.code };
-      }
+      // A builder failure is not a valid interactive result. The old path
+      // synthesized an agent-action form here, which made a request appear to
+      // succeed while silently dropping the backend selected by the builder.
+      // Backend-backed UI requests must be fulfilled by the builder or remain
+      // an explicit error that can be retried; never present a local-only
+      // compatibility artifact as if it were the requested application.
+      envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
+      envelope.builder = { status: "error", code: builder.code };
     }
   }
   process.stdout.write(options.output === "json" ? `${JSON.stringify(envelope)}\n` : `${content}\n`);
