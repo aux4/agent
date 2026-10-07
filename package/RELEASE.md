@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.2.51
+
+- Route legacy Repeater artifacts through the builder migration path using the current builder contract.
+
 ## 4.2.50
 
 - Route legacy Repeater artifacts through the builder once so collection views can be upgraded to the durable generic Checklist contract instead of being reused as stale snapshots.
