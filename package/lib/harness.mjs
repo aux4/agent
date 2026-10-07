@@ -353,9 +353,22 @@ function invokeBuilder(options) {
 
   const requestedTimeout = Number.parseInt(options.builderTimeoutMs, 10);
   const timeout = Math.max(1000, Math.min(BUILDER_LIMITS.timeout, Number.isFinite(requestedTimeout) ? requestedTimeout : 120000));
-  const result = spawnSync(process.env.AUX4_BIN || "aux4", args, {
+  const builderEnv = { ...process.env };
+  const builderToken = String(process.env.AGENT_BUILDER_ACCESS_TOKEN || "").trim();
+  if (builderToken) builderEnv.AUX4_ACCESS_TOKEN = builderToken;
+  else if (Object.prototype.hasOwnProperty.call(process.env, "AGENT_BUILDER_ACCESS_TOKEN")) {
+    delete builderEnv.AUX4_ACCESS_TOKEN;
+  }
+  const directCloudBuilder = options.builderAdapter === "cloud"
+    && process.env.AGENT_BUILDER_DIRECT_HTTP === "true";
+  const command = directCloudBuilder
+    ? [process.execPath, path.join(path.dirname(new URL(import.meta.url).pathname), "builder-http.mjs"),
+      options.builderApiUrl || "https://api.aux4.cloud", options.builderScope || "aux4",
+      options.builderVm || "builder", String(options.builderTimeoutMs || "120000")]
+    : [process.env.AUX4_BIN || "aux4", ...args];
+  const result = spawnSync(command[0], command.slice(1), {
     encoding: "utf8",
-    env: process.env,
+    env: builderEnv,
     input: encoded,
     timeout,
     maxBuffer: BUILDER_LIMITS.output,
@@ -651,7 +664,8 @@ function isActiveArtifactViewRequest(request) {
   const qualifier = "(?:(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) )?";
   const target = "(?:list|checklist|app|application|ui|interface|view|dashboard|form|table|tracker|artifact|it|this|that)";
   const namedList = "(?:(?:[a-z0-9-]+ ){0,4}(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) (?:list|checklist))";
-  return new RegExp(`^${polite}${verb} ${determiner}(?:${namedList}|${qualifier}${target})(?: again| now| please)?$`).test(text);
+  const inlineQualifier = "(?:(?: on|in|as) (?:an? |the )?(?:interactive )?(?:ui|interface|view))?";
+  return new RegExp(`^${polite}${verb} ${determiner}(?:${namedList}|${qualifier}${target})(?: again| now| please)?${inlineQualifier}$`).test(text);
 }
 
 function isArtifactUpdateRequest(request) {
@@ -842,6 +856,23 @@ function routePresentation({
       reason: "current-request-is-unrelated-prose",
       criterion: "benefit-from-manipulating-structured-state",
       requiresBuilder: false
+    };
+  }
+
+  // Structured state intent is itself an explicit presentation choice. Do not
+  // let a successful JEV classification turn "add items to my list" into a
+  // prose-only turn: the builder needs to own the durable UI state from the
+  // first mutation so another conversation can reuse it later.
+  const obviousMutableState = inferObviousMutableStateMode(request);
+  if (obviousMutableState) {
+    return {
+      version: 1,
+      mode: obviousMutableState,
+      source: "deterministic-mutable-state",
+      confidence: 1,
+      reason: "obvious-mutable-structured-state-intent",
+      criterion: "benefit-from-manipulating-structured-state",
+      requiresBuilder: true
     };
   }
 

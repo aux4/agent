@@ -322,6 +322,15 @@ test("a named canonical list view reuses the resolved active artifact", () => {
   assert.equal(decision.reuseActiveArtifact, true);
 });
 
+test("a named list view with an inline UI qualifier reuses the active artifact", () => {
+  const result = run(["route", "Show my grocery list on an interactive UI", "auto", "", JSON.stringify(artifact)]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.source, "active-artifact-reuse");
+  assert.equal(decision.requiresBuilder, false);
+  assert.equal(decision.reuseActiveArtifact, true);
+});
+
 test("a show request does not reuse incomplete active artifact metadata", () => {
   const result = run(["route", "Show me the list", "auto", "", '{"id":"grocery-list","ref":"builder://grocery-list"}']);
   assert.equal(result.status, 0, result.stderr);
@@ -443,8 +452,8 @@ test("a confident known JEV candidate selects inline UI", () => {
   assert.equal(result.status, 0, result.stderr);
   const decision = JSON.parse(result.stdout);
   assert.equal(decision.mode, "markdown+inline-ui");
-  assert.equal(decision.source, "classifier");
-  assert.equal(decision.confidence, 0.91);
+  assert.equal(decision.source, "deterministic-mutable-state");
+  assert.equal(decision.confidence, 1);
 });
 
 test("automatic presentation classification runs in parallel with the answer model", () => {
@@ -475,7 +484,7 @@ test("an obvious mutable list uses deterministic UI fallback when JEV is unavail
   assert.deepEqual(JSON.parse(result.stdout), {
     version: 1,
     mode: "markdown+inline-ui",
-    source: "deterministic-fallback",
+    source: "deterministic-mutable-state",
     confidence: 1,
     reason: "obvious-mutable-structured-state-intent",
     criterion: "benefit-from-manipulating-structured-state",

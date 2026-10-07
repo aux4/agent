@@ -1,5 +1,11 @@
 # Release notes
 
+## 4.2.44
+
+- Route obvious mutable structured-state requests through the builder before JEV
+  presentation classification, ensuring initial list mutations create reusable
+  typed artifacts instead of prose-only responses.
+
 ## 4.2.43
 
 - Preserve valid partial UI artifacts and backend decisions returned by the
