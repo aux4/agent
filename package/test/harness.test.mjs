@@ -806,7 +806,7 @@ test("invalid semantic artifact metadata is rejected while legacy metadata remai
     }, folder);
     assert.equal(result.status, 0, result.stderr);
     const envelope = JSON.parse(result.stdout);
-    assert.equal(envelope.artifacts[0].schema.type, "Form");
+    assert.equal(envelope.artifacts[0].schema.children[0].type, "Checklist");
     assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_INVALID_OUTPUT" });
   }
 });
@@ -943,6 +943,29 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.doesNotMatch(envelope.content, /secret-token/);
 });
 
+test("a grocery UI builder outage returns a real checklist with items from the conversation", () => {
+  const { folder, fake } = makeBuilderFake();
+  const result = run(askArgs({
+    request: "Show an interactive UI for the grocery list",
+    conversation: "grocery-demo",
+    conversationContext: 'assistant: I\'ve added banana, watermelon, lemon, and pear to your "grocery" todo list.'
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: path.join(folder, "calls.log"),
+    BUILDER_OUTPUT: ""
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  const checklist = envelope.artifacts[0];
+  assert.equal(checklist.title, "Grocery list");
+  assert.equal(checklist.key, "list:grocery");
+  assert.equal(checklist.schema.children[0].type, "Checklist");
+  assert.deepEqual(checklist.state.items.map(item => item.name), ["banana", "watermelon", "lemon", "pear"]);
+  assert.equal(checklist.data.app.routes["/"].children[0].type, "Checklist");
+  assert.equal(envelope.builder.code, "BUILDER_INVALID_OUTPUT");
+  assert.notEqual(checklist.title, "Interactive tool");
+});
+
 test("a first-turn ZIP city list stays a result below the action when the builder needs input", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
@@ -1061,6 +1084,6 @@ test("builder timeout safely degrades with a structured code", () => {
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.artifacts[0].schema.type, "Form");
+  assert.equal(envelope.artifacts[0].schema.children[0].type, "Checklist");
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_TIMEOUT" });
 });

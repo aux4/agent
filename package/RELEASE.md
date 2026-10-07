@@ -1,5 +1,13 @@
 # Release notes
 
+## 4.2.42
+
+- Return a typed, conversation-scoped Checklist for grocery, shopping, and to-do
+  list requests when the UI builder is unavailable, including items recoverable
+  from recent conversation context.
+- Preserve an existing checklist during builder outages instead of replacing it
+  with the generic Interactive tool form.
+
 ## 4.2.41
 
 - Start automatic JEV presentation classification alongside the answer model instead

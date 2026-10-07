@@ -515,6 +515,10 @@ function brokeredPresentation(artifact, request) {
 
 function brokeredFallbackArtifact(artifact, request) {
   if (!artifact || typeof artifact !== "object" || !artifact.id || !artifact.data) return null;
+  // A typed list is already a usable interactive artifact. When the builder is
+  // temporarily unavailable, keep that contract instead of replacing the
+  // checklist with the legacy one-input/one-result fallback form.
+  if (isChecklistArtifact(artifact) && !interactivePresentation(request).handler) return artifact;
   const namespace = `artifact:${artifact.id}`;
   const presentation = brokeredPresentation(artifact, request);
   const output = presentation.listCities
@@ -585,7 +589,124 @@ function brokeredFallbackArtifact(artifact, request) {
   };
 }
 
-function genericBrokeredArtifact(request, conversation = "") {
+function isStructuredListRequest(text) {
+  return /\b(?:grocery|shopping|to-?do|task|packing|reading|guest)\s+list\b|\bchecklist\b/i.test(String(text || ""));
+}
+
+function isChecklistArtifact(artifact) {
+  if (!artifact || typeof artifact !== "object") return false;
+  const identity = [artifact.key, artifact.title, ...(Array.isArray(artifact.aliases) ? artifact.aliases : [])]
+    .filter(Boolean).join(" ");
+  const schema = JSON.stringify(artifact.schema || "");
+  return /\b(?:grocery|shopping|to-?do|task|packing|reading|guest)\s+list\b|\bchecklist\b/i.test(identity)
+    || /"type"\s*:\s*"Checklist"/i.test(schema);
+}
+
+function listTitleAndIdentity(text) {
+  const value = String(text || "").toLowerCase();
+  if (/\bshopping\s+list\b/.test(value)) {
+    return { title: "Shopping list", key: "list:shopping", aliases: ["shopping list", "shopping"] };
+  }
+  if (/\b(?:to-?do|task)\s+list\b|\bchecklist\b/.test(value)) {
+    return { title: "To-do list", key: "list:todo", aliases: ["to-do list", "todo list", "checklist"] };
+  }
+  return { title: "Grocery list", key: "list:grocery", aliases: ["grocery list", "grocery", "my grocery list"] };
+}
+
+function listItemsFromText(texts) {
+  const candidates = [];
+  const source = (Array.isArray(texts) ? texts : [texts])
+    .map(value => String(value || ""))
+    .filter(Boolean)
+    .join("\n");
+  const patterns = [
+    /\b(?:added|add|including|include|containing|contains)\s+(.+?)(?=\s+to\b|[.!?\n]|$)/gi,
+    /\b(?:items?|products?)\s*(?:are|include|:)\s+(.+?)(?:[.!?\n]|$)/gi,
+    /\bwith\s+(.+?)(?:[.!?\n]|$)/gi
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) candidates.push(match[1]);
+  }
+
+  const items = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const parts = candidate
+      .replace(/\s+and\s+/gi, ",")
+      .split(",")
+      .map(item => item
+        .replace(/^\s*(?:and|or)\s+/i, "")
+        .replace(/^\s*(?:a|an|the)\s+/i, "")
+        .replace(/["'`]/g, "")
+        .replace(/\s+/g, " ")
+        .trim())
+      .filter(item => item && item.length <= 128)
+      .filter(item => !/^(?:your|my|the)?\s*(?:grocery|shopping|to-?do|todo|task)\s+list$/i.test(item));
+    for (const item of parts) {
+      const normalized = item.toLowerCase();
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      items.push({
+        id: normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || `item-${items.length + 1}`,
+        name: item,
+        completed: false
+      });
+    }
+  }
+  return items.map((item, index) => {
+    const duplicate = items.slice(0, index).some(previous => previous.id === item.id);
+    return duplicate ? { ...item, id: `${item.id}-${index + 1}` } : item;
+  });
+}
+
+function listBrokeredArtifact(request, conversation = "", conversationContext = "") {
+  // Prefer the current request for the list kind. Conversation context often
+  // contains phrases such as “grocery todo list” while the user is explicitly
+  // asking to view the grocery list; the current turn is the authoritative
+  // label for the artifact.
+  const identity = listTitleAndIdentity(isStructuredListRequest(request) ? request : conversationContext);
+  const suffix = createHash("sha256")
+    .update(`${String(conversation)}\n${identity.key}`)
+    .digest("hex").slice(0, 16);
+  const id = `local/${identity.key.replaceAll(":", "-")}-${suffix}`;
+  const schema = {
+    type: "Page",
+    children: [{
+      type: "Checklist",
+      props: {
+        field: "items",
+        label: identity.title,
+        itemKey: "id",
+        textField: "name",
+        completedField: "completed",
+        addable: true,
+        editable: true,
+        removable: true,
+        reorderable: true
+      }
+    }]
+  };
+  return {
+    id,
+    kind: "aux4.app",
+    version: 1,
+    presentation: "inline",
+    ref: `builder://${id}`,
+    title: identity.title,
+    key: identity.key,
+    aliases: identity.aliases,
+    schema,
+    state: { items: listItemsFromText([conversationContext, request]) },
+    data: {
+      source: "agent-action-broker",
+      app: { name: identity.title, routes: { "/": schema } },
+      package: { scope: "generated", name: identity.key.replaceAll(":", "-") }
+    }
+  };
+}
+
+function genericBrokeredArtifact(request, conversation = "", conversationContext = "") {
+  if (isStructuredListRequest(request)) return listBrokeredArtifact(request, conversation, conversationContext);
   const suffix = createHash("sha256").update(`${String(conversation)}\n${String(request || "interactive-tool")}`).digest("hex").slice(0, 16);
   const id = `local/agent-action-${suffix}`;
   const presentation = interactivePresentation(request);
@@ -1156,8 +1277,8 @@ async function ask(options) {
         && builder.code !== "BUILDER_INVALID_OUTPUT"
         && active
         ? brokeredFallbackArtifact(active, options.request)
-        : presentation.mode === "markdown+inline-ui"
-          ? genericBrokeredArtifact(options.request, options.conversation)
+          : presentation.mode === "markdown+inline-ui"
+          ? genericBrokeredArtifact(options.request, options.conversation, options.conversationContext)
           : null;
       if (fallback) {
         envelope.artifacts = [fallback];
