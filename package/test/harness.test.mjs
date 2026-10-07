@@ -331,6 +331,24 @@ test("a named list view with an inline UI qualifier reuses the active artifact",
   assert.equal(decision.reuseActiveArtifact, true);
 });
 
+test("a legacy repeater view is sent through the builder for migration", () => {
+  const legacy = {
+    ...artifact,
+    schema: { type: "Page", children: [{ type: "Repeater", props: { field: "entries" } }] },
+    data: {
+      app: { routes: { "/": { type: "Page", children: [{ type: "Repeater", props: { field: "entries" } }] } } },
+      package: { scope: "generated", name: "entries", profiles: [] }
+    }
+  };
+  const result = run(["route", "Show me the list", "auto", "", JSON.stringify(legacy)]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "update-existing-ui");
+  assert.equal(decision.source, "active-artifact");
+  assert.equal(decision.requiresBuilder, true);
+  assert.equal(decision.reuseActiveArtifact, undefined);
+});
+
 test("a show request does not reuse incomplete active artifact metadata", () => {
   const result = run(["route", "Show me the list", "auto", "", '{"id":"grocery-list","ref":"builder://grocery-list"}']);
   assert.equal(result.status, 0, result.stderr);

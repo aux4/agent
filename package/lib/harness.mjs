@@ -660,6 +660,20 @@ function completeActiveArtifact(value) {
   }
 }
 
+function hasSchemaNode(schema, predicate) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+  if (predicate(schema)) return true;
+  return Array.isArray(schema.children) && schema.children.some(child => hasSchemaNode(child, predicate));
+}
+
+// Repeater was the first generic collection component emitted by the builder.
+// It has no stable item contract of its own, so an old artifact must pass through
+// the builder once before the fast view-reuse path returns it. This deliberately
+// checks only the component contract, never a domain noun such as grocery/todo.
+export function needsArtifactMaterialization(artifact) {
+  return hasSchemaNode(artifact?.schema, node => node.type === "Repeater");
+}
+
 function isActiveArtifactViewRequest(request) {
   const text = String(request || "")
     .toLowerCase()
@@ -814,7 +828,7 @@ function routePresentation({
   }
 
   const reusableArtifact = completeActiveArtifact(activeArtifact);
-  if (reusableArtifact && isActiveArtifactViewRequest(request)) {
+  if (reusableArtifact && isActiveArtifactViewRequest(request) && !needsArtifactMaterialization(reusableArtifact)) {
     return {
       version: 1,
       mode: "markdown+inline-ui",
@@ -1068,7 +1082,7 @@ async function ask(options) {
   // model call starts. Every other automatic route can classify in parallel with
   // the answer model, removing JEV latency from the serial turn path.
   const reusable = completeActiveArtifact(options.activeArtifact);
-  if (reusable && isActiveArtifactViewRequest(options.request)) {
+  if (reusable && isActiveArtifactViewRequest(options.request) && !needsArtifactMaterialization(reusable)) {
     const presentation = routePresentation(options);
     const artifact = completeActiveArtifact(options.activeArtifact);
     const content = /\b(?:list|checklist)\b/i.test(options.request) ? "Here’s the list." : "Here’s the current interactive view.";
