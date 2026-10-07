@@ -1,5 +1,14 @@
 # Release notes
 
+## 4.2.41
+
+- Start automatic JEV presentation classification alongside the answer model instead
+  of waiting for classification before inference. Active-artifact view reuse remains
+  an immediate no-model path, while classification failures retain the deterministic
+  structured-state fallback.
+- Cover the parallel path with a timing test that proves classifier and answer delays
+  overlap rather than accumulate.
+
 ## 4.2.38
 
 - Put the explicit action button before the result region in brokered fallback forms, matching the builder layout contract.

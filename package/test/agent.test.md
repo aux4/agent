@@ -100,7 +100,7 @@ aux4 agent route "add eggs" --activeArtifact '{"id":"groceries"}'
   "mode": "update-existing-ui",
   "source": "active-artifact",
   "confidence": 1,
-  "reason": "follow-up-has-active-artifact",
+  "reason": "request-updates-active-artifact",
   "criterion": "benefit-from-manipulating-structured-state",
   "requiresBuilder": true
 }

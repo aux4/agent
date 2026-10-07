@@ -438,6 +438,27 @@ test("a confident known JEV candidate selects inline UI", () => {
   assert.equal(decision.confidence, 0.91);
 });
 
+test("automatic presentation classification runs in parallel with the answer model", () => {
+  const { folder, fake } = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+const wait = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+if (command.includes("config get")) process.stdout.write("{}\\n");
+else if (command.includes("playbook hook-before") || command.includes("playbook hook-after")) process.stdout.write("");
+else if (command.includes("classify rank")) { wait(600); process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.95}]})); }
+else if (command.includes("ai agent ask")) { wait(600); process.stdout.write("Parallel answer\\n"); }
+`);
+  const started = Date.now();
+  const result = run(askArgs({
+    request: "Organize these thoughts for me",
+    presentation: "auto"
+  }), { AUX4_BIN: fake }, folder);
+  const elapsed = Date.now() - started;
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).content, "Parallel answer");
+  assert.ok(elapsed < 1050, `expected parallel execution, got ${elapsed}ms`);
+});
+
 test("an obvious mutable list uses deterministic UI fallback when JEV is unavailable", () => {
   const { fake } = makeFakeAux4('process.stderr.write("broker unavailable"); process.exit(2);');
   const result = run(["route", "Keep a grocery list with milk and eggs", "auto", "", "", "0.55"], { AUX4_BIN: fake });

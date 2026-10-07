@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const MODES = [
   "markdown",
@@ -914,6 +914,47 @@ function routePresentation({
   }
 }
 
+function routePresentationAsync(options) {
+  const args = [
+    process.argv[1], "route",
+    options.request || "",
+    options.presentation || "auto",
+    options.conversationContext || "",
+    options.activeArtifact || "",
+    options.classifierThreshold || "0.55",
+    options.classifyModel || "jev-1.13.0",
+    options.classifyBaseUrl || "",
+    options.classifyApiKey || "",
+    options.brokerUrl || "",
+    options.brokerToken || ""
+  ];
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, args, {
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    child.stdout.on("data", chunk => { stdout = (stdout + chunk).slice(-65536); });
+    const finishWithFallback = () => {
+      const mode = inferObviousMutableStateMode(options.request);
+      resolve(mode ? {
+        version: 1,
+        mode,
+        source: "deterministic-fallback",
+        confidence: 1,
+        reason: "obvious-mutable-structured-state-intent",
+        criterion: "benefit-from-manipulating-structured-state",
+        requiresBuilder: true
+      } : fallback("classifier-unavailable"));
+    };
+    child.on("error", finishWithFallback);
+    child.on("close", code => {
+      if (code !== 0) return finishWithFallback();
+      try { resolve(JSON.parse(stdout)); } catch { finishWithFallback(); }
+    });
+  });
+}
+
 function parsePlaybookMatch(output) {
   const match = String(output || "").match(/^Playbook match:\s+([a-z0-9-]+)\s+\(confidence\s+([0-9.]+)\)/m);
   const run = String(output || "").match(/^Run: aux4 ai skill playbook run --id ([a-z0-9-]+) --params '([^\n]*)'$/m);
@@ -974,9 +1015,13 @@ function runAgentAsk(options, history, recovery = "") {
   return runAux4(args);
 }
 
-function ask(options) {
-  const presentation = routePresentation(options);
-  if (presentation.reuseActiveArtifact) {
+async function ask(options) {
+  // A complete active-artifact view is the only route that must return before a
+  // model call starts. Every other automatic route can classify in parallel with
+  // the answer model, removing JEV latency from the serial turn path.
+  const reusable = completeActiveArtifact(options.activeArtifact);
+  if (reusable && isActiveArtifactViewRequest(options.request)) {
+    const presentation = routePresentation(options);
     const artifact = completeActiveArtifact(options.activeArtifact);
     const content = /\b(?:list|checklist)\b/i.test(options.request) ? "Here’s the list." : "Here’s the current interactive view.";
     const envelope = {
@@ -989,6 +1034,8 @@ function ask(options) {
     process.stdout.write(options.output === "json" ? `${JSON.stringify(envelope)}\n` : `${content}\n`);
     return;
   }
+
+  const presentationPromise = routePresentationAsync(options);
 
   const history = resolveHistory(options.conversation);
   const match = runHookBefore({
@@ -1029,6 +1076,8 @@ function ask(options) {
     apiKey: options.classifyApiKey
   });
   if (suggestion) content = content ? `${content}\n\n${suggestion}` : suggestion;
+
+  const presentation = await presentationPromise;
 
   const envelope = {
     version: 1,
@@ -1146,7 +1195,7 @@ try {
     const [request = "", presentation = "auto", conversationContext = "", activeArtifact = "", classifierThreshold = "0.55", classifyModel = "jev-1.13.0", classifyBaseUrl = "", classifyApiKey = "", brokerUrl = "", brokerToken = ""] = values;
     process.stdout.write(`${JSON.stringify(routePresentation({ request, presentation, conversationContext, activeArtifact, classifierThreshold, classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken }))}\n`);
   } else if (action === "ask") {
-    ask(optionsFrom(values));
+    await ask(optionsFrom(values));
   } else {
     throw new Error(`unknown action: ${action || "<empty>"}`);
   }
