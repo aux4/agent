@@ -36,6 +36,7 @@ const BUILDER_LIMITS = {
   context: 32 * 1024,
   artifact: 64 * 1024,
   decisions: 32 * 1024,
+  backendCatalog: 48 * 1024,
   payload: 128 * 1024,
   output: 2 * 1024 * 1024,
   timeout: 300000
@@ -106,6 +107,7 @@ function makeBuilderPayload(options) {
   const currentArtifact = builderReadyArtifact(parsedArtifact);
   const decisions = parseOptionalJson(options.builderDecisions, {}, "builderDecisions");
   const backends = parseOptionalJson(options.builderBackends, [], "builderBackends");
+  const backendCatalog = parseOptionalJson(options.builderBackendCatalog, [], "builderBackendCatalog");
   if (currentArtifact !== null && (Array.isArray(currentArtifact) || typeof currentArtifact !== "object")) {
     throw new Error("activeArtifact must be a JSON object");
   }
@@ -113,13 +115,16 @@ function makeBuilderPayload(options) {
     throw new Error("builderDecisions must be a JSON object");
   }
   if (!Array.isArray(backends)) throw new Error("builderBackends must be a JSON array");
+  if (!Array.isArray(backendCatalog)) throw new Error("builderBackendCatalog must be a JSON array");
 
   const request = boundedString(options.request, BUILDER_LIMITS.request, "request");
   const context = boundedString(options.conversationContext, BUILDER_LIMITS.context, "conversationContext");
   const artifactJson = currentArtifact === null ? "" : JSON.stringify(currentArtifact);
   const decisionsJson = JSON.stringify(decisions);
+  const backendCatalogJson = JSON.stringify(backendCatalog);
   if (Buffer.byteLength(artifactJson, "utf8") > BUILDER_LIMITS.artifact) throw new Error("activeArtifact exceeds the builder payload limit");
   if (Buffer.byteLength(decisionsJson, "utf8") > BUILDER_LIMITS.decisions) throw new Error("builderDecisions exceeds the builder payload limit");
+  if (Buffer.byteLength(backendCatalogJson, "utf8") > BUILDER_LIMITS.backendCatalog) throw new Error("builderBackendCatalog exceeds the builder payload limit");
 
   const hasCompleteArtifact = currentArtifact
     && currentArtifact.schema && typeof currentArtifact.schema === "object"
@@ -132,6 +137,7 @@ function makeBuilderPayload(options) {
     ...(hasCompleteArtifact ? { currentArtifact } : {}),
     ...(Object.keys(decisions).length ? { decisions } : {}),
     ...(backends.length ? { backends } : {}),
+    ...(backendCatalog.length ? { backendCatalog } : {}),
     auto: options.builderAuto !== "false",
     steps: Math.max(1, Math.min(50, Number.parseInt(options.builderSteps, 10) || 10)),
     ...(options.builderModel ? { model: options.builderModel } : {})
@@ -399,7 +405,14 @@ function decisionQuestion(result) {
   const labels = result.decisions.map(decision => {
     if (typeof decision === "string") return decision;
     if (!decision || typeof decision !== "object") return "Choose one of the available options.";
-    return String(decision.question || decision.label || decision.id || "Choose one of the available options.");
+    const question = String(decision.question || decision.label || decision.id || "Choose one of the available options.");
+    const options = Array.isArray(decision.options)
+      ? decision.options
+        .map(option => typeof option === "string" ? option : option?.label || option?.value)
+        .filter(Boolean)
+        .slice(0, 8)
+      : [];
+    return options.length ? `${question} Options: ${options.join(", ")}.` : question;
   });
   return `${prompt}\n\n${labels.map(label => `- ${label}`).join("\n")}`;
 }
@@ -661,11 +674,10 @@ function isActiveArtifactViewRequest(request) {
   const polite = "(?:(?:please |(?:can|could|would|will) you (?:please )?))?";
   const verb = "(?:show(?: me)?|view|open|display)";
   const determiner = "(?:(?:the|this|that|my|our|current|active) )?";
-  const qualifier = "(?:(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) )?";
   const target = "(?:list|checklist|app|application|ui|interface|view|dashboard|form|table|tracker|artifact|it|this|that)";
-  const namedList = "(?:(?:[a-z0-9-]+ ){0,4}(?:grocery|shopping|to-do|todo|task|packing|reading|guest|check) (?:list|checklist))";
+  const namedList = "(?:(?:[a-z0-9-]+ ){0,5}(?:list|checklist))";
   const inlineQualifier = "(?:(?: on|in|as) (?:an? |the )?(?:interactive )?(?:ui|interface|view))?";
-  return new RegExp(`^${polite}${verb} ${determiner}(?:${namedList}|${qualifier}${target})(?: again| now| please)?${inlineQualifier}$`).test(text);
+  return new RegExp(`^${polite}${verb} ${determiner}(?:${namedList}|${target})(?: again| now| please)?${inlineQualifier}$`).test(text);
 }
 
 function isArtifactUpdateRequest(request) {
@@ -759,7 +771,7 @@ function inferObviousMutableStateMode(request) {
     return null;
   }
 
-  const mutableNoun = /\b(?:(?:grocery|shopping|to-?do|task|packing|reading|guest|check) list|checklist|tracker|inventory|kanban|dashboard|form|table|planner|budget|calendar|collection|board)\b/;
+  const mutableNoun = /\b(?:list|checklist|tracker|inventory|kanban|dashboard|form|table|planner|budget|calendar|collection|board|workflow)\b/;
   const manipulation = /\b(?:keep|maintain|manage|track|organize|create|make|build|set up|start|give me|i (?:need|want)|add|remove|update|edit|record|log|show)\b/;
   return mutableNoun.test(text) && manipulation.test(text) ? "markdown+inline-ui" : null;
 }
@@ -859,6 +871,22 @@ function routePresentation({
     };
   }
 
+  // A view request against incomplete artifact metadata still needs the
+  // builder to materialize the existing view. Resolve this before the generic
+  // mutable-state detector, whose broad "list" vocabulary must also cover
+  // first-turn requests such as "show the list".
+  if (hasActiveArtifact(activeArtifact) && isActiveArtifactViewRequest(request)) {
+    return {
+      version: 1,
+      mode: "update-existing-ui",
+      source: "active-artifact",
+      confidence: 1,
+      reason: "active-artifact-needs-materialization",
+      criterion: "benefit-from-manipulating-structured-state",
+      requiresBuilder: true
+    };
+  }
+
   // Structured state intent is itself an explicit presentation choice. Do not
   // let a successful JEV classification turn "add items to my list" into a
   // prose-only turn: the builder needs to own the durable UI state from the
@@ -871,21 +899,6 @@ function routePresentation({
       source: "deterministic-mutable-state",
       confidence: 1,
       reason: "obvious-mutable-structured-state-intent",
-      criterion: "benefit-from-manipulating-structured-state",
-      requiresBuilder: true
-    };
-  }
-
-  // A view request against incomplete artifact metadata still needs the
-  // builder to materialize the view. Only complete artifacts can be emitted
-  // directly above; unrelated requests continue to the classifier below.
-  if (hasActiveArtifact(activeArtifact) && isActiveArtifactViewRequest(request)) {
-    return {
-      version: 1,
-      mode: "update-existing-ui",
-      source: "active-artifact",
-      confidence: 1,
-      reason: "active-artifact-needs-materialization",
       criterion: "benefit-from-manipulating-structured-state",
       requiresBuilder: true
     };
@@ -1203,13 +1216,13 @@ function optionsFrom(values) {
     classifierThreshold = "0.55", classifyModel = "jev-1.13.0", classifyBaseUrl = "", classifyApiKey = "",
     brokerUrl = "", brokerToken = "", packageDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."),
     builderAdapter = "local", builderVm = "builder", builderScope = "", builderApiUrl = "https://api.aux4.cloud",
-    builderTimeoutMs = "120000", builderDecisions = "", builderBackends = "", builderAuto = "true",
+    builderTimeoutMs = "120000", builderDecisions = "", builderBackends = "", builderBackendCatalog = "", builderAuto = "true",
     builderSteps = "10", builderModel = ""
   ] = values;
   return { request, conversation, config, configFile, instructions, skills, image, tools, policy, permissions, output,
     presentation, conversationContext, activeArtifact, playbookFolder, playbookThreshold, classifierThreshold,
     classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir, builderAdapter, builderVm,
-    builderScope, builderApiUrl, builderTimeoutMs, builderDecisions, builderBackends, builderAuto, builderSteps, builderModel };
+    builderScope, builderApiUrl, builderTimeoutMs, builderDecisions, builderBackends, builderBackendCatalog, builderAuto, builderSteps, builderModel };
 }
 
 const [action, ...values] = process.argv.slice(2);

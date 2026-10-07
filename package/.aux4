@@ -1,7 +1,7 @@
 {
   "scope": "agent",
   "name": "agent",
-  "version": "4.2.47",
+  "version": "4.2.49",
   "description": "AI agent powered by on-demand skills",
   "license": "Apache-2.0",
   "tags": [
@@ -90,7 +90,7 @@
         {
           "name": "ask",
           "execute": [
-            "node ${packageDir}/lib/harness.mjs ask values(request, conversation, config, configFile, instructions, skills, image, tools, policy, permissions, output, presentation, conversationContext, activeArtifact, playbookFolder, playbookThreshold, classifierThreshold, classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir, builderAdapter, builderVm, builderScope, builderApiUrl, builderTimeoutMs, builderDecisions, builderBackends, builderAuto, builderSteps, builderModel)"
+            "node ${packageDir}/lib/harness.mjs ask values(request, conversation, config, configFile, instructions, skills, image, tools, policy, permissions, output, presentation, conversationContext, activeArtifact, playbookFolder, playbookThreshold, classifierThreshold, classifyModel, classifyBaseUrl, classifyApiKey, brokerUrl, brokerToken, packageDir, builderAdapter, builderVm, builderScope, builderApiUrl, builderTimeoutMs, builderDecisions, builderBackends, builderBackendCatalog, builderAuto, builderSteps, builderModel)"
           ],
           "help": {
             "text": "Send a request to the agent",
@@ -264,6 +264,11 @@
               {
                 "name": "builderBackends",
                 "text": "Optional backend package allow-list as a JSON array.",
+                "default": ""
+              },
+              {
+                "name": "builderBackendCatalog",
+                "text": "Portable installed backend package/command descriptors supplied by the caller as JSON.",
                 "default": ""
               },
               {

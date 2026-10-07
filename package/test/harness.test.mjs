@@ -31,7 +31,7 @@ function askArgs(overrides = {}) {
     classifierThreshold: "0.55", classifyModel: "jev-1.13.0", classifyBaseUrl: "", classifyApiKey: "",
     brokerUrl: "", brokerToken: "", packageDir: path.resolve(harness, "../.."), builderAdapter: "local",
     builderVm: "builder", builderScope: "", builderApiUrl: "https://api.aux4.cloud",
-    builderTimeoutMs: "120000", builderDecisions: "", builderBackends: "", builderAuto: "true",
+    builderTimeoutMs: "120000", builderDecisions: "", builderBackends: "", builderBackendCatalog: "", builderAuto: "true",
     builderSteps: "10", builderModel: ""
   };
   Object.assign(values, overrides);
@@ -41,7 +41,7 @@ function askArgs(overrides = {}) {
     values.playbookThreshold, values.classifierThreshold, values.classifyModel, values.classifyBaseUrl,
     values.classifyApiKey, values.brokerUrl, values.brokerToken, values.packageDir, values.builderAdapter,
     values.builderVm, values.builderScope, values.builderApiUrl, values.builderTimeoutMs,
-    values.builderDecisions, values.builderBackends, values.builderAuto, values.builderSteps, values.builderModel];
+    values.builderDecisions, values.builderBackends, values.builderBackendCatalog, values.builderAuto, values.builderSteps, values.builderModel];
 }
 
 function makeBuilderFake() {
@@ -589,6 +589,27 @@ test("inline UI uses local builder argv and replaces model prose with a confirma
     auto: true,
     steps: 10
   });
+});
+
+test("inline UI forwards the caller's portable backend catalog", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const catalog = [{
+    scope: "community",
+    name: "records",
+    description: "Manage records",
+    commands: [{ path: ["records", "add"], helpText: "Add a record", variables: [] }]
+  }];
+  const result = run(askArgs({ builderBackendCatalog: JSON.stringify(catalog) }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const builder = calls.find(call => call.args.join(" ") === "agent builder build");
+  assert.ok(builder);
+  assert.deepEqual(JSON.parse(builder.input).backendCatalog, catalog);
 });
 
 test("inline UI replaces a contradictory model refusal when the builder returns an artifact", () => {

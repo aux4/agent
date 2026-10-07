@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.2.49
+
+- Pass a bounded backend capability catalog through to the UI builder and route structured-state requests using generic artifact vocabulary instead of domain-specific list names.
+
 ## 4.2.44
 
 - Route obvious mutable structured-state requests through the builder before JEV
