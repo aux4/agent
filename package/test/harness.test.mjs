@@ -289,6 +289,15 @@ test("an active artifact routes a follow-up to update-existing-ui", () => {
   assert.equal(decision.source, "active-artifact");
 });
 
+test("corrective feedback about the current UI routes back to the builder", () => {
+  const result = run(["route", "That's not a grocery list UI", "auto", "", JSON.stringify(artifact)]);
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout);
+  assert.equal(decision.mode, "update-existing-ui");
+  assert.equal(decision.source, "active-artifact");
+  assert.equal(decision.requiresBuilder, true);
+});
+
 test("a show request deterministically reuses a complete active artifact", () => {
   const result = run(["route", "Show me the list", "auto", "", JSON.stringify(artifact)]);
   assert.equal(result.status, 0, result.stderr);
@@ -806,7 +815,7 @@ test("invalid semantic artifact metadata is rejected while legacy metadata remai
     }, folder);
     assert.equal(result.status, 0, result.stderr);
     const envelope = JSON.parse(result.stdout);
-    assert.equal(envelope.artifacts[0].schema.children[0].type, "Checklist");
+    assert.equal(envelope.artifacts[0].schema.type, "Form");
     assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_INVALID_OUTPUT" });
   }
 });
@@ -862,7 +871,7 @@ test("update-existing-ui uses cloud argv and retains stable id and ref", () => {
   assert.equal(payload.currentArtifact, undefined);
 });
 
-test("an inline build with an unresolved backend becomes a runnable brokered artifact", () => {
+test("an inline build with an unresolved backend preserves the builder artifact and decision", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
   const decisions = [{ id: "backend", question: "Which list should store these items?", options: [{ value: "groceries" }] }];
@@ -878,22 +887,10 @@ test("an inline build with an unresolved backend becomes a runnable brokered art
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  const runnable = envelope.artifacts[0];
-  assert.equal(runnable.id, artifact.id);
-  assert.equal(runnable.schema.type, "Form");
-  assert.equal(runnable.schema.props.onSubmit, `artifact:${artifact.id}:run`);
-  assert.deepEqual(runnable.state, { input: "", result: "" });
-  assert.deepEqual(runnable.data.runtime, {
-    version: 1,
-    broker: "agent",
-    actions: ["run"],
-    request: "build a grocery list",
-    operation: "Perform the non-UI operation implied by this request after the user submits the form: build a grocery list",
-    inputField: "input",
-    outputField: "result"
-  });
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
-  assert.doesNotMatch(envelope.content, /choice|--decide|validate/i);
+  assert.deepEqual(envelope.artifacts, [artifact]);
+  assert.equal(envelope.builder.status, "needs-decision");
+  assert.deepEqual(envelope.builder.decisions, decisions);
+  assert.match(envelope.content, /I need one choice before I can finish the interactive view/);
 });
 
 test("needs-input preserves the active artifact without a false technical-error fallback", () => {
@@ -943,29 +940,6 @@ test("malformed builder output safely degrades without exposing stderr", () => {
   assert.doesNotMatch(envelope.content, /secret-token/);
 });
 
-test("a grocery UI builder outage returns a real checklist with items from the conversation", () => {
-  const { folder, fake } = makeBuilderFake();
-  const result = run(askArgs({
-    request: "Show an interactive UI for the grocery list",
-    conversation: "grocery-demo",
-    conversationContext: 'assistant: I\'ve added banana, watermelon, lemon, and pear to your "grocery" todo list.'
-  }), {
-    AUX4_BIN: fake,
-    CALL_LOG: path.join(folder, "calls.log"),
-    BUILDER_OUTPUT: ""
-  }, folder);
-  assert.equal(result.status, 0, result.stderr);
-  const envelope = JSON.parse(result.stdout);
-  const checklist = envelope.artifacts[0];
-  assert.equal(checklist.title, "Grocery list");
-  assert.equal(checklist.key, "list:grocery");
-  assert.equal(checklist.schema.children[0].type, "Checklist");
-  assert.deepEqual(checklist.state.items.map(item => item.name), ["banana", "watermelon", "lemon", "pear"]);
-  assert.equal(checklist.data.app.routes["/"].children[0].type, "Checklist");
-  assert.equal(envelope.builder.code, "BUILDER_INVALID_OUTPUT");
-  assert.notEqual(checklist.title, "Interactive tool");
-});
-
 test("a first-turn ZIP city list stays a result below the action when the builder needs input", () => {
   const { folder, fake } = makeBuilderFake();
   const log = path.join(folder, "calls.log");
@@ -981,14 +955,9 @@ test("a first-turn ZIP city list stays a result below the action when the builde
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  const schema = envelope.artifacts[0].schema;
-  assert.equal(schema.props.noSubmit, true);
-  assert.deepEqual(schema.children.map(child => child.type), ["TextField", "Button", "Box"]);
-  assert.equal(schema.children[2].children[1].type, "Repeat");
-  assert.equal(schema.children[2].children[1].props.field, "cities");
-  assert.deepEqual(envelope.artifacts[0].state.cities, []);
-  assert.equal(envelope.artifacts[0].state.citiesReady, false);
-  assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker" });
+  assert.deepEqual(envelope.artifacts, [activeZipArtifact]);
+  assert.deepEqual(envelope.builder, { status: "needs-input", reason: "backend action needs clarification" });
+  assert.match(envelope.content, /I need a little more detail before I can finish the interactive view/);
 });
 
 test("an update fallback preserves the ZIP artifact and plural result label", () => {
@@ -1084,6 +1053,6 @@ test("builder timeout safely degrades with a structured code", () => {
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.artifacts[0].schema.children[0].type, "Checklist");
+  assert.equal(envelope.artifacts[0].schema.type, "Form");
   assert.deepEqual(envelope.builder, { status: "done", fallback: "agent-action-broker", code: "BUILDER_TIMEOUT" });
 });

@@ -515,10 +515,6 @@ function brokeredPresentation(artifact, request) {
 
 function brokeredFallbackArtifact(artifact, request) {
   if (!artifact || typeof artifact !== "object" || !artifact.id || !artifact.data) return null;
-  // A typed list is already a usable interactive artifact. When the builder is
-  // temporarily unavailable, keep that contract instead of replacing the
-  // checklist with the legacy one-input/one-result fallback form.
-  if (isChecklistArtifact(artifact) && !interactivePresentation(request).handler) return artifact;
   const namespace = `artifact:${artifact.id}`;
   const presentation = brokeredPresentation(artifact, request);
   const output = presentation.listCities
@@ -589,124 +585,7 @@ function brokeredFallbackArtifact(artifact, request) {
   };
 }
 
-function isStructuredListRequest(text) {
-  return /\b(?:grocery|shopping|to-?do|task|packing|reading|guest)\s+list\b|\bchecklist\b/i.test(String(text || ""));
-}
-
-function isChecklistArtifact(artifact) {
-  if (!artifact || typeof artifact !== "object") return false;
-  const identity = [artifact.key, artifact.title, ...(Array.isArray(artifact.aliases) ? artifact.aliases : [])]
-    .filter(Boolean).join(" ");
-  const schema = JSON.stringify(artifact.schema || "");
-  return /\b(?:grocery|shopping|to-?do|task|packing|reading|guest)\s+list\b|\bchecklist\b/i.test(identity)
-    || /"type"\s*:\s*"Checklist"/i.test(schema);
-}
-
-function listTitleAndIdentity(text) {
-  const value = String(text || "").toLowerCase();
-  if (/\bshopping\s+list\b/.test(value)) {
-    return { title: "Shopping list", key: "list:shopping", aliases: ["shopping list", "shopping"] };
-  }
-  if (/\b(?:to-?do|task)\s+list\b|\bchecklist\b/.test(value)) {
-    return { title: "To-do list", key: "list:todo", aliases: ["to-do list", "todo list", "checklist"] };
-  }
-  return { title: "Grocery list", key: "list:grocery", aliases: ["grocery list", "grocery", "my grocery list"] };
-}
-
-function listItemsFromText(texts) {
-  const candidates = [];
-  const source = (Array.isArray(texts) ? texts : [texts])
-    .map(value => String(value || ""))
-    .filter(Boolean)
-    .join("\n");
-  const patterns = [
-    /\b(?:added|add|including|include|containing|contains)\s+(.+?)(?=\s+to\b|[.!?\n]|$)/gi,
-    /\b(?:items?|products?)\s*(?:are|include|:)\s+(.+?)(?:[.!?\n]|$)/gi,
-    /\bwith\s+(.+?)(?:[.!?\n]|$)/gi
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) candidates.push(match[1]);
-  }
-
-  const items = [];
-  const seen = new Set();
-  for (const candidate of candidates) {
-    const parts = candidate
-      .replace(/\s+and\s+/gi, ",")
-      .split(",")
-      .map(item => item
-        .replace(/^\s*(?:and|or)\s+/i, "")
-        .replace(/^\s*(?:a|an|the)\s+/i, "")
-        .replace(/["'`]/g, "")
-        .replace(/\s+/g, " ")
-        .trim())
-      .filter(item => item && item.length <= 128)
-      .filter(item => !/^(?:your|my|the)?\s*(?:grocery|shopping|to-?do|todo|task)\s+list$/i.test(item));
-    for (const item of parts) {
-      const normalized = item.toLowerCase();
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
-      items.push({
-        id: normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || `item-${items.length + 1}`,
-        name: item,
-        completed: false
-      });
-    }
-  }
-  return items.map((item, index) => {
-    const duplicate = items.slice(0, index).some(previous => previous.id === item.id);
-    return duplicate ? { ...item, id: `${item.id}-${index + 1}` } : item;
-  });
-}
-
-function listBrokeredArtifact(request, conversation = "", conversationContext = "") {
-  // Prefer the current request for the list kind. Conversation context often
-  // contains phrases such as “grocery todo list” while the user is explicitly
-  // asking to view the grocery list; the current turn is the authoritative
-  // label for the artifact.
-  const identity = listTitleAndIdentity(isStructuredListRequest(request) ? request : conversationContext);
-  const suffix = createHash("sha256")
-    .update(`${String(conversation)}\n${identity.key}`)
-    .digest("hex").slice(0, 16);
-  const id = `local/${identity.key.replaceAll(":", "-")}-${suffix}`;
-  const schema = {
-    type: "Page",
-    children: [{
-      type: "Checklist",
-      props: {
-        field: "items",
-        label: identity.title,
-        itemKey: "id",
-        textField: "name",
-        completedField: "completed",
-        addable: true,
-        editable: true,
-        removable: true,
-        reorderable: true
-      }
-    }]
-  };
-  return {
-    id,
-    kind: "aux4.app",
-    version: 1,
-    presentation: "inline",
-    ref: `builder://${id}`,
-    title: identity.title,
-    key: identity.key,
-    aliases: identity.aliases,
-    schema,
-    state: { items: listItemsFromText([conversationContext, request]) },
-    data: {
-      source: "agent-action-broker",
-      app: { name: identity.title, routes: { "/": schema } },
-      package: { scope: "generated", name: identity.key.replaceAll(":", "-") }
-    }
-  };
-}
-
-function genericBrokeredArtifact(request, conversation = "", conversationContext = "") {
-  if (isStructuredListRequest(request)) return listBrokeredArtifact(request, conversation, conversationContext);
+function genericBrokeredArtifact(request, conversation = "") {
   const suffix = createHash("sha256").update(`${String(conversation)}\n${String(request || "interactive-tool")}`).digest("hex").slice(0, 16);
   const id = `local/agent-action-${suffix}`;
   const presentation = interactivePresentation(request);
@@ -785,6 +664,10 @@ function isArtifactUpdateRequest(request) {
   if (!text || /\b(?:new|separate|another|additional|different|fresh|second)\b/.test(text)) return false;
   const mutation = /\b(?:add|append|remove|delete|update|edit|changes?|replace|rename|filter|sort|clear|complete|check|uncheck|fix|improve|modify|adjust)\b|\b(?:instead of|not working|doesn?t work|does not work)\b/;
   const target = /\b(?:ui|interface|widget|form|view|app|application|artifact|list|checklist|dashboard|table|tracker|it|this|that)\b/;
+
+  // Corrective feedback about the current artifact is also an update request,
+  // even without an imperative verb (for example, “that's not the list UI”).
+  if (/\b(?:not|isnt|is not|wrong|incorrect|different from)\b.{0,100}\b(?:ui|interface|widget|view|list|form|app|application|artifact)\b/.test(text)) return true;
   if (!mutation.test(text)) return false;
   if (target.test(text)) return true;
 
@@ -1250,35 +1133,23 @@ async function ask(options) {
         ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
         : builder.artifact;
       const artifact = builtArtifact;
-      const fallback = brokeredFallbackArtifact(artifact, options.request);
-      // A builder clarification is intentionally user-visible. Do not turn a
-      // needs-input/needs-decision response for an existing artifact into a
-      // new generic form; that loses the builder's requested context and makes
-      // an update look like a replacement UI.
-      if (fallback && presentation.mode === "markdown+inline-ui") {
-        envelope.artifacts = [fallback];
-        envelope.content = interactiveConfirmation(presentation);
-        envelope.builder = { status: "done", fallback: "agent-action-broker" };
-      } else {
-        envelope.artifacts = [artifact];
-        const question = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
-        if (isContradictoryInteractiveProse(envelope.content)
-          && (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui")) {
-          envelope.content = interactiveConfirmation(presentation);
-        }
-        envelope.content = envelope.content ? `${envelope.content}\n\n${question}` : question;
-        envelope.builder = builder.status === "needs-decision"
-          ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
-          : { status: "needs-input", reason: builder.reason };
-      }
+      // The builder owns the UI schema. A partial artifact is still the
+      // builder's typed result, so render it unchanged and ask the bounded
+      // question instead of replacing it with a generic broker form.
+      envelope.artifacts = [artifact];
+      const question = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
+      envelope.content = question;
+      envelope.builder = builder.status === "needs-decision"
+        ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
+        : { status: "needs-input", reason: builder.reason };
     } else {
       const active = completeActiveArtifact(options.activeArtifact);
       const fallback = presentation.mode === "update-existing-ui"
         && builder.code !== "BUILDER_INVALID_OUTPUT"
         && active
         ? brokeredFallbackArtifact(active, options.request)
-          : presentation.mode === "markdown+inline-ui"
-          ? genericBrokeredArtifact(options.request, options.conversation, options.conversationContext)
+        : presentation.mode === "markdown+inline-ui"
+          ? genericBrokeredArtifact(options.request, options.conversation)
           : null;
       if (fallback) {
         envelope.artifacts = [fallback];

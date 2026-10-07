@@ -1,5 +1,13 @@
 # Release notes
 
+## 4.2.43
+
+- Preserve valid partial UI artifacts and backend decisions returned by the
+  builder instead of replacing them with a generic Interactive tool form.
+- Route corrective feedback about the current UI back through the builder.
+- Remove domain-specific grocery/list fallback generation from the agent
+  harness so UI schema and domain behavior remain builder-owned.
+
 ## 4.2.42
 
 - Return a typed, conversation-scoped Checklist for grocery, shopping, and to-do

@@ -190,12 +190,11 @@ malformed result, or failed command keeps the Markdown response and returns only
 `deployment.status: proposal` and always requires explicit confirmation; the harness never deploys
 it automatically.
 
-For an explicit create-UI request, a partial artifact that cannot bind an installed backend—or a
-temporary builder failure—is converted into a runnable generic form rather than a text-only refusal. Its only action uses the
-artifact's own scoped namespace and is brokered by the owning agent, which may use its configured
-tools to produce the result without inventing a backend command. Recognized interactions use
-task-specific copy and fields; for example, a ZIP-to-city request renders “ZIP Code Lookup”,
-“ZIP code”, “City”, and “Find city” rather than generic input/result labels.
+For an explicit create-UI request, a valid partial artifact that needs a backend decision or input is
+returned exactly as produced by the builder, together with a bounded question. The harness does not
+synthesize a domain-specific list or form schema; the builder owns the UI and its interaction model.
+A timeout, malformed result, or failed command may still use the legacy brokered form as a
+compatibility fallback, while successful and partial builder artifacts remain unchanged.
 
 ### `agent route`
 
