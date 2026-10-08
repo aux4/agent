@@ -600,6 +600,8 @@ test("inline UI uses local builder argv and replaces model prose with a confirma
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
   const builder = calls.find(call => call.args.join(" ") === "agent builder build");
   assert.ok(builder);
+  assert.equal(calls.some(call => call.args.join(" ").includes("ai agent ask")), false);
+  assert.equal(calls.some(call => call.args.join(" ").includes("playbook hook-")), false);
   assert.deepEqual(JSON.parse(builder.input), {
     request: "build a grocery list",
     context: "milk and eggs",

@@ -1077,6 +1077,64 @@ function runAgentAsk(options, history, recovery = "") {
   return runAux4(args);
 }
 
+function runBuilderTurn(options, presentation) {
+  const envelope = {
+    version: 1,
+    content: interactiveConfirmation(presentation),
+    presentation,
+    artifacts: [],
+    execution: { source: "builder" }
+  };
+  const builder = invokeBuilder({ ...options, request: builderRequestFor(options) });
+  if (builder.status === "done") {
+    if (builder.artifactTransaction) {
+      envelope.artifactTransaction = builder.artifactTransaction;
+      envelope.builder = { status: "done" };
+    } else if (builder.artifactTransformation) {
+      envelope.artifactTransformation = builder.artifactTransformation;
+      envelope.builder = { status: "done" };
+    } else {
+      const artifact = presentation.mode === "update-existing-ui"
+        ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
+        : builder.artifact;
+      envelope.artifacts = [artifact];
+      envelope.builder = { status: "done" };
+      if (presentation.mode === "markdown+app-proposal") {
+        envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
+      }
+    }
+    return envelope;
+  }
+
+  if (builder.status === "needs-decision" || builder.status === "needs-input") {
+    const artifact = presentation.mode === "update-existing-ui"
+      ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
+      : builder.artifact;
+    envelope.artifacts = [artifact];
+    envelope.content = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
+    envelope.builder = builder.status === "needs-decision"
+      ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
+      : { status: "needs-input", reason: builder.reason };
+    return envelope;
+  }
+
+  envelope.content = builder.message;
+  envelope.builder = { status: "error", code: builder.code };
+  return envelope;
+}
+
+function deterministicBuilderPresentation(options) {
+  const explicitOverride = options.presentation && options.presentation !== "auto";
+  const activeUpdate = hasActiveArtifact(options.activeArtifact) && isArtifactUpdateRequest(options.request);
+  const natural = inferExplicitMode(options.request, options.conversationContext);
+  const incompleteActiveView = hasActiveArtifact(options.activeArtifact)
+    && isActiveArtifactViewRequest(options.request);
+  const obviousMutableState = inferObviousMutableStateMode(options.request);
+  if (!explicitOverride && !activeUpdate && !natural && !incompleteActiveView && !obviousMutableState) return null;
+  const presentation = routePresentation(options);
+  return presentation.requiresBuilder ? presentation : null;
+}
+
 async function ask(options) {
   // A complete active-artifact view is the only route that must return before a
   // model call starts. Every other automatic route can classify in parallel with
@@ -1094,6 +1152,17 @@ async function ask(options) {
       execution: { source: "active-artifact-reuse" }
     };
     process.stdout.write(options.output === "json" ? `${JSON.stringify(envelope)}\n` : `${content}\n`);
+    return;
+  }
+
+  // Explicit UI and obvious mutable-state requests do not need a classifier or
+  // the general answer model. Hand the whole turn directly to the builder, which
+  // owns both the typed UI and its backend contract. Automatic/ambiguous routing
+  // still overlaps JEV with the answer model below.
+  const directBuilderPresentation = deterministicBuilderPresentation(options);
+  if (options.output === "json" && directBuilderPresentation) {
+    const envelope = runBuilderTurn(options, directBuilderPresentation);
+    process.stdout.write(`${JSON.stringify(envelope)}\n`);
     return;
   }
 
@@ -1140,6 +1209,11 @@ async function ask(options) {
   if (suggestion) content = content ? `${content}\n\n${suggestion}` : suggestion;
 
   const presentation = await presentationPromise;
+  if (options.output === "json" && presentation.requiresBuilder) {
+    const envelope = runBuilderTurn(options, presentation);
+    process.stdout.write(`${JSON.stringify(envelope)}\n`);
+    return;
+  }
 
   const envelope = {
     version: 1,
@@ -1148,69 +1222,6 @@ async function ask(options) {
     artifacts: [],
     execution
   };
-  if (options.output === "json" && presentation.requiresBuilder) {
-    const builder = invokeBuilder({ ...options, request: builderRequestFor(options) });
-    if (builder.status === "done") {
-      if (builder.artifactTransaction) {
-        envelope.artifactTransaction = builder.artifactTransaction;
-        envelope.builder = { status: "done" };
-      } else if (builder.artifactTransformation) {
-        envelope.artifactTransformation = builder.artifactTransformation;
-        envelope.builder = { status: "done" };
-      } else {
-        const builtArtifact = presentation.mode === "update-existing-ui"
-          ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
-          : builder.artifact;
-        // Layout ownership stays inside builder. The harness only applies
-        // stable identity; it never rewrites a successful builder artifact.
-        const artifact = builtArtifact;
-        envelope.artifacts = [artifact];
-        envelope.builder = { status: "done" };
-        if (isContradictoryInteractiveProse(envelope.content)
-          && (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui")) {
-          envelope.content = interactiveConfirmation(presentation);
-        }
-        if (isExplicitNewMutableStateRequest(options.request)) {
-          envelope.content = /\b(?:list|checklist)\b/i.test(options.request)
-            ? "Here’s your new list."
-            : "Here’s your new interactive view.";
-        }
-        if (presentation.mode === "markdown+app-proposal") {
-          envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
-        }
-      }
-      // The builder's typed artifact is the UI response. Model prose generated
-      // before the builder ran can contain speculative HTML/JS or describe a
-      // layout that differs from the validated artifact. Never render that
-      // implementation draft beside a successful inline UI result.
-      if (presentation.mode === "markdown+inline-ui" || presentation.mode === "update-existing-ui") {
-        envelope.content = interactiveConfirmation(presentation);
-      }
-    } else if (builder.status === "needs-decision" || builder.status === "needs-input") {
-      const builtArtifact = presentation.mode === "update-existing-ui"
-        ? applyStableArtifactIdentity(builder.artifact, options.activeArtifact)
-        : builder.artifact;
-      const artifact = builtArtifact;
-      // The builder owns the UI schema. A partial artifact is still the
-      // builder's typed result, so render it unchanged and ask the bounded
-      // question instead of replacing it with a generic broker form.
-      envelope.artifacts = [artifact];
-      const question = builder.status === "needs-decision" ? decisionQuestion(builder) : inputQuestion();
-      envelope.content = question;
-      envelope.builder = builder.status === "needs-decision"
-        ? { status: "needs-decision", reason: builder.reason, decisions: builder.decisions }
-        : { status: "needs-input", reason: builder.reason };
-    } else {
-      // A builder failure is not a valid interactive result. The old path
-      // synthesized an agent-action form here, which made a request appear to
-      // succeed while silently dropping the backend selected by the builder.
-      // Backend-backed UI requests must be fulfilled by the builder or remain
-      // an explicit error that can be retried; never present a local-only
-      // compatibility artifact as if it were the requested application.
-      envelope.content = envelope.content ? `${envelope.content}\n\n${builder.message}` : builder.message;
-      envelope.builder = { status: "error", code: builder.code };
-    }
-  }
   process.stdout.write(options.output === "json" ? `${JSON.stringify(envelope)}\n` : `${content}\n`);
 }
 
