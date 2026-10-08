@@ -1,5 +1,12 @@
 # Release notes
 
+## 4.2.54
+
+- Fix fresh/new interactive UI requests so the active artifact is not forwarded
+  as a builder update target. This prevents duplicate routes, stale actions, and
+  accidental mutation of the prior UI while preserving explicit updates and
+  legacy artifact materialization.
+
 ## 4.2.52
 
 - Require a successful builder-owned backend contract for interactive UIs; builder failures no longer produce a local-only compatibility form.

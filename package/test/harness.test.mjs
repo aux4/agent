@@ -281,6 +281,31 @@ test("a brokered artifact is upgraded to the builder's complete artifact contrac
   assert.equal(payload.currentArtifact.data.source, undefined);
 });
 
+test("a fresh inline UI request does not send the active artifact to the builder", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const freshArtifact = { ...artifact, id: "fresh-id", ref: "builder://fresh-id", title: "Fresh" };
+  const result = run(askArgs({
+    request: "Create a fresh interactive collection",
+    presentation: "auto",
+    activeArtifact: JSON.stringify(activeGroceryArtifact)
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", artifact: freshArtifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const builder = calls.find(call => call.args.join(" ") === "agent builder build");
+  assert.ok(builder);
+  const payload = JSON.parse(builder.input);
+  assert.equal(payload.currentRef, undefined);
+  assert.equal(payload.currentArtifact, undefined);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.artifacts[0].id, "fresh-id");
+  assert.equal(envelope.artifacts[0].ref, "builder://fresh-id");
+});
+
 test("an active artifact routes a follow-up to update-existing-ui", () => {
   const result = run(["route", "add eggs", "auto", "", '{"id":"grocery-list"}']);
   assert.equal(result.status, 0, result.stderr);

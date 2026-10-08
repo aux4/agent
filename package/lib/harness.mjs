@@ -1085,7 +1085,20 @@ function runBuilderTurn(options, presentation) {
     artifacts: [],
     execution: { source: "builder" }
   };
-  const builder = invokeBuilder({ ...options, request: builderRequestFor(options) });
+  // A complete active artifact is context only for an actual update.  Passing it
+  // to a create-mode builder request silently turns "new"/"fresh" into an update:
+  // the builder preserves the old routes and appends the requested screen, which
+  // produces duplicate navigation and stale backend actions.  The one create-mode
+  // exception is materializing a legacy Repeater during an explicit view request;
+  // that path intentionally upgrades the existing artifact contract.
+  const active = completeActiveArtifact(options.activeArtifact);
+  const materializeActive = active
+    && needsArtifactMaterialization(active)
+    && isActiveArtifactViewRequest(options.request);
+  const builderOptions = presentation.mode === "update-existing-ui" || materializeActive
+    ? options
+    : { ...options, activeArtifact: "" };
+  const builder = invokeBuilder({ ...builderOptions, request: builderRequestFor(options) });
   if (builder.status === "done") {
     if (builder.artifactTransaction) {
       envelope.artifactTransaction = builder.artifactTransaction;
