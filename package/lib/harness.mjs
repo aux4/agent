@@ -418,6 +418,12 @@ function decisionQuestion(result) {
 }
 
 function inputQuestion() {
+  // Deliberately generic, user-facing prose: the builder's own `reason`
+  // (e.g. "no part of the instruction could be resolved into an app
+  // screen/route") is internal jargon, not something to show a real end
+  // user verbatim. That reason is already carried structurally in the
+  // JSON envelope's own `builder.reason` field for any caller that wants
+  // it -- this prompt only needs to ask the user for more detail.
   return "I need a little more detail before I can finish the interactive view. Please describe the screen or interaction you want changed.";
 }
 
@@ -426,6 +432,57 @@ function isContradictoryInteractiveProse(content) {
   return /(?:cannot|can't|do not have|don't have|unable to|not able to).{0,100}(?:custom|interactive|hosted|ui|widget|interface|web app)/.test(text)
     || /(?:capabilities|interface).{0,80}(?:limited to|only).{0,80}(?:text|specific tools)/.test(text)
     || /only (?:respond|reply) to (?:the )?text/.test(text);
+}
+
+// collectArtifactLabels walks a form/app.json tree (children arrays, each
+// node's own top-level `label` or `props.label`) depth-first and returns
+// every non-empty label it finds, in document order, deduplicated. Used to
+// derive a confirmation message from what the builder actually produced
+// instead of a canned line that says the same thing regardless of outcome.
+function collectArtifactLabels(node, out = [], seen = new Set()) {
+  if (!node || typeof node !== "object") return out;
+  const label = typeof node.label === "string" && node.label.trim()
+    ? node.label.trim()
+    : typeof node.props?.label === "string" && node.props.label.trim()
+      ? node.props.label.trim()
+      : "";
+  if (label && !seen.has(label)) {
+    seen.add(label);
+    out.push(label);
+  }
+  const children = Array.isArray(node.children) ? node.children : [];
+  for (const child of children) collectArtifactLabels(child, out, seen);
+  // app.json's own `routes` is a plain object keyed by path (e.g.
+  // `{"/": {...}, "/add": {...}}`), never an array -- form mode's `routes`
+  // (when present at all) is the array shape instead, so both are walked.
+  const routes = Array.isArray(node.routes)
+    ? node.routes
+    : node.routes && typeof node.routes === "object"
+      ? Object.values(node.routes)
+      : [];
+  for (const route of routes) collectArtifactLabels(route, out, seen);
+  return out;
+}
+
+// builtSummary derives a confirmation message from the builder's own
+// finished artifact -- its title plus a short list of the actual
+// fields/screens/actions it built -- instead of the fixed "Here's the
+// interactive view."/"I updated the interactive view." lines, which said
+// the same thing whether the build matched the request fully or not. Falls
+// back to the old generic line only when the artifact carries nothing
+// introspectable (e.g. an artifactTransaction/artifactTransformation,
+// which are themselves already self-describing diffs, not a fresh build).
+function builtSummary(builder, presentation) {
+  const updating = presentation.mode === "update-existing-ui";
+  const fallback = updating ? "I updated the interactive view." : "Here’s the interactive view.";
+  const artifact = builder?.artifact;
+  const title = typeof artifact?.title === "string" ? artifact.title.trim() : "";
+  const app = artifact?.data?.app;
+  const labels = collectArtifactLabels(app).slice(0, 8);
+  if (!title && labels.length === 0) return fallback;
+  const verb = updating ? "Updated" : "Built";
+  const headline = title ? `${verb} "${title}".` : `${verb} the interactive view.`;
+  return labels.length ? `${headline} Includes: ${labels.join(", ")}.` : headline;
 }
 
 function interactiveConfirmation(presentation) {
@@ -1112,6 +1169,7 @@ function runBuilderTurn(options, presentation) {
         : builder.artifact;
       envelope.artifacts = [artifact];
       envelope.builder = { status: "done" };
+      envelope.content = builtSummary({ ...builder, artifact }, presentation);
       if (presentation.mode === "markdown+app-proposal") {
         envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
       }

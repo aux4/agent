@@ -38,6 +38,11 @@ An explicit new-instance request for an obvious mutable collection (`new`, `sepa
 or equivalent) selects inline UI before classifier scoring. Explanation, comparison, and drafting
 requests remain eligible for Markdown. After a successful explicit-new collection build, the
 harness emits a clean creation confirmation instead of retaining contradictory destination prose.
+That confirmation is derived from the builder's own finished artifact — its `title` plus the
+field/screen labels found in its built app — e.g. `Built "Booking". Includes: Name, Email,
+Submit.` — not a fixed line that reads the same regardless of what was actually built. An
+`artifactTransaction`/`artifactTransformation` result keeps the plain `"I updated the interactive
+view."` line, since it is already a self-describing diff of an existing artifact.
 
 Builder `needs-decision` results append a clean Markdown question and expose typed decision metadata.
 Internal validation and command-line diagnostics remain in `builder.reason`; they are not copied into

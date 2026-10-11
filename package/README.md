@@ -155,7 +155,16 @@ Explicit new-instance requests for an obvious mutable collection, such as “Cre
 grocery list with juice and apples,” deterministically select inline UI before JEV classification.
 This avoids a low-confidence presentation result changing an explicit creation request into prose.
 After the builder succeeds, the harness also replaces contradictory model-side destination prose
-with a short confirmation that the new interactive list is ready.
+with a short confirmation that the new interactive list is ready. That confirmation is derived
+from what the builder actually built — its artifact's own `title`, plus the field/screen labels
+found in its `data.app`, e.g. `Built "Booking". Includes: Name, Email, Submit.` — not a fixed line
+that reads the same regardless of outcome. An `artifactTransaction`/`artifactTransformation`
+result (an incremental edit to an existing artifact, already self-describing as a diff) keeps the
+plain `"I updated the interactive view."` confirmation instead. When the builder instead returns
+`needs-input` or `needs-decision`, the harness asks the specific open question(s); the builder's
+own internal `reason` for a `needs-input` (e.g. naming a span it could not represent) is carried
+in the JSON envelope's `builder.reason` field for a caller that wants it, never leaked verbatim
+into the user-facing prompt.
 
 When `--activeArtifact` contains a complete typed artifact, a pure request such as “Show me the
 list”, “Show my breakfast grocery list”, “View the current dashboard”, or “Open it” re-emits that

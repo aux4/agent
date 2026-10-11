@@ -619,7 +619,7 @@ test("inline UI uses local builder argv and replaces model prose with a confirma
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here’s the interactive view.");
+  assert.equal(envelope.content, 'Built "Groceries".');
   assert.deepEqual(envelope.artifacts, [artifact]);
   assert.deepEqual(envelope.builder, { status: "done" });
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
@@ -634,6 +634,38 @@ test("inline UI uses local builder argv and replaces model prose with a confirma
     auto: true,
     steps: 10
   });
+});
+
+test("a fresh build's confirmation names the actual fields/screens built, not a canned line", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const labeledArtifact = {
+    ...artifact,
+    title: "Booking",
+    data: {
+      ...artifact.data,
+      app: {
+        routes: {
+          "/": {
+            type: "Form",
+            children: [
+              { type: "Input", label: "Name" },
+              { type: "Input", label: "Email" },
+              { type: "Button", label: "Submit" }
+            ]
+          }
+        }
+      }
+    }
+  };
+  const result = run(askArgs({}), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact: labeledArtifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.content, 'Built "Booking". Includes: Name, Email, Submit.');
 });
 
 test("inline UI forwards the caller's portable backend catalog", () => {
@@ -668,7 +700,7 @@ test("inline UI replaces a contradictory model refusal when the builder returns 
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here’s the interactive view.");
+  assert.equal(envelope.content, 'Built "Groceries".');
   assert.deepEqual(envelope.artifacts, [artifact]);
 });
 
@@ -686,7 +718,7 @@ test("a retry after a UI refusal sends the prior UI request to the builder", () 
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here’s the interactive view.");
+  assert.equal(envelope.content, 'Built "Groceries".');
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
   const builder = calls.find(call => call.args.join(" ") === "agent builder build");
   assert.ok(builder);
@@ -870,7 +902,7 @@ test("a successful separate collection build replaces contradictory model prose"
   }, folder);
   assert.equal(result.status, 0, result.stderr);
   const envelope = JSON.parse(result.stdout);
-  assert.equal(envelope.content, "Here’s the interactive view.");
+  assert.equal(envelope.content, 'Built "Groceries".');
   assert.equal(envelope.presentation.source, "explicit-request");
   assert.deepEqual(envelope.artifacts, [semanticArtifact]);
 });
