@@ -793,6 +793,71 @@ test("a valid builder transformation is preserved unchanged with an empty artifa
   assert.doesNotMatch(envelope.content, /html|speculative implementation/);
 });
 
+function groceryInitialActions(items) {
+  return items.map(item => ({
+    package: "aux4/todo",
+    command: ["add"],
+    name: `add ${item}`,
+    mapping: {
+      item: { kind: "fixed", value: item },
+      name: { kind: "fixed", value: "grocery" }
+    }
+  }));
+}
+
+test("a fresh build forwards the builder's initialActions plan to the envelope", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const initialActions = groceryInitialActions(["lemon", "apple", "grapes"]);
+  const result = run(askArgs({ request: "Add lemon, apple, and grapes to my grocery list" }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact, initialActions })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, [artifact]);
+  assert.deepEqual(envelope.initialActions, initialActions);
+});
+
+test("an artifactTransformation update forwards the builder's initialActions plan to the envelope", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const initialActions = groceryInitialActions(["lemon", "apple", "grapes"]);
+  const result = run(askArgs({
+    request: "Add lemon, apple, and grapes to my grocery list",
+    presentation: "update-existing-ui",
+    activeArtifact: JSON.stringify(activeGroceryArtifact)
+  }), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({
+      status: "done",
+      reason: "Items added.",
+      artifactTransformation: groceryTransformation,
+      initialActions
+    })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.deepEqual(envelope.artifacts, []);
+  assert.deepEqual(envelope.artifactTransformation, groceryTransformation);
+  assert.deepEqual(envelope.initialActions, initialActions);
+});
+
+test("a builder response without initialActions never adds the field to the envelope", () => {
+  const { folder, fake } = makeBuilderFake();
+  const log = path.join(folder, "calls.log");
+  const result = run(askArgs(), {
+    AUX4_BIN: fake,
+    CALL_LOG: log,
+    BUILDER_OUTPUT: JSON.stringify({ status: "done", reason: "built", artifact })
+  }, folder);
+  assert.equal(result.status, 0, result.stderr);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.initialActions, undefined);
+});
+
 test("stale and ambiguous builder transformations degrade to a safe builder error", () => {
   const invalidOutputs = [
     { status: "done", artifact, artifactTransformation: groceryTransformation },

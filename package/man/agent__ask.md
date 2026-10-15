@@ -44,6 +44,12 @@ Submit.` — not a fixed line that reads the same regardless of what was actuall
 `artifactTransaction`/`artifactTransformation` result keeps the plain `"I updated the interactive
 view."` line, since it is already a self-describing diff of an existing artifact.
 
+When the builder's result also carries an `initialActions` plan (one runtimeAction per literal
+item on a collection-add request), the harness forwards it unchanged as a top-level
+`initialActions` array on the envelope -- for the ordinary artifact, `artifactTransaction`, and
+`artifactTransformation` shapes alike. The harness never executes the plan; the caller owns
+idempotent execution against the committed artifact.
+
 Builder `needs-decision` results append a clean Markdown question and expose typed decision metadata.
 Internal validation and command-line diagnostics remain in `builder.reason`; they are not copied into
 the user-facing answer. A valid `needs-input` result preserves the typed artifact and asks for a

@@ -189,6 +189,14 @@ artifacts. It then returns the plan unchanged as `artifactTransaction` with `art
 harness never executes the plan; the caller owns the atomic catalog commit, conflict handling, and
 idempotent replay.
 
+When the builder's result also includes an `initialActions` plan (one runtimeAction per literal
+item on a collection-add request, e.g. "add lemon, apple, and grapes to my grocery list"), the
+harness forwards it unchanged as a top-level `initialActions` array alongside `artifact`,
+`artifactTransaction`, or `artifactTransformation` -- on every one of those three result shapes,
+not only a fresh build. The harness never executes the plan itself; the caller (cloud-agent)
+owns idempotent execution against the committed artifact and re-sanitizes the plan on its own
+side of the boundary.
+
 A `needs-decision` result preserves the partial artifact, appends a clear question to `content`, and
 returns the typed decisions in `builder.decisions`. Internal builder diagnostics remain in the
 machine-readable `builder.reason` and are never copied into user-facing Markdown. A valid

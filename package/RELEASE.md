@@ -1,5 +1,16 @@
 # Release notes
 
+## 4.2.55
+
+- Forward the builder's `initialActions` seeding plan (one runtimeAction per
+  literal item on a collection-add request) through the harness envelope on
+  every done branch -- fresh artifact, artifactTransaction, and
+  artifactTransformation (update) alike. Previously `parseBuilderOutput`
+  destructured only `{status, reason, artifact, artifactTransaction,
+  artifactTransformation, decisions}`, so a correctly-emitted builder plan was
+  silently dropped at this layer and cloud-agent's execution of initialActions
+  (AX-052/AX-054) never fired, leaving freshly built/updated lists empty.
+
 ## 4.2.54
 
 - Fix fresh/new interactive UI requests so the active artifact is not forwarded

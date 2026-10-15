@@ -166,7 +166,7 @@ function parseBuilderOutput(stdout, activeArtifact = "") {
     return builderFailure("BUILDER_INVALID_OUTPUT");
   }
   if (!value || Array.isArray(value) || typeof value !== "object") return builderFailure("BUILDER_INVALID_OUTPUT");
-  const { status, reason, artifact, artifactTransaction, artifactTransformation, decisions } = value;
+  const { status, reason, artifact, artifactTransaction, artifactTransformation, decisions, initialActions } = value;
   const hasArtifact = Object.prototype.hasOwnProperty.call(value, "artifact");
   const hasTransaction = Object.prototype.hasOwnProperty.call(value, "artifactTransaction");
   const hasTransformation = Object.prototype.hasOwnProperty.call(value, "artifactTransformation");
@@ -177,22 +177,36 @@ function parseBuilderOutput(stdout, activeArtifact = "") {
   const validTransformation = hasTransformation
     ? validateArtifactTransformation(artifactTransformation, activeArtifact)
     : false;
+  // initialActions (AX-052/AX-054) is the builder's seeded-item plan for a fresh
+  // or updated collection. It is forwarded unchanged -- not re-validated here --
+  // the same deny-by-default sanitization already applied to every other
+  // builder-origin field happens one hop downstream at the cloud-agent
+  // harness-adapter boundary (sanitizeInitialActions). Only its shape (an
+  // array) is checked so a malformed value never silently reaches that layer.
+  const validInitialActions = Array.isArray(initialActions) && initialActions.length > 0;
   const resultCount = Number(hasArtifact) + Number(hasTransaction) + Number(hasTransformation);
   if (status === "done" && resultCount === 1 && hasArtifact && typedArtifact) {
-    return { status, reason: typeof reason === "string" ? reason : "", artifact: typedArtifact };
+    return {
+      status,
+      reason: typeof reason === "string" ? reason : "",
+      artifact: typedArtifact,
+      ...(validInitialActions ? { initialActions } : {})
+    };
   }
   if (status === "done" && resultCount === 1 && validTransaction) {
     return {
       status,
       reason: typeof reason === "string" ? reason : "",
-      artifactTransaction
+      artifactTransaction,
+      ...(validInitialActions ? { initialActions } : {})
     };
   }
   if (status === "done" && resultCount === 1 && validTransformation) {
     return {
       status,
       reason: typeof reason === "string" ? reason : "",
-      artifactTransformation
+      artifactTransformation,
+      ...(validInitialActions ? { initialActions } : {})
     };
   }
   if (status === "needs-decision" && hasArtifact && !hasTransaction && !hasTransformation
@@ -1173,6 +1187,9 @@ function runBuilderTurn(options, presentation) {
       if (presentation.mode === "markdown+app-proposal") {
         envelope.deployment = { status: "proposal", automatic: false, requiresConfirmation: true };
       }
+    }
+    if (Array.isArray(builder.initialActions) && builder.initialActions.length) {
+      envelope.initialActions = builder.initialActions;
     }
     return envelope;
   }
