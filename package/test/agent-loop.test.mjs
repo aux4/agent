@@ -30,6 +30,8 @@ import {
   missingParameterHints,
   verifyToolList,
   isSafeReadBack,
+  pickFromReply,
+  onlyAnswerFailed,
   historyStats,
   metricsPath,
   readVerdict,
@@ -616,4 +618,19 @@ else if (command.includes("loop-verify.md")) {
     assert.equal(outcome.stopped, "pass");
     assert.deepEqual(outcome.verdict.checks, ["echo empty"]);
   });
+});
+
+test("pickFromReply takes a number or an exact command", () => {
+  const reads = ["x list", "x get 1"];
+  assert.equal(pickFromReply("2", reads), "x get 1");
+  assert.equal(pickFromReply("Command 1.", reads), "x list");
+  assert.equal(pickFromReply("0", reads), "");
+  assert.equal(pickFromReply("use x get 1", reads), "x get 1");
+});
+
+test("onlyAnswerFailed is true when every state criterion holds and only answer criteria fail", () => {
+  const plan = { doneCriteria: ["moved"], stateCriteria: ["moved"] };
+  assert.equal(onlyAnswerFailed(plan, { criteria: [{ criterion: "moved", status: "pass" }, { criterion: "honest", status: "fail" }] }), true);
+  assert.equal(onlyAnswerFailed(plan, { criteria: [{ criterion: "moved", status: "fail" }, { criterion: "honest", status: "fail" }] }), false);
+  assert.equal(onlyAnswerFailed(plan, { criteria: [{ criterion: "moved", status: "pass" }, { criterion: "honest", status: "pass" }] }), false);
 });

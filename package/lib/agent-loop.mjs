@@ -480,13 +480,21 @@ export function pickReadBack(options, plan, candidates) {
     ...(plan.stateCriteria || []).map(c => `- ${c}`),
     "",
     "Commands:",
-    ...reads.map(c => `- ${c}`),
+    ...reads.map((c, i) => `${i + 1}. ${c}`),
     "",
-    "Reply with only the exact command, copied from the list, or NONE."
+    "Reply with only the number of that command, or 0 if none of them shows it."
   ].join("\n");
   const result = askOnce(options, { instructions: verifyInstructionsPath(options.packageDir), question, extraArgs: ["--tools", PLAN_TOOLS] });
-  const answer = String(result.stdout || "").trim().replace(/^`+|`+$/g, "").split("\n")[0].trim();
-  return reads.includes(answer) ? answer : "";
+  return pickFromReply(result.stdout, reads);
+}
+
+// Small models rarely copy a long command back exactly; a number is easy.
+export function pickFromReply(reply, reads) {
+  const text = String(reply || "").trim();
+  const quoted = [...reads].sort((a, b) => b.length - a.length).find(c => text.includes(c));
+  if (quoted) return quoted;
+  const n = Number((text.match(/\d+/) || [])[0]);
+  return Number.isInteger(n) && n >= 1 && n <= reads.length ? reads[n - 1] : "";
 }
 
 export function runReadBack(command) {
@@ -628,6 +636,25 @@ export function missingParameterHints(attempts) {
     if (m) hints.push(`"${a.command.slice(0, 80)}" was missing the required --${m[1]} parameter: pass --${m[1]} with its value.`);
   }
   return hints.length ? ["", ...[...new Set(hints)]] : [];
+}
+
+// Every state criterion holds and only what the answer says is off: fix the
+// answer, not the world.
+export function onlyAnswerFailed(plan, verdict) {
+  const state = new Set(plan.stateCriteria || plan.doneCriteria);
+  const unmet = verdict.criteria.filter(c => c.status !== "pass");
+  return unmet.length > 0 && unmet.every(c => !state.has(c.criterion)) &&
+    verdict.criteria.filter(c => state.has(c.criterion)).every(c => c.status === "pass");
+}
+
+export function composeRewriteQuestion(verdict) {
+  const unmet = verdict.criteria.filter(c => c.status !== "pass").map(c => `- ${c.criterion}: ${c.evidence}`).join("\n");
+  return [
+    "The work itself is done and confirmed. Only your final answer is off:",
+    unmet,
+    "",
+    "Do not run any more actions. Reply with a corrected final answer that states exactly what was done and what the results showed."
+  ].join("\n");
 }
 
 export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", lookFirst = false) {
@@ -831,7 +858,9 @@ export async function runLoop(options, history, execute, recovery = "") {
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
       ? composeExecuteQuestion(options.request, plan, recovery)
-      : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
+      : onlyAnswerFailed(plan, priorVerdict)
+        ? composeRewriteQuestion(priorVerdict)
+        : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
 
     const before = extractAttemptLog(history).length;
     const messagesBefore = readMessages(history).length;
@@ -882,7 +911,9 @@ export async function runLoop(options, history, execute, recovery = "") {
     priorVerdict = lastVerdict;
     lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
-    deniedCommands = [...new Set([...deniedCommands, ...newlyFailed])];
+    // A change that already went through must not be repeated by a retry.
+    const doneChanges = attempts.filter(a => !a.failed && CHANGE_VERB.test(a.command)).map(a => a.command);
+    deniedCommands = [...new Set([...deniedCommands, ...newlyFailed, ...doneChanges])];
   }
 
   // Unreachable in practice (the loop above always returns), but keep a safe

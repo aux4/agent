@@ -13,5 +13,5 @@ node agent-loop.test.mjs
 ```
 
 ```expect:partial
-pass 49
+pass 51
 ```
