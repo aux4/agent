@@ -530,3 +530,10 @@ test("isBlocked accepts the BLOCKED: mark, and the answer drops it", async () =>
   assert.equal(isBlocked("BLOCKED: I need the account password."), true);
   assert.equal(stripFailureClass("BLOCKED: I need the account password."), "I need the account password.");
 });
+
+test("composeDiagnoseQuestion carries the full list of commands a denial offered", () => {
+  const verdict = { overall: "fail", criteria: [{ criterion: "b", status: "fail", evidence: "not sent" }] };
+  const long = "Permission denied: command \"x reply\" is not allowed. Commands you may run: " + Array.from({ length: 30 }, (_, i) => `aux4 cmd${i} list`).join(", ") + ", aux4 x send.";
+  const q = composeDiagnoseQuestion({ goal: "g", doneCriteria: ["b"] }, verdict, [{ command: "x reply", failed: true, result: long, resultSummary: long.slice(0, 300) }]);
+  assert.match(q, /Commands you may run: .*aux4 x send/);
+});

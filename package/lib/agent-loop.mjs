@@ -571,6 +571,7 @@ export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", l
     "",
     "What was attempted, in order:",
     summarizeAttemptLog(attempts),
+    ...(allowedCommandsOffered(attempts) ? ["", `Commands you may run: ${allowedCommandsOffered(attempts)}`] : []),
     "",
     "Work out why (wrong command, wrong parameters, a tool error, a step not done, a misread fact) and fix it now by calling the tools. Do not just describe the fix -- do it.",
     "Actions listed as FAILED are denied for this retry. An action listed as ok may already have taken effect: check the current state before doing it again, and never repeat one that sends, creates, or deletes something.",
