@@ -555,6 +555,18 @@ export function extractFailureClass(text) {
   return FAILURE_CLASSES.includes(value) ? value : "";
 }
 
+// aux4 reports a missing required parameter as "Error to enter the value of
+// <name>"; spell out what that means so the retry passes it.
+export function missingParameterHints(attempts) {
+  const hints = [];
+  for (const a of attempts) {
+    if (!a.failed) continue;
+    const m = String(a.result || a.resultSummary || "").match(/Error to enter the value of (\w+)/i);
+    if (m) hints.push(`"${a.command.slice(0, 80)}" was missing the required --${m[1]} parameter: pass --${m[1]} with its value.`);
+  }
+  return hints.length ? ["", ...[...new Set(hints)]] : [];
+}
+
 export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", lookFirst = false) {
   const failed = verdict.criteria.filter(c => c.status !== "pass");
   const lines = failed.map(c => `- ${c.criterion} (${c.status}): ${c.evidence}`).join("\n");
@@ -572,6 +584,7 @@ export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", l
     "What was attempted, in order:",
     summarizeAttemptLog(attempts),
     ...(allowedCommandsOffered(attempts) ? ["", `Commands you may run: ${allowedCommandsOffered(attempts)}`] : []),
+    ...missingParameterHints(attempts),
     "",
     "Work out why (wrong command, wrong parameters, a tool error, a step not done, a misread fact) and fix it now by calling the tools. Do not just describe the fix -- do it.",
     "Actions listed as FAILED are denied for this retry. An action listed as ok may already have taken effect: check the current state before doing it again, and never repeat one that sends, creates, or deletes something.",
@@ -734,6 +747,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   let lastVerdict = null;
   let pushedPastBlocked = false;
   let lookFirst = false;
+  const priorCommands = new Set();
   const done = (stopped, attempt, note = "") => {
     metrics.stopped = stopped;
     metrics.total = [metrics.plan, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
@@ -786,7 +800,11 @@ export async function runLoop(options, history, execute, recovery = "") {
     saveVerdict(history, attempt, attempts, { ...lastVerdict, ms: { execute: verifyStart - executeStart, verify: Date.now() - verifyStart } });
 
     if (lastVerdict.overall === "pass") return done("pass", attempt);
-    if (sameFailureShape(priorVerdict, lastVerdict)) return done("no-progress", attempt, incompleteNote(lastVerdict));
+    // No progress means the verdict did not move AND the round tried nothing
+    // new; a retry that tried a different action is still making progress.
+    const triedSomethingNew = attempts.slice(before).some(a => !priorCommands.has(a.command));
+    if (sameFailureShape(priorVerdict, lastVerdict) && !triedSomethingNew) return done("no-progress", attempt, incompleteNote(lastVerdict));
+    for (const a of attempts) priorCommands.add(a.command);
     if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
 
     priorVerdict = lastVerdict;

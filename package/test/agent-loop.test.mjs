@@ -27,6 +27,7 @@ import {
   readBackCandidates,
   askedWithoutLooking,
   describedWithoutDoing,
+  missingParameterHints,
   historyStats,
   metricsPath,
   readVerdict,
@@ -536,4 +537,28 @@ test("composeDiagnoseQuestion carries the full list of commands a denial offered
   const long = "Permission denied: command \"x reply\" is not allowed. Commands you may run: " + Array.from({ length: 30 }, (_, i) => `aux4 cmd${i} list`).join(", ") + ", aux4 x send.";
   const q = composeDiagnoseQuestion({ goal: "g", doneCriteria: ["b"] }, verdict, [{ command: "x reply", failed: true, result: long, resultSummary: long.slice(0, 300) }]);
   assert.match(q, /Commands you may run: .*aux4 x send/);
+});
+
+test("a retry that tried a new action is not stopped as no-progress", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let n = 0;
+    const outcome = await runLoop(baseOptions(), history, (q, h) => {
+      n++;
+      const prior = JSON.parse(fs.readFileSync(h, "utf8")).messages;
+      prior.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: `c${n}`, name: "executeAux4", args: { command: `try ${n}` } }] } });
+      prior.push({ role: "tool", tool_call_id: `c${n}`, content: "Error: no" });
+      fs.writeFileSync(h, JSON.stringify({ messages: prior }));
+      return "not yet";
+    });
+    assert.equal(outcome.stopped, "budget");
+    assert.equal(n, RETRY_BUDGET + 1);
+  });
+});
+
+test("missingParameterHints explains aux4's missing-parameter error", () => {
+  const hints = missingParameterHints([{ command: "x send --body hi", failed: true, result: "Error executing command: Error to enter the value of to" }]);
+  assert.match(hints.join(" "), /missing the required --to parameter/);
+  assert.deepEqual(missingParameterHints([{ command: "x", failed: false, result: "ok" }]), []);
 });
