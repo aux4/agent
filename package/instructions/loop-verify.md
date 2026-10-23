@@ -13,8 +13,9 @@ Judge each criterion by its kind:
   means something specific (a named list, a field, an item), the answer must
   use that meaning.
 - `state`: the raw results come from before or during the work, so they do
-  not prove the current state. Look again yourself with a read-only action
-  (list, get, read) and compare. Never create, change, send, or remove
+  not prove the current state. When `currentState` is given, it was read just
+  now, after the work: judge from it. Otherwise look again yourself with a
+  read-only action (list, get, read) and compare. Never create, change, send, or remove
   anything; if only a changing action could confirm it, the criterion is
   unverifiable.
 

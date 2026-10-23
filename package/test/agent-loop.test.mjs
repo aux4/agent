@@ -29,6 +29,7 @@ import {
   describedWithoutDoing,
   missingParameterHints,
   verifyToolList,
+  isSafeReadBack,
   historyStats,
   metricsPath,
   readVerdict,
@@ -580,5 +581,39 @@ test("a round that asked without looking is pushed once before it is verified", 
     assert.equal(questions.length, 2);
     assert.match(questions[1], /without using any tool/);
     assert.equal(outcome.content, "Moved it.");
+  });
+});
+
+test("isSafeReadBack only re-runs an already-successful command with no change verb", () => {
+  const candidates = ["x events list", "x events delete 7", "x mail send --to a"];
+  assert.equal(isSafeReadBack("x events list", candidates), true);
+  assert.equal(isSafeReadBack("x events delete 7", candidates), false);
+  assert.equal(isSafeReadBack("x mail send --to a", candidates), false);
+  assert.equal(isSafeReadBack("x events list --all", candidates), false);
+});
+
+test("the harness reads the state back itself and the verifier judges from it", async () => {
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: [{ text: "the item is gone", kind: "state" }], steps: [] }));
+else if (command.includes("loop-verify.md")) {
+  const q = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(q.slice(q.indexOf("{")));
+  const seen = payload.currentState ? payload.currentState.result : "";
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: seen.includes("empty") ? "pass" : "fail", evidence: seen })) }));
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, (q, h) => {
+      fs.writeFileSync(h, JSON.stringify({ messages: [
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "echo empty" } }] } },
+        { role: "tool", tool_call_id: "c1", content: "empty" }
+      ] }));
+      return "removed it";
+    });
+    assert.equal(outcome.stopped, "pass");
+    assert.deepEqual(outcome.verdict.checks, ["echo empty"]);
   });
 });

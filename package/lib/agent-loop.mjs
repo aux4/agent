@@ -334,7 +334,7 @@ export function historyStats(historyFile, from = 0, usageBefore = null) {
 
 export function addStats(a, b) {
   const out = { ...a };
-  for (const [k, v] of Object.entries(b)) out[k] = (out[k] || 0) + v;
+  for (const [k, v] of Object.entries(b)) if (typeof v === "number") out[k] = (out[k] || 0) + v;
   return out;
 }
 
@@ -457,6 +457,44 @@ export function readBackCandidates(attempts, limit = 5) {
   return out.slice(-limit);
 }
 
+// --- Harness read-back ------------------------------------------------------
+//
+// Small models rarely call a tool while verifying, so the harness reads the
+// current state itself: a tiny call picks which already-successful command
+// re-reads the item, and the harness re-runs it. Only a command that already
+// ran successfully in this run (so permissions allowed it) and that carries no
+// change verb is ever re-run.
+
+const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update|patch|put|post|create|insert|add|set|write|move|cancel|modify|edit|rename|upload|publish|deploy|pay|approve|install|uninstall)\b/i;
+
+export function isSafeReadBack(command, candidates) {
+  return Boolean(command) && candidates.includes(command) && !CHANGE_VERB.test(command);
+}
+
+export function pickReadBack(options, plan, candidates) {
+  const reads = candidates.filter(c => !CHANGE_VERB.test(c));
+  if (!reads.length) return "";
+  if (reads.length === 1) return reads[0];
+  const question = [
+    "Which ONE of these commands, run again now, best shows the current state for:",
+    ...(plan.stateCriteria || []).map(c => `- ${c}`),
+    "",
+    "Commands:",
+    ...reads.map(c => `- ${c}`),
+    "",
+    "Reply with only the exact command, copied from the list, or NONE."
+  ].join("\n");
+  const result = askOnce(options, { instructions: verifyInstructionsPath(options.packageDir), question, extraArgs: ["--tools", PLAN_TOOLS] });
+  const answer = String(result.stdout || "").trim().replace(/^`+|`+$/g, "").split("\n")[0].trim();
+  return reads.includes(answer) ? answer : "";
+}
+
+export function runReadBack(command) {
+  const result = spawnSync("sh", ["-c", command], { encoding: "utf8", env: process.env, timeout: 60000, maxBuffer: 5 * 1024 * 1024 });
+  const out = `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
+  return { ok: result.status === 0, output: out.slice(0, RESULT_LIMIT * 2) };
+}
+
 export function verifyHistoryPath(historyFile, attempt) {
   if (!historyFile) return "";
   const base = historyFile.endsWith(".json") ? historyFile.slice(0, -5) : historyFile;
@@ -502,18 +540,32 @@ export function readVerdict(text) {
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
   const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
   const readBack = readBackCandidates(attempts);
-  const stateFirst = (plan.stateCriteria || plan.doneCriteria).length > 0
+  const hasState = (plan.stateCriteria || plan.doneCriteria).length > 0;
+  // The harness reads the current state itself when it safely can.
+  let readNow = null;
+  if (hasState && readBack.length) {
+    const command = pickReadBack(options, plan, readBack);
+    if (isSafeReadBack(command, readBack)) {
+      const r = runReadBack(command);
+      if (r.ok) readNow = { command, output: r.output };
+    }
+  }
+  if (readNow) payload.currentState = { readJustNowWith: readNow.command, result: readNow.output };
+  const stateFirst = hasState && !readNow
     ? `First run one read-only command that shows the current state for the state criteria${readBack.length ? ` -- re-run whichever of these lists or reads the item: ${readBack.join(" | ")}` : ""}. Then `
-    : "";
+    : hasState ? "Judge the state criteria from currentState, which was read just now, after the work. Then " : "";
   const question = `${stateFirst}${stateFirst ? "r" : "R"}espond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload)}`;
   if (verifyHistory) fs.rmSync(verifyHistory, { force: true });
   const result = askOnce(options, {
     instructions: verifyInstructionsPath(options.packageDir),
     question,
     history: verifyHistory,
-    extraArgs: verifyExtraArgs(options, plan)
+    extraArgs: readNow ? ["--tools", PLAN_TOOLS] : verifyExtraArgs(options, plan)
   });
-  const checks = verifyHistory ? extractAttemptLog(verifyHistory) : [];
+  const checks = [
+    ...(readNow ? [{ command: readNow.command }] : []),
+    ...(verifyHistory ? extractAttemptLog(verifyHistory) : [])
+  ];
   // A reply cut off mid-JSON can still contain a complete inner entry, which a
   // loose parse would return on its own; only a parse with results counts.
   let parsed = readVerdict(result.stdout);
