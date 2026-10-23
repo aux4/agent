@@ -51,6 +51,26 @@ If an explicit UI request falls back to the runnable action broker, recognized i
 task-specific labels and field names. A ZIP-to-city form, for example, is labeled “ZIP Code
 Lookup” with “ZIP code”, “City”, and “Find city” controls.
 
+Every real execution turn always runs through a generic plan -> execute -> verify ->
+diagnose -> retry loop; there is no flag to disable it. Before acting, a single
+planning call fixes a `goal` and a set of checkable, tool-agnostic `doneCriteria` for
+the run (saved next to the conversation history as `<history>.plan.json`); the
+criteria describe observable outcomes ("the item no longer exists"), never a tool or
+command. After the model answers, a fresh-context verifier -- its own throwaway
+conversation, limited by its instructions to read-only checks under the same
+`--permissions` as the run -- checks each criterion against reality and returns
+`pass`, `fail`, or `unverifiable` with evidence; `unverifiable` never counts as a
+pass. If any criterion is not a pass, the agent gets up to 2 diagnosed retries: the
+failed criteria, verifier evidence, and a log of every action actually taken are fed
+back into the same conversation, the model classifies the failure (`wrong_tool`,
+`wrong_parameters`, `tool_error`, `incomplete`, `misread_facts`, or `blocked`), and
+any exact repeat of an action that already failed is denied for that retry (layered
+onto `--policy` as a `deny` rule). The loop stops on an all-pass verdict, a spent
+retry budget, the same criterion failing the same way twice in a row (no progress),
+or a `blocked` diagnosis -- something only the requester can resolve. On any
+non-pass stop, the returned answer states plainly what was confirmed, what was not,
+and why.
+
 The queue server must be running before executing this command.
 
 #### Usage

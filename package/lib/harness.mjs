@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { runLoop, mergeDenyPolicy } from "./agent-loop.mjs";
 
 const MODES = [
   "markdown",
@@ -1059,7 +1060,7 @@ function runHookAfter({ request, history, folder, model, baseUrl, apiKey }) {
   return result.ok ? result.stdout.trim() : "";
 }
 
-function runAgentAsk(options, history, recovery = "") {
+function runAgentAsk(options, history, question) {
   const args = ["ai", "agent", "ask", "--configFile", options.configFile || "config.yaml"];
   if (options.config) args.push("--config", options.config);
   args.push("--autoCompact", "true", "--baseInstructions", path.join(options.packageDir, "instructions", "agent.md"));
@@ -1072,9 +1073,22 @@ function runAgentAsk(options, history, recovery = "") {
   if (options.tools) args.push("--tools", options.tools);
   if (options.policy) args.push("--policy", options.policy);
   if (options.permissions) args.push("--permissions", options.permissions);
-  const question = recovery ? `${options.request}\n\nA matched playbook was attempted but failed. Complete the request safely. Failure:\n${recovery.slice(0, 4000)}` : options.request;
   args.push("--history", history, "--question", question);
   return runAux4(args);
+}
+
+// Every real execution turn -- the first attempt and every diagnosed retry --
+// always runs inside the generic plan/verify/retry loop (lib/agent-loop.mjs).
+// There is no opt-out: `aux4 agent ask` is never a single unchecked model call.
+async function runAgentTask(options, history, recovery = "") {
+  const execute = (question, h, deniedCommands) => {
+    const effectiveOptions = {
+      ...options,
+      policy: mergeDenyPolicy(options.policy || '{"budget":{"calls":60}}', deniedCommands)
+    };
+    return runAgentAsk(effectiveOptions, h, question).stdout.trim();
+  };
+  return runLoop(options, history, execute, recovery);
 }
 
 function runBuilderTurn(options, presentation) {
@@ -1203,12 +1217,13 @@ async function ask(options) {
       execution = { source: "playbook", playbookId: match.id, confidence: match.confidence };
     } else {
       const failure = replay.stderr.trim() || replay.stdout.trim() || `exit ${replay.status}`;
-      const agent = runAgentAsk(options, history, failure);
-      content = agent.stdout.trim();
+      const outcome = await runAgentTask(options, history, failure);
+      content = outcome.content;
       execution = { source: "agent-after-playbook-failure", playbookId: match.id, confidence: match.confidence };
     }
   } else {
-    content = runAgentAsk(options, history).stdout.trim();
+    const outcome = await runAgentTask(options, history);
+    content = outcome.content;
   }
 
   const suggestion = runHookAfter({

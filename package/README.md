@@ -84,6 +84,33 @@ match exists, the normal agent runs. After completion, `hook-after` inspects the
 append a suggestion to save repeatable work. Hook or classifier failure never prevents the normal
 agent response.
 
+#### The plan / verify / retry loop
+
+Every real execution turn -- the normal run, and a playbook's fallback to the agent after a failed
+replay -- always goes through a generic loop. There is no flag to turn it off:
+
+1. **Plan.** One call fixes a `goal` and a list of checkable `doneCriteria` for this run before any
+   work starts. Criteria describe observable outcomes ("the item no longer exists", "the message
+   says X"), never a tool or command, and are saved next to the conversation history as
+   `<history>.plan.json`. An accompanying provisional `steps` list is just a starting point; the
+   agent is expected to revise it as it learns.
+2. **Execute.** The normal agent run, now told what done means.
+3. **Verify.** A fresh, disposable conversation -- not the run's own history -- is asked to confirm
+   each criterion against reality. It may use the same tools and `--permissions` as the run, but its
+   instructions limit it to read-only checks: list, read, or otherwise observe, never act. Each
+   criterion comes back `pass`, `fail`, or `unverifiable` with evidence; `unverifiable` never counts
+   as a pass.
+4. **Diagnose and retry.** If anything is not a pass, the failed criteria, the verifier's evidence,
+   and a log of every action actually taken are fed back into the run's own conversation. The model
+   must first classify the failure as one of `wrong_tool`, `wrong_parameters`, `tool_error`,
+   `incomplete`, `misread_facts`, or `blocked`, then revise its approach and act again. Any action
+   that already failed is denied for the retry (added to `--policy` as a `deny` rule), so it cannot
+   be repeated unchanged.
+5. **Stop.** The loop ends on an all-pass verdict, a spent retry budget (2 retries), the same
+   criterion failing the same way twice in a row (no progress), or a `blocked` diagnosis -- something
+   only the requester, not the agent, can resolve. Whenever it stops without a full pass, the
+   returned answer says plainly what is confirmed, what is not, and why.
+
 Use `--output json` when a client needs presentation metadata:
 
 ```bash

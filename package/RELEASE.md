@@ -1,5 +1,23 @@
 # Release notes
 
+## 4.3.0
+
+- `ask` now always runs every real execution turn through a generic plan ->
+  execute -> verify -> diagnose -> retry loop. Before acting, the agent fixes
+  a goal and a set of checkable, tool-agnostic done-criteria; after acting, a
+  fresh-context verifier checks each criterion against reality (pass, fail,
+  or unverifiable, with evidence) instead of trusting the model's own say-so.
+  On any unmet criterion the agent gets one diagnosed retry (budget: 2),
+  classifies the failure (wrong tool, wrong parameters, tool error,
+  incomplete, misread facts, or blocked), and is denied any exact repeat of
+  an action that already failed. The loop stops on an all-pass verdict, a
+  spent retry budget, no progress between retries, or a `blocked` diagnosis
+  (something only the requester can resolve) -- and in every non-pass case
+  the final answer says plainly what is confirmed, what is not, and why.
+  There is no opt-out flag; this applies to every `ask` call. See
+  `lib/agent-loop.mjs` and `instructions/loop-plan.md` /
+  `instructions/loop-verify.md`.
+
 ## 4.2.54
 
 - Fix fresh/new interactive UI requests so the active artifact is not forwarded
