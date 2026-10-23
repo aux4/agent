@@ -26,6 +26,7 @@ import {
   allowedCommandsOffered,
   readBackCandidates,
   askedWithoutLooking,
+  describedWithoutDoing,
   historyStats,
   metricsPath,
   readVerdict,
@@ -172,7 +173,7 @@ test("extractFailureClass / isBlocked recognize the classification line", () => 
   assert.equal(isBlocked("FAILURE_CLASS: incomplete\nstill working"), false);
 });
 
-test("composeDiagnoseQuestion lists only the unmet criteria and offers all six classifications", () => {
+test("composeDiagnoseQuestion lists only the unmet criteria and asks for action, not a classification", () => {
   const plan = { goal: "ship it", doneCriteria: ["a", "b"], steps: [] };
   const verdict = {
     overall: "fail",
@@ -181,9 +182,8 @@ test("composeDiagnoseQuestion lists only the unmet criteria and offers all six c
   const q = composeDiagnoseQuestion(plan, verdict, []);
   assert.doesNotMatch(q, /- a \(pass\)/);
   assert.match(q, /- b \(fail\): saw no change/);
-  for (const cls of ["wrong_tool", "wrong_parameters", "tool_error", "incomplete", "misread_facts", "blocked"]) {
-    assert.match(q, new RegExp(`FAILURE_CLASS: ${cls}`));
-  }
+  assert.match(q, /fix it now by calling the tools/);
+  assert.match(q, /BLOCKED:/);
 });
 
 test("composeExecuteQuestion states every done-criterion and appends recovery context when given", () => {
@@ -518,4 +518,15 @@ test("askedWithoutLooking spots a question asked with no tool call", () => {
   assert.equal(askedWithoutLooking("FAILURE_CLASS: incomplete\nWhich one?", 0), true);
   assert.equal(askedWithoutLooking("What is the date?", 2), false);
   assert.equal(askedWithoutLooking("Done.", 0), false);
+});
+
+test("describedWithoutDoing spots a retry that only narrated its next step", () => {
+  assert.equal(describedWithoutDoing("I will send the reply with gmail send.", 0), true);
+  assert.equal(describedWithoutDoing("I will send the reply.", 1), false);
+  assert.equal(describedWithoutDoing("The meeting was moved.", 0), false);
+});
+
+test("isBlocked accepts the BLOCKED: mark, and the answer drops it", async () => {
+  assert.equal(isBlocked("BLOCKED: I need the account password."), true);
+  assert.equal(stripFailureClass("BLOCKED: I need the account password."), "I need the account password.");
 });

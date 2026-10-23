@@ -558,6 +558,8 @@ export function extractFailureClass(text) {
 export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", lookFirst = false) {
   const failed = verdict.criteria.filter(c => c.status !== "pass");
   const lines = failed.map(c => `- ${c.criterion} (${c.status}): ${c.evidence}`).join("\n");
+  // Small models answer a "classify first" prompt in prose and end the turn,
+  // so the retry asks for action, with the failure types only as hints.
   return [
     ...(lookFirst ? [LOOK_BEFORE_ASKING, ""] : []),
     "The previous attempt did not fully achieve the goal.",
@@ -570,22 +572,11 @@ export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", l
     "What was attempted, in order:",
     summarizeAttemptLog(attempts),
     "",
-    "Do not repeat, unchanged, any action listed above as FAILED -- it has already been denied for this retry.",
-    "An action listed as ok may already have taken effect even if it was not confirmed: check the current state before doing it again, and never repeat an action that sends, creates, or deletes something.",
-    FIND_THE_COMMAND,
-    CHECK_BEFORE_IRREVERSIBLE,
-    ANSWER_DONT_ASK,
+    "Work out why (wrong command, wrong parameters, a tool error, a step not done, a misread fact) and fix it now by calling the tools. Do not just describe the fix -- do it.",
+    "Actions listed as FAILED are denied for this retry. An action listed as ok may already have taken effect: check the current state before doing it again, and never repeat one that sends, creates, or deletes something.",
+    WORKING_RULES,
     "",
-    "First, on a line by itself, classify the failure as exactly one of:",
-    "FAILURE_CLASS: wrong_tool",
-    "FAILURE_CLASS: wrong_parameters",
-    "FAILURE_CLASS: tool_error",
-    "FAILURE_CLASS: incomplete",
-    "FAILURE_CLASS: misread_facts",
-    "FAILURE_CLASS: blocked",
-    "",
-    "Use \"blocked\" only when completing the goal needs information, access, or a decision only the requester can provide -- not simply because it is difficult, and never before you have searched the help and any list of commands you may run for the request's words.",
-    "Then, below that line: if not blocked, revise your approach and act; if blocked, say exactly what you need from the requester and stop."
+    `Only if finishing needs something only the requester can give (and you have already searched the help and any list of commands you may run), reply starting with "${BLOCKED_MARK}" and say exactly what you need.`
   ].join("\n");
 }
 
@@ -691,13 +682,24 @@ export function composeNotBlockedQuestion(offered) {
   ].join("\n");
 }
 
+export const BLOCKED_MARK = "BLOCKED:";
+
 export function isBlocked(executeOutput) {
-  return extractFailureClass(executeOutput) === "blocked";
+  const text = String(executeOutput || "");
+  return text.trim().toUpperCase().startsWith(BLOCKED_MARK) || extractFailureClass(text) === "blocked";
+}
+
+// A retry that only described what it would do, without a single tool call.
+export const DO_IT_NOW = "You described what to do but did not call any tool. Do it now: call the tool that carries out the next step.";
+
+export function describedWithoutDoing(content, roundToolCalls) {
+  const text = stripFailureClass(content);
+  return roundToolCalls === 0 && /\b(I will|I'll|I need to|I am going to|let me)\b/i.test(text);
 }
 
 // The failure-class line is for the harness, not the requester.
 export function stripFailureClass(text) {
-  return String(text || "").replace(/^\s*FAILURE_CLASS:\s*[a-z_]+\s*\n?/gim, "").trim();
+  return String(text || "").replace(/^\s*FAILURE_CLASS:\s*[a-z_]+\s*\n?/gim, "").replace(/^\s*BLOCKED:\s*/i, "").trim();
 }
 
 export function appendStatusNote(content, note) {
@@ -758,6 +760,10 @@ export async function runLoop(options, history, execute, recovery = "") {
     lastContent = execute(question, history, deniedCommands);
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
+    if (attempt > 1 && !isBlocked(lastContent) && describedWithoutDoing(lastContent, round.execute.toolCalls)) {
+      lastContent = execute(DO_IT_NOW, history, deniedCommands);
+      round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart };
+    }
 
     if (isBlocked(lastContent)) {
       const offered = !pushedPastBlocked && allowedCommandsOffered(extractAttemptLog(history));
