@@ -18,6 +18,9 @@ import {
   fallbackPlan,
   fallbackVerdict,
   runLoop,
+  requireOwnObservation,
+  verifyPayload,
+  verdictLogPath,
   RETRY_BUDGET
 } from "../lib/agent-loop.mjs";
 
@@ -202,13 +205,22 @@ test("fallbackPlan and fallbackVerdict never claim a pass", () => {
 
 // --- runLoop end-to-end (plan/verify via a scripted fake aux4; execute stubbed) ---
 
-function planVerifyFake({ verifyStatus = "pass" } = {}) {
+function planVerifyFake({ verifyStatus = "pass", verifierObserves = true } = {}) {
   return makeFakeAux4(`
+const fs = require("node:fs");
 const args = process.argv.slice(2);
 const command = args.join(" ");
 if (command.includes("loop-plan.md")) {
   process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: ["the outcome holds"], steps: [] }));
 } else if (command.includes("loop-verify.md")) {
+  const historyAt = args.indexOf("--history");
+  if (${verifierObserves} && historyAt >= 0) {
+    const messages = [
+      { role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read the current state" } }] } },
+      { role: "tool", tool_call_id: "v1", name: "executeAux4", content: "state" }
+    ];
+    fs.writeFileSync(args[historyAt + 1], JSON.stringify({ messages }));
+  }
   process.stdout.write(JSON.stringify({ results: [{ criterion: "the outcome holds", status: "${verifyStatus}", evidence: "checked" }] }));
 }
 `);
@@ -273,5 +285,48 @@ test("runLoop stops immediately when a retry classifies itself as blocked", asyn
     assert.equal(outcome.stopped, "blocked");
     assert.equal(outcome.attempts, 2);
     assert.match(outcome.content, /need the requester's approval/);
+  });
+});
+
+// --- verifier must observe for itself -----------------------------------------
+
+test("verifyPayload gives the verifier the actions attempted but never their results", () => {
+  const payload = verifyPayload({ goal: "g", doneCriteria: ["c"] }, "answer", [
+    { command: "todo list", failed: false, resultSummary: "1. buy milk" },
+    { command: "todo complete --id 9", failed: true, resultSummary: "Error: no such item 9" }
+  ]);
+  assert.deepEqual(payload.actionsAttempted, ["todo list", "todo complete --id 9"]);
+  assert.doesNotMatch(JSON.stringify(payload), /buy milk|no such item/);
+});
+
+test("requireOwnObservation downgrades every pass when the verifier made no checks", () => {
+  const verdict = { overall: "pass", criteria: [{ criterion: "c", status: "pass", evidence: "the log says so" }] };
+  const out = requireOwnObservation(verdict, []);
+  assert.equal(out.overall, "fail");
+  assert.equal(out.criteria[0].status, "unverifiable");
+  assert.match(out.criteria[0].evidence, /no checks of its own/);
+  assert.deepEqual(requireOwnObservation(verdict, [{ command: "read" }]), verdict);
+});
+
+test("runLoop does not accept a pass the verifier never observed", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass", verifierObserves: false });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, () => "the answer");
+    assert.notEqual(outcome.stopped, "pass");
+    assert.equal(outcome.verdict.criteria[0].status, "unverifiable");
+  });
+});
+
+test("runLoop keeps every verify round, with the verifier's own checks, next to the plan", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    await runLoop(baseOptions(), history, () => "the answer");
+    const rounds = JSON.parse(fs.readFileSync(verdictLogPath(history), "utf8"));
+    assert.ok(rounds.length >= 2);
+    assert.equal(rounds[0].attempt, 1);
+    assert.deepEqual(rounds[0].checks, ["read the current state"]);
+    assert.equal(rounds[0].criteria[0].status, "fail");
   });
 });

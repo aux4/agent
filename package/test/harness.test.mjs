@@ -53,7 +53,11 @@ fs.appendFileSync(process.env.CALL_LOG, JSON.stringify({args,input}) + "\\n");
 const command = args.join(" ");
 if (command.includes("config get")) process.stdout.write("{}\\n");
 else if (command.includes("loop-plan.md")) process.stdout.write('{"goal":"g","doneCriteria":["the request has been fully and correctly carried out"],"steps":[]}\\n');
-else if (command.includes("loop-verify.md")) process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+else if (command.includes("loop-verify.md")) {
+  const at = args.indexOf("--history");
+  if (at >= 0) require("node:fs").writeFileSync(args[at + 1], JSON.stringify({ messages: [{ role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read back" } }] } }, { role: "tool", tool_call_id: "v1", content: "ok" }] }));
+  process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+}
 else if (command.includes("playbook hook-before")) process.stdout.write("");
 else if (command.includes("ai agent ask")) process.stdout.write((process.env.MODEL_OUTPUT || "Here is your written answer.") + "\\n");
 else if (command.includes("playbook hook-after")) process.stdout.write("");
@@ -508,7 +512,11 @@ const command = args.join(" ");
 const wait = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 if (command.includes("config get")) process.stdout.write("{}\\n");
 else if (command.includes("loop-plan.md")) process.stdout.write('{"goal":"g","doneCriteria":["the request has been fully and correctly carried out"],"steps":[]}\\n');
-else if (command.includes("loop-verify.md")) process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+else if (command.includes("loop-verify.md")) {
+  const at = args.indexOf("--history");
+  if (at >= 0) require("node:fs").writeFileSync(args[at + 1], JSON.stringify({ messages: [{ role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read back" } }] } }, { role: "tool", tool_call_id: "v1", content: "ok" }] }));
+  process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+}
 else if (command.includes("playbook hook-before") || command.includes("playbook hook-after")) process.stdout.write("");
 else if (command.includes("classify rank")) { wait(600); process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.95}]})); }
 else if (command.includes("ai agent ask")) { wait(600); process.stdout.write("Parallel answer\\n"); }
@@ -583,7 +591,11 @@ fs.appendFileSync(process.env.CALL_LOG, JSON.stringify(args) + "\\n");
 const command = args.join(" ");
 if (command.includes("config get")) process.stdout.write("{}\\n");
 else if (command.includes("loop-plan.md")) process.stdout.write('{"goal":"g","doneCriteria":["the request has been fully and correctly carried out"],"steps":[]}\\n');
-else if (command.includes("loop-verify.md")) process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+else if (command.includes("loop-verify.md")) {
+  const at = args.indexOf("--history");
+  if (at >= 0) require("node:fs").writeFileSync(args[at + 1], JSON.stringify({ messages: [{ role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read back" } }] } }, { role: "tool", tool_call_id: "v1", content: "ok" }] }));
+  process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+}
 else if (command.includes("playbook hook-before")) process.stdout.write("");
 else if (command.includes("ai agent ask")) process.stdout.write("Finished the task\\n");
 else if (command.includes("playbook hook-after")) process.stdout.write('Save this as a playbook? Reply "save it".\\n');

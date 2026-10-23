@@ -95,11 +95,15 @@ replay -- always goes through a generic loop. There is no flag to turn it off:
    `<history>.plan.json`. An accompanying provisional `steps` list is just a starting point; the
    agent is expected to revise it as it learns.
 2. **Execute.** The normal agent run, now told what done means.
-3. **Verify.** A fresh, disposable conversation -- not the run's own history -- is asked to confirm
-   each criterion against reality. It may use the same tools and `--permissions` as the run, but its
-   instructions limit it to read-only checks: list, read, or otherwise observe, never act. Each
-   criterion comes back `pass`, `fail`, or `unverifiable` with evidence; `unverifiable` never counts
-   as a pass.
+3. **Verify.** A fresh conversation -- not the run's own history -- is asked to confirm each
+   criterion against reality. It is told which actions were attempted but not what they returned,
+   so it has to look at the current state itself. It may use the same tools and `--permissions` as
+   the run, but its instructions limit it to read-only checks: list, read, or otherwise observe,
+   never act. Each criterion comes back `pass`, `fail`, or `unverifiable` with evidence;
+   `unverifiable` never counts as a pass. A `pass` from a verifier that made no checks of its own is
+   turned into `unverifiable`. Every verify round (attempted actions, the verifier's own checks, and
+   each verdict with its evidence) is kept as `<history>.verify.json`, and each round's verifier
+   conversation as `<history>.verify-<n>.json`.
 4. **Diagnose and retry.** If anything is not a pass, the failed criteria, the verifier's evidence,
    and a log of every action actually taken are fed back into the run's own conversation. The model
    must first classify the failure as one of `wrong_tool`, `wrong_parameters`, `tool_error`,

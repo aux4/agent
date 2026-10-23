@@ -58,9 +58,12 @@ the run (saved next to the conversation history as `<history>.plan.json`); the
 criteria describe observable outcomes ("the item no longer exists"), never a tool or
 command. After the model answers, a fresh-context verifier -- its own throwaway
 conversation, limited by its instructions to read-only checks under the same
-`--permissions` as the run -- checks each criterion against reality and returns
-`pass`, `fail`, or `unverifiable` with evidence; `unverifiable` never counts as a
-pass. If any criterion is not a pass, the agent gets up to 2 diagnosed retries: the
+`--permissions` as the run, and told which actions were attempted but not what they
+returned -- checks each criterion against reality and returns `pass`, `fail`, or
+`unverifiable` with evidence; `unverifiable` never counts as a pass, and a `pass` from
+a verifier that made no checks of its own is turned into `unverifiable`. Every verify
+round is kept as `<history>.verify.json` (and its conversation as
+`<history>.verify-<n>.json`). If any criterion is not a pass, the agent gets up to 2 diagnosed retries: the
 failed criteria, verifier evidence, and a log of every action actually taken are fed
 back into the same conversation, the model classifies the failure (`wrong_tool`,
 `wrong_parameters`, `tool_error`, `incomplete`, `misread_facts`, or `blocked`), and

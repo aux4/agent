@@ -245,22 +245,72 @@ export function fallbackVerdict(doneCriteria, reason) {
   };
 }
 
-export function runVerify(options, plan, finalAnswer, attempts) {
-  const payload = {
+// A pass only counts when it rests on the verifier's own observation. If the
+// verify run made no tool calls of its own, every pass is downgraded to
+// unverifiable: it can only have come from trusting the worker's account.
+export function requireOwnObservation(verdict, checks) {
+  if (checks.length > 0) return verdict;
+  const criteria = verdict.criteria.map(c => c.status === "pass"
+    ? { ...c, status: "unverifiable", evidence: `not observed by the verifier itself (it made no checks of its own)${c.evidence ? `; it said: ${c.evidence}` : ""}` }
+    : c);
+  return { overall: criteria.every(c => c.status === "pass") ? "pass" : "fail", criteria };
+}
+
+// The verifier sees what was attempted, never what came back: it has to look
+// at the current state itself rather than re-read the worker's results.
+export function verifyPayload(plan, finalAnswer, attempts) {
+  return {
     goal: plan.goal,
     doneCriteria: plan.doneCriteria,
     finalAnswer: String(finalAnswer || ""),
-    attempts: attempts.map(a => ({ action: a.command, outcome: a.failed ? "error" : "ok", result: a.resultSummary }))
+    actionsAttempted: attempts.map(a => a.command)
   };
+}
+
+export function verifyHistoryPath(historyFile, attempt) {
+  if (!historyFile) return "";
+  const base = historyFile.endsWith(".json") ? historyFile.slice(0, -5) : historyFile;
+  return `${base}.verify-${attempt}.json`;
+}
+
+export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
+  const payload = verifyPayload(plan, finalAnswer, attempts);
   const question = `Evaluate this attempt and respond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload, null, 2)}`;
+  if (verifyHistory) fs.rmSync(verifyHistory, { force: true });
   const result = askOnce(options, {
     instructions: verifyInstructionsPath(options.packageDir),
     question,
+    history: verifyHistory,
     extraArgs: sharedExtraArgs(options)
   });
+  const checks = verifyHistory ? extractAttemptLog(verifyHistory) : [];
   const parsed = parseJSONLoose(result.stdout, null);
-  if (!parsed) return fallbackVerdict(plan.doneCriteria, "the verifier's output could not be parsed, so this outcome could not be confirmed");
-  return normalizeVerdict(parsed, plan.doneCriteria);
+  const verdict = parsed
+    ? normalizeVerdict(parsed, plan.doneCriteria)
+    : fallbackVerdict(plan.doneCriteria, "the verifier's output could not be parsed, so this outcome could not be confirmed");
+  // Without a history file the verifier's own calls can't be counted, so the
+  // own-observation rule only applies when there is one.
+  const observed = verifyHistory ? requireOwnObservation(verdict, checks) : verdict;
+  return { ...observed, checks: checks.map(c => c.command) };
+}
+
+export function verdictLogPath(historyFile) {
+  if (!historyFile) return "";
+  return historyFile.endsWith(".json") ? historyFile.slice(0, -5) + ".verify.json" : `${historyFile}.verify.json`;
+}
+
+// Every verify round is kept next to the plan, so a run can be diagnosed
+// afterwards: what was attempted, what the verifier checked, and why it decided.
+export function saveVerdict(historyFile, attempt, attempts, verdict) {
+  const file = verdictLogPath(historyFile);
+  if (!file) return;
+  try {
+    const rounds = attempt === 1 ? [] : (parseJSONLoose(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "", []) || []);
+    rounds.push({ attempt, actionsAttempted: attempts.map(a => a.command), checks: verdict.checks || [], overall: verdict.overall, criteria: verdict.criteria });
+    fs.writeFileSync(file, JSON.stringify(rounds, null, 2));
+  } catch {
+    // best-effort; the loop still works without a persisted verdict log
+  }
 }
 
 // --- Diagnose + retry policy ----------------------------------------------
@@ -385,7 +435,8 @@ export async function runLoop(options, history, execute, recovery = "") {
     }
 
     const attempts = extractAttemptLog(history);
-    lastVerdict = runVerify(options, plan, lastContent, attempts);
+    lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt));
+    saveVerdict(history, attempt, attempts, lastVerdict);
 
     if (lastVerdict.overall === "pass") {
       return { content: lastContent, plan, verdict: lastVerdict, stopped: "pass", attempts: attempt };

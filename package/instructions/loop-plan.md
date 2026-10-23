@@ -13,8 +13,10 @@ Produce exactly one JSON object with these fields:
   that someone else could check afterward (e.g. "the item no longer exists",
   "the message content says X", "the list now contains Y"). Do not name a
   tool, command, or method in a criterion -- describe the outcome, not how it
-  will be produced. Keep the list short: only the outcomes that truly define
-  success.
+  will be produced. When the request asks for information, include a
+  criterion that the answer states that information as it currently is in
+  its source, covering everything the request asked about. Keep the list
+  short: only the outcomes that truly define success.
 - `steps` (array of strings): a provisional, best-guess approach -- what you
   would try first, including any investigation you expect to need (e.g.
   "find out what can list this", "check what options are available before

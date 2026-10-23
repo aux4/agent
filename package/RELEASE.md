@@ -1,5 +1,16 @@
 # Release notes
 
+## 4.3.1
+
+- The verifier now has to observe for itself. It is told which actions were
+  attempted but no longer sees what they returned, and a `pass` from a
+  verify run that made no checks of its own is turned into `unverifiable`.
+- Every verify round is saved as `<history>.verify.json` (attempted actions,
+  the verifier's own checks, and each verdict with its evidence), and each
+  round's verifier conversation as `<history>.verify-<n>.json`.
+- Planning: when a request asks for information, the done-criteria include
+  that the answer states it as it currently is in its source.
+
 ## 4.3.0
 
 - `ask` now always runs every real execution turn through a generic plan ->
