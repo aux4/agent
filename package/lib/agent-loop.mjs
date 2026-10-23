@@ -71,6 +71,17 @@ function verifyInstructionsPath(packageDir) {
   return path.join(packageDir, "instructions", "loop-verify.md");
 }
 
+// Plan and verify calls stay inside the same guardrails as the real run --
+// same tool surface, same policy budget, same command/file permissions --
+// just with their own throwaway conversation and a different instructions file.
+function sharedExtraArgs(options) {
+  const args = [];
+  if (options.tools) args.push("--tools", options.tools);
+  if (options.permissions) args.push("--permissions", options.permissions);
+  if (options.policy) args.push("--policy", options.policy);
+  return args;
+}
+
 function askOnce(options, { instructions, question, history = "", extraArgs = [] }) {
   const args = ["ai", "agent", "ask", "--configFile", options.configFile || "config.yaml"];
   if (options.config) args.push("--config", options.config);
@@ -105,7 +116,7 @@ export function buildPlan(options) {
   const result = askOnce(options, {
     instructions: planInstructionsPath(options.packageDir),
     question: `Request:\n${options.request}\n\nRespond with ONLY the JSON plan object described in your instructions. No prose, no code fences.`,
-    extraArgs: options.permissions ? ["--permissions", options.permissions] : []
+    extraArgs: sharedExtraArgs(options)
   });
   const parsed = parseJSONLoose(result.stdout, null);
   const plan = parsed ? normalizePlan(parsed) : fallbackPlan(options.request);
@@ -245,7 +256,7 @@ export function runVerify(options, plan, finalAnswer, attempts) {
   const result = askOnce(options, {
     instructions: verifyInstructionsPath(options.packageDir),
     question,
-    extraArgs: options.permissions ? ["--permissions", options.permissions] : []
+    extraArgs: sharedExtraArgs(options)
   });
   const parsed = parseJSONLoose(result.stdout, null);
   if (!parsed) return fallbackVerdict(plan.doneCriteria, "the verifier's output could not be parsed, so this outcome could not be confirmed");
