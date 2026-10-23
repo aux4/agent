@@ -24,6 +24,8 @@ import {
   stripFailureClass,
   COVERAGE_CRITERION,
   allowedCommandsOffered,
+  readBackCandidates,
+  askedWithoutLooking,
   historyStats,
   metricsPath,
   readVerdict,
@@ -335,6 +337,8 @@ test("requireOwnObservation downgrades unobserved passes on state criteria only"
     { criterion: "the reply names it", status: "pass", evidence: "it does" }
   ] };
   const out = requireOwnObservation(verdict, [], ["the item is gone"]);
+  const failed = requireOwnObservation({ overall: "fail", criteria: [{ criterion: "the item is gone", status: "fail", evidence: "old list shows it" }] }, [], ["the item is gone"]);
+  assert.equal(failed.criteria[0].status, "unverifiable");
   assert.equal(out.overall, "fail");
   assert.equal(out.criteria[0].status, "unverifiable");
   assert.match(out.criteria[0].evidence, /no checks of its own/);
@@ -496,4 +500,22 @@ test("historyStats prefers the history's own tokenUsage, minus what was spent be
   const s = historyStats(file, 0, { input: 400, cached: 300, output: 20 });
   assert.equal(s.modelCalls, 1);
   assert.deepEqual([s.input, s.cached, s.output], [500, 300, 100]);
+});
+
+test("readBackCandidates offers the commands that worked, without help or repeats", () => {
+  const out = readBackCandidates([
+    { command: "x list --help", failed: false },
+    { command: "x list", failed: false },
+    { command: "x get 1", failed: true },
+    { command: "x list", failed: false },
+    { command: "x delete 1", failed: false }
+  ]);
+  assert.deepEqual(out, ["x list", "x delete 1"]);
+});
+
+test("askedWithoutLooking spots a question asked with no tool call", () => {
+  assert.equal(askedWithoutLooking("What is the date?", 0), true);
+  assert.equal(askedWithoutLooking("FAILURE_CLASS: incomplete\nWhich one?", 0), true);
+  assert.equal(askedWithoutLooking("What is the date?", 2), false);
+  assert.equal(askedWithoutLooking("Done.", 0), false);
 });

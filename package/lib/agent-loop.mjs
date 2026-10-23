@@ -410,7 +410,9 @@ export const HONESTY_CRITERION = "The final answer accurately describes what the
 export function requireOwnObservation(verdict, checks, stateCriteria = null) {
   if (checks.length > 0) return verdict;
   const isState = c => stateCriteria === null || stateCriteria.includes(c.criterion);
-  const criteria = verdict.criteria.map(c => c.status === "pass" && isState(c)
+  // Earlier results show the state before or during the work, so neither a
+  // pass nor a fail on a state criterion can rest on them alone.
+  const criteria = verdict.criteria.map(c => c.status !== "unverifiable" && isState(c)
     ? { ...c, status: "unverifiable", evidence: `not observed by the verifier itself (it made no checks of its own)${c.evidence ? `; it said: ${c.evidence}` : ""}` }
     : c);
   return { overall: criteria.every(c => c.status === "pass") ? "pass" : "fail", criteria };
@@ -439,6 +441,20 @@ export function verifyPayload(plan, finalAnswer, attempts, request = "") {
 
 export function verifyCriteria(plan) {
   return [...plan.doneCriteria, COVERAGE_CRITERION, HONESTY_CRITERION];
+}
+
+// Commands that already worked in this run, minus help lookups: the verifier
+// re-runs whichever of them reads the item rather than guessing a new one.
+export function readBackCandidates(attempts, limit = 5) {
+  const seen = new Set();
+  const out = [];
+  for (const a of attempts) {
+    const command = a.command;
+    if (a.failed || !command || /(^|\s)--help(\s|$)/.test(command) || seen.has(command)) continue;
+    seen.add(command);
+    out.push(command);
+  }
+  return out.slice(-limit);
 }
 
 export function verifyHistoryPath(historyFile, attempt) {
@@ -474,8 +490,9 @@ export function readVerdict(text) {
 
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
   const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
+  const readBack = readBackCandidates(attempts);
   const stateFirst = (plan.stateCriteria || plan.doneCriteria).length > 0
-    ? "First run one read-only command (a list or get like those in the actions) that shows the current state for the state criteria. Then "
+    ? `First run one read-only command that shows the current state for the state criteria${readBack.length ? ` -- re-run whichever of these lists or reads the item: ${readBack.join(" | ")}` : ""}. Then `
     : "";
   const question = `${stateFirst}${stateFirst ? "r" : "R"}espond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload)}`;
   if (verifyHistory) fs.rmSync(verifyHistory, { force: true });
@@ -538,10 +555,11 @@ export function extractFailureClass(text) {
   return FAILURE_CLASSES.includes(value) ? value : "";
 }
 
-export function composeDiagnoseQuestion(plan, verdict, attempts, request = "") {
+export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", lookFirst = false) {
   const failed = verdict.criteria.filter(c => c.status !== "pass");
   const lines = failed.map(c => `- ${c.criterion} (${c.status}): ${c.evidence}`).join("\n");
   return [
+    ...(lookFirst ? [LOOK_BEFORE_ASKING, ""] : []),
     "The previous attempt did not fully achieve the goal.",
     "",
     `Request: ${request || plan.goal}`,
@@ -656,6 +674,14 @@ export function allowedCommandsOffered(attempts) {
   return "";
 }
 
+// The round ended with a question to the requester without a single tool
+// call: whatever it asks for is usually something the tools can tell.
+export function askedWithoutLooking(content, roundToolCalls) {
+  return roundToolCalls === 0 && /\?\s*$/.test(stripFailureClass(content));
+}
+
+export const LOOK_BEFORE_ASKING = "You asked the requester a question without using any tool. Do not ask: find the answer with the tools first (look for the command whose help matches the request's words), then finish the request.";
+
 export function composeNotBlockedQuestion(offered) {
   return [
     "You are not blocked yet: a permission message listed the commands you may run.",
@@ -704,6 +730,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   let lastContent = "";
   let lastVerdict = null;
   let pushedPastBlocked = false;
+  let lookFirst = false;
   const done = (stopped, attempt, note = "") => {
     metrics.stopped = stopped;
     metrics.total = [metrics.plan, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
@@ -722,7 +749,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
       ? composeExecuteQuestion(options.request, plan, recovery)
-      : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request);
+      : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
 
     const before = extractAttemptLog(history).length;
     const messagesBefore = readMessages(history).length;
@@ -756,6 +783,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
 
     priorVerdict = lastVerdict;
+    lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
     deniedCommands = [...new Set([...deniedCommands, ...newlyFailed])];
   }
