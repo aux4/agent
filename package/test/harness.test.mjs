@@ -56,7 +56,9 @@ else if (command.includes("loop-plan.md")) process.stdout.write('{"goal":"g","do
 else if (command.includes("loop-verify.md")) {
   const at = args.indexOf("--history");
   if (at >= 0) require("node:fs").writeFileSync(args[at + 1], JSON.stringify({ messages: [{ role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read back" } }] } }, { role: "tool", tool_call_id: "v1", content: "ok" }] }));
-  process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+  const q = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(q.slice(q.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: "pass", evidence: "ok" })) }) + "\\n");
 }
 else if (command.includes("playbook hook-before")) process.stdout.write("");
 else if (command.includes("ai agent ask")) process.stdout.write((process.env.MODEL_OUTPUT || "Here is your written answer.") + "\\n");
@@ -515,7 +517,9 @@ else if (command.includes("loop-plan.md")) process.stdout.write('{"goal":"g","do
 else if (command.includes("loop-verify.md")) {
   const at = args.indexOf("--history");
   if (at >= 0) require("node:fs").writeFileSync(args[at + 1], JSON.stringify({ messages: [{ role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read back" } }] } }, { role: "tool", tool_call_id: "v1", content: "ok" }] }));
-  process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+  const q = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(q.slice(q.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: "pass", evidence: "ok" })) }) + "\\n");
 }
 else if (command.includes("playbook hook-before") || command.includes("playbook hook-after")) process.stdout.write("");
 else if (command.includes("classify rank")) { wait(600); process.stdout.write(JSON.stringify({scale:"probability",blocks:[{id:"markdown",score:0.95}]})); }
@@ -594,7 +598,9 @@ else if (command.includes("loop-plan.md")) process.stdout.write('{"goal":"g","do
 else if (command.includes("loop-verify.md")) {
   const at = args.indexOf("--history");
   if (at >= 0) require("node:fs").writeFileSync(args[at + 1], JSON.stringify({ messages: [{ role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read back" } }] } }, { role: "tool", tool_call_id: "v1", content: "ok" }] }));
-  process.stdout.write('{"results":[{"criterion":"the request has been fully and correctly carried out","status":"pass","evidence":"ok"}]}\\n');
+  const q = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(q.slice(q.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: "pass", evidence: "ok" })) }) + "\\n");
 }
 else if (command.includes("playbook hook-before")) process.stdout.write("");
 else if (command.includes("ai agent ask")) process.stdout.write("Finished the task\\n");

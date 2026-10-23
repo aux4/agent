@@ -9,6 +9,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 export const RETRY_BUDGET = 2;
+// How much of each tool result the verifier sees, and in total.
+const RESULT_LIMIT = 1500;
+const RESULTS_TOTAL_LIMIT = 8000;
 const FAILURE_CLASSES = ["wrong_tool", "wrong_parameters", "tool_error", "incomplete", "misread_facts", "blocked"];
 
 export function runAux4(args, { allowFailure = false } = {}) {
@@ -93,35 +96,59 @@ function askOnce(options, { instructions, question, history = "", extraArgs = []
 
 // --- Plan -------------------------------------------------------------
 
+// A criterion is either about the reply ("answer": what the final answer must
+// say) or about the world ("state": something that must now be true outside
+// the conversation). Only state criteria need the verifier to look again.
+function normalizeCriterion(raw) {
+  if (typeof raw === "string") return { text: raw.trim(), kind: "state" };
+  const text = typeof raw?.text === "string" ? raw.text.trim() : typeof raw?.criterion === "string" ? raw.criterion.trim() : "";
+  const kind = raw?.kind === "answer" ? "answer" : "state";
+  return { text, kind };
+}
+
 function normalizePlan(raw) {
   const goal = typeof raw?.goal === "string" && raw.goal.trim() ? raw.goal.trim() : "";
-  const doneCriteria = Array.isArray(raw?.doneCriteria)
-    ? raw.doneCriteria.map(String).map(s => s.trim()).filter(Boolean)
+  const criteria = Array.isArray(raw?.doneCriteria)
+    ? raw.doneCriteria.map(normalizeCriterion).filter(c => c.text)
     : [];
   const steps = Array.isArray(raw?.steps)
     ? raw.steps.map(String).map(s => s.trim()).filter(Boolean)
     : [];
-  return { goal, doneCriteria, steps };
+  return {
+    goal,
+    doneCriteria: criteria.map(c => c.text),
+    stateCriteria: criteria.filter(c => c.kind === "state").map(c => c.text),
+    steps
+  };
 }
 
 export function fallbackPlan(request) {
   return {
     goal: String(request || "").trim(),
     doneCriteria: ["the request has been fully and correctly carried out"],
+    stateCriteria: ["the request has been fully and correctly carried out"],
     steps: []
   };
 }
+
+// Planning needs no tools. ai-agent binds every tool when --tools is empty, so
+// bind a single small, read-only one to keep the planning prompt short.
+const PLAN_TOOLS = "readReference";
 
 export function buildPlan(options) {
   const result = askOnce(options, {
     instructions: planInstructionsPath(options.packageDir),
     question: `Request:\n${options.request}\n\nRespond with ONLY the JSON plan object described in your instructions. No prose, no code fences.`,
-    extraArgs: sharedExtraArgs(options)
+    extraArgs: ["--tools", PLAN_TOOLS]
   });
   const parsed = parseJSONLoose(result.stdout, null);
   const plan = parsed ? normalizePlan(parsed) : fallbackPlan(options.request);
   if (!plan.goal) plan.goal = String(options.request || "").trim();
-  if (plan.doneCriteria.length === 0) plan.doneCriteria = fallbackPlan(options.request).doneCriteria;
+  if (plan.doneCriteria.length === 0) {
+    const fallback = fallbackPlan(options.request);
+    plan.doneCriteria = fallback.doneCriteria;
+    plan.stateCriteria = fallback.stateCriteria;
+  }
   return plan;
 }
 
@@ -160,7 +187,14 @@ function getToolCalls(message) {
 
 function isFailedResult(content) {
   const text = typeof content === "string" ? content : JSON.stringify(content || "");
-  return /^\s*error\b/i.test(text) || /⛔\s*policy denied/i.test(text);
+  return /^\s*(error\b|permission denied|command not found)/i.test(text) || /⛔\s*policy denied/i.test(text) || isDeclinedResult(text);
+}
+
+// The requester was asked to confirm an action and did not. Retrying cannot
+// fix that, so the loop stops instead of asking again.
+export function isDeclinedResult(content) {
+  const text = typeof content === "string" ? content : JSON.stringify(content || "");
+  return /\buser aborted\b/i.test(text);
 }
 
 function describeCall(name, args) {
@@ -205,6 +239,8 @@ export function extractAttemptLog(historyFile) {
         args: call.args ?? {},
         command: describeCall(call.name, call.args),
         failed,
+        declined: result ? isDeclinedResult(resultContent) : false,
+        result: resultText.slice(0, RESULT_LIMIT),
         resultSummary: resultText.slice(0, 300)
       });
     }
@@ -233,7 +269,18 @@ function normalizeVerdict(raw, doneCriteria) {
   }
   // Every fixed done-criterion must have a verdict; a criterion the verifier
   // silently dropped is treated as unverifiable, never as a pass.
-  const criteria = doneCriteria.map(c => byCriterion.get(c) || { criterion: c, status: "unverifiable", evidence: "the verifier did not report on this outcome" });
+  // Match by exact text first; small models often reword the criterion, so
+  // fall back to position (the verifier is asked to answer in order).
+  const ordered = results.filter(r => typeof r?.criterion === "string" || typeof r?.status === "string");
+  const criteria = doneCriteria.map((c, i) => {
+    const exact = byCriterion.get(c);
+    if (exact) return exact;
+    const r = ordered[i];
+    if (r && ["pass", "fail", "unverifiable"].includes(r.status)) {
+      return { criterion: c, status: r.status, evidence: typeof r.evidence === "string" ? r.evidence.trim() : "" };
+    }
+    return { criterion: c, status: "unverifiable", evidence: "the verifier did not report on this outcome" };
+  });
   const overall = criteria.every(c => c.status === "pass") ? "pass" : "fail";
   return { overall, criteria };
 }
@@ -245,26 +292,46 @@ export function fallbackVerdict(doneCriteria, reason) {
   };
 }
 
-// A pass only counts when it rests on the verifier's own observation. If the
-// verify run made no tool calls of its own, every pass is downgraded to
-// unverifiable: it can only have come from trusting the worker's account.
-export function requireOwnObservation(verdict, checks) {
+// Every request also gets one implicit answer criterion, so a reply that
+// silently skips part of what was asked cannot pass.
+export const COVERAGE_CRITERION = "The final answer responds to every part of the request, using the request's own meaning";
+
+// A pass on a state criterion only counts when it rests on the verifier's own
+// observation made after the work. If the verify run made no checks of its
+// own, those passes become unverifiable. Answer criteria are judged from the
+// recorded tool results, so they need no new check.
+export function requireOwnObservation(verdict, checks, stateCriteria = null) {
   if (checks.length > 0) return verdict;
-  const criteria = verdict.criteria.map(c => c.status === "pass"
+  const isState = c => stateCriteria === null || stateCriteria.includes(c.criterion);
+  const criteria = verdict.criteria.map(c => c.status === "pass" && isState(c)
     ? { ...c, status: "unverifiable", evidence: `not observed by the verifier itself (it made no checks of its own)${c.evidence ? `; it said: ${c.evidence}` : ""}` }
     : c);
   return { overall: criteria.every(c => c.status === "pass") ? "pass" : "fail", criteria };
 }
 
-// The verifier sees what was attempted, never what came back: it has to look
-// at the current state itself rather than re-read the worker's results.
-export function verifyPayload(plan, finalAnswer, attempts) {
+// What the verifier is given: the request verbatim, the criteria with their
+// kind, the final answer, and every action with its raw result. Raw results
+// are real observations the answer must agree with; they say nothing about the
+// state after the work, which state criteria must look at again.
+export function verifyPayload(plan, finalAnswer, attempts, request = "") {
+  let budget = RESULTS_TOTAL_LIMIT;
+  const actions = [];
+  for (const a of [...attempts].reverse()) {
+    const result = String(a.result ?? a.resultSummary ?? "").slice(0, Math.max(0, Math.min(RESULT_LIMIT, budget)));
+    budget -= result.length;
+    actions.unshift({ action: a.command, failed: Boolean(a.failed), result });
+  }
+  const state = new Set(plan.stateCriteria || plan.doneCriteria);
   return {
-    goal: plan.goal,
-    doneCriteria: plan.doneCriteria,
+    request: String(request || plan.goal || ""),
+    criteria: verifyCriteria(plan).map(c => ({ criterion: c, kind: state.has(c) ? "state" : "answer" })),
     finalAnswer: String(finalAnswer || ""),
-    actionsAttempted: attempts.map(a => a.command)
+    actions
   };
+}
+
+export function verifyCriteria(plan) {
+  return [...plan.doneCriteria, COVERAGE_CRITERION];
 }
 
 export function verifyHistoryPath(historyFile, attempt) {
@@ -273,24 +340,48 @@ export function verifyHistoryPath(historyFile, attempt) {
   return `${base}.verify-${attempt}.json`;
 }
 
+// Recovers whole verdict entries from a reply that was cut off mid-JSON (a
+// long reply can hit the model's output limit). Entries that were never
+// reached stay unreported, which normalizeVerdict turns into unverifiable.
+export function salvageVerdict(text) {
+  const results = [];
+  const entry = /"criterion"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"status"\s*:\s*"(pass|fail|unverifiable)"(?:\s*,\s*"evidence"\s*:\s*"((?:[^"\\]|\\.)*)")?/g;
+  let m;
+  while ((m = entry.exec(String(text || ""))) !== null) {
+    const unescape = v => { try { return JSON.parse(`"${v}"`); } catch { return v; } };
+    results.push({ criterion: unescape(m[1]), status: m[2], evidence: m[3] ? unescape(m[3]) : "" });
+  }
+  return results.length ? { results } : null;
+}
+
+// Only state criteria need tools; a verify with none binds a single small
+// tool so it is one short call.
+function verifyExtraArgs(options, plan) {
+  return (plan.stateCriteria || plan.doneCriteria).length > 0 ? sharedExtraArgs(options) : ["--tools", PLAN_TOOLS];
+}
+
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
-  const payload = verifyPayload(plan, finalAnswer, attempts);
+  const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
   const question = `Evaluate this attempt and respond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload, null, 2)}`;
   if (verifyHistory) fs.rmSync(verifyHistory, { force: true });
   const result = askOnce(options, {
     instructions: verifyInstructionsPath(options.packageDir),
     question,
     history: verifyHistory,
-    extraArgs: sharedExtraArgs(options)
+    extraArgs: verifyExtraArgs(options, plan)
   });
   const checks = verifyHistory ? extractAttemptLog(verifyHistory) : [];
-  const parsed = parseJSONLoose(result.stdout, null);
+  // A reply cut off mid-JSON can still contain a complete inner entry, which a
+  // loose parse would return on its own; only a parse with results counts.
+  const loose = parseJSONLoose(result.stdout, null);
+  const parsed = Array.isArray(loose?.results) ? loose : salvageVerdict(result.stdout);
+  const criteria = verifyCriteria(plan);
   const verdict = parsed
-    ? normalizeVerdict(parsed, plan.doneCriteria)
-    : fallbackVerdict(plan.doneCriteria, "the verifier's output could not be parsed, so this outcome could not be confirmed");
+    ? normalizeVerdict(parsed, criteria)
+    : fallbackVerdict(criteria, "the verifier's output could not be parsed, so this outcome could not be confirmed");
   // Without a history file the verifier's own calls can't be counted, so the
   // own-observation rule only applies when there is one.
-  const observed = verifyHistory ? requireOwnObservation(verdict, checks) : verdict;
+  const observed = verifyHistory ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria) : verdict;
   return { ...observed, checks: checks.map(c => c.command) };
 }
 
@@ -322,13 +413,13 @@ export function extractFailureClass(text) {
   return FAILURE_CLASSES.includes(value) ? value : "";
 }
 
-export function composeDiagnoseQuestion(plan, verdict, attempts) {
+export function composeDiagnoseQuestion(plan, verdict, attempts, request = "") {
   const failed = verdict.criteria.filter(c => c.status !== "pass");
   const lines = failed.map(c => `- ${c.criterion} (${c.status}): ${c.evidence}`).join("\n");
   return [
     "The previous attempt did not fully achieve the goal.",
     "",
-    `Goal: ${plan.goal}`,
+    `Request: ${request || plan.goal}`,
     "",
     "Outcomes not yet confirmed:",
     lines,
@@ -337,6 +428,9 @@ export function composeDiagnoseQuestion(plan, verdict, attempts) {
     summarizeAttemptLog(attempts),
     "",
     "Do not repeat, unchanged, any action listed above as FAILED -- it has already been denied for this retry.",
+    "An action listed as ok may already have taken effect even if it was not confirmed: check the current state before doing it again, and never repeat an action that sends, creates, or deletes something.",
+    FIND_THE_COMMAND,
+    ANSWER_DONT_ASK,
     "",
     "First, on a line by itself, classify the failure as exactly one of:",
     "FAILURE_CLASS: wrong_tool",
@@ -346,10 +440,19 @@ export function composeDiagnoseQuestion(plan, verdict, attempts) {
     "FAILURE_CLASS: misread_facts",
     "FAILURE_CLASS: blocked",
     "",
-    "Use \"blocked\" only when completing the goal needs information, access, or a decision only the requester can provide -- not simply because it is difficult.",
+    "Use \"blocked\" only when completing the goal needs information, access, or a decision only the requester can provide -- not simply because it is difficult, and never before you have searched the help and any list of commands you may run for the request's words.",
     "Then, below that line: if not blocked, revise your approach and act; if blocked, say exactly what you need from the requester and stop."
   ].join("\n");
 }
+
+// How to find what provides each thing a request names. Small models tend to
+// guess a command name, get it wrong once, and give up; the help text and any
+// list of allowed commands usually name the right one in the request's words.
+export const FIND_THE_COMMAND = "To find what provides each thing the request names, match the request's own words against the help descriptions (drill down with --help from the most specific group) and against any list of commands you may run. Prefer a command whose description uses the same words as the request over a guess.";
+
+// A question whose results support a reasonable reading should be answered,
+// not bounced back. Asking first is for actions that change something.
+export const ANSWER_DONT_ASK = "If part of a question is ambiguous, answer it with the reading the results best support and say which reading you used. Ask the requester only before an action that would change something, never instead of answering.";
 
 export function composeExecuteQuestion(request, plan, recovery = "") {
   const criteria = plan.doneCriteria.map(c => `- ${c}`).join("\n");
@@ -362,11 +465,16 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
     "",
     "This request is done only when every one of the following is true:",
     criteria,
+    "",
+    FIND_THE_COMMAND,
+    ANSWER_DONT_ASK,
     steps,
     recoveryNote
   ].join("\n");
 }
 
+// Policy deny entries are globs, so a failed command that itself contains "*"
+// would deny more than that one command; those are left out.
 export function mergeDenyPolicy(policyJSON, failedCommands) {
   const policy = parseJSONLoose(policyJSON, {}) || {};
   if (!failedCommands.length) return JSON.stringify(policy);
@@ -375,7 +483,7 @@ export function mergeDenyPolicy(policyJSON, failedCommands) {
   for (const entry of deny) {
     for (const pattern of entry?.executeAux4 || []) existing.add(pattern);
   }
-  const fresh = [...new Set(failedCommands)].filter(cmd => cmd && !existing.has(cmd));
+  const fresh = [...new Set(failedCommands)].filter(cmd => cmd && !cmd.includes("*") && !existing.has(cmd));
   if (fresh.length) deny.push({ executeAux4: fresh });
   return JSON.stringify({ ...policy, deny });
 }
@@ -394,6 +502,11 @@ export function sameFailureShape(a, b) {
 
 export function isBlocked(executeOutput) {
   return extractFailureClass(executeOutput) === "blocked";
+}
+
+// The failure-class line is for the harness, not the requester.
+export function stripFailureClass(text) {
+  return String(text || "").replace(/^\s*FAILURE_CLASS:\s*[a-z_]+\s*\n?/gim, "").trim();
 }
 
 export function appendStatusNote(content, note) {
@@ -422,42 +535,42 @@ export async function runLoop(options, history, execute, recovery = "") {
   let priorVerdict = null;
   let lastContent = "";
   let lastVerdict = null;
+  const done = (stopped, attempt, note = "") => ({
+    content: appendStatusNote(stripFailureClass(lastContent), note),
+    plan,
+    verdict: lastVerdict,
+    stopped,
+    attempts: attempt
+  });
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
       ? composeExecuteQuestion(options.request, plan, recovery)
-      : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history));
+      : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request);
 
+    const before = extractAttemptLog(history).length;
     lastContent = execute(question, history, deniedCommands);
 
-    if (isBlocked(lastContent)) {
-      return { content: lastContent, plan, verdict: lastVerdict, stopped: "blocked", attempts: attempt };
-    }
+    if (isBlocked(lastContent)) return done("blocked", attempt);
 
     const attempts = extractAttemptLog(history);
+    // The requester declined to confirm an action in this attempt: asking
+    // again would only repeat the question, so report and stop.
+    if (attempts.slice(before).some(a => a.declined)) return done("declined", attempt);
+
     lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt));
     saveVerdict(history, attempt, attempts, lastVerdict);
 
-    if (lastVerdict.overall === "pass") {
-      return { content: lastContent, plan, verdict: lastVerdict, stopped: "pass", attempts: attempt };
-    }
-
-    if (sameFailureShape(priorVerdict, lastVerdict)) {
-      const note = incompleteNote(lastVerdict);
-      return { content: appendStatusNote(lastContent, note), plan, verdict: lastVerdict, stopped: "no-progress", attempts: attempt };
-    }
-
-    if (attempt > RETRY_BUDGET) {
-      const note = incompleteNote(lastVerdict);
-      return { content: appendStatusNote(lastContent, note), plan, verdict: lastVerdict, stopped: "budget", attempts: attempt };
-    }
+    if (lastVerdict.overall === "pass") return done("pass", attempt);
+    if (sameFailureShape(priorVerdict, lastVerdict)) return done("no-progress", attempt, incompleteNote(lastVerdict));
+    if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
 
     priorVerdict = lastVerdict;
-    const newlyFailed = attempts.filter(a => a.failed).map(a => a.command);
+    const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
     deniedCommands = [...new Set([...deniedCommands, ...newlyFailed])];
   }
 
   // Unreachable in practice (the loop above always returns), but keep a safe
   // fallback so the function never resolves to undefined.
-  return { content: lastContent, plan, verdict: lastVerdict, stopped: "budget", attempts: RETRY_BUDGET + 1 };
+  return done("budget", RETRY_BUDGET + 1);
 }

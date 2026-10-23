@@ -20,6 +20,9 @@ import {
   runLoop,
   requireOwnObservation,
   verifyPayload,
+  salvageVerdict,
+  stripFailureClass,
+  COVERAGE_CRITERION,
   verdictLogPath,
   RETRY_BUDGET
 } from "../lib/agent-loop.mjs";
@@ -221,7 +224,9 @@ if (command.includes("loop-plan.md")) {
     ];
     fs.writeFileSync(args[historyAt + 1], JSON.stringify({ messages }));
   }
-  process.stdout.write(JSON.stringify({ results: [{ criterion: "the outcome holds", status: "${verifyStatus}", evidence: "checked" }] }));
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: "${verifyStatus}", evidence: "checked" })) }));
 }
 `);
 }
@@ -290,22 +295,47 @@ test("runLoop stops immediately when a retry classifies itself as blocked", asyn
 
 // --- verifier must observe for itself -----------------------------------------
 
-test("verifyPayload gives the verifier the actions attempted but never their results", () => {
-  const payload = verifyPayload({ goal: "g", doneCriteria: ["c"] }, "answer", [
-    { command: "todo list", failed: false, resultSummary: "1. buy milk" },
-    { command: "todo complete --id 9", failed: true, resultSummary: "Error: no such item 9" }
-  ]);
-  assert.deepEqual(payload.actionsAttempted, ["todo list", "todo complete --id 9"]);
-  assert.doesNotMatch(JSON.stringify(payload), /buy milk|no such item/);
+test("verifyPayload gives the request verbatim, typed criteria plus coverage, and raw results", () => {
+  const plan = { goal: "g", doneCriteria: ["the item is gone", "the reply names it"], stateCriteria: ["the item is gone"] };
+  const payload = verifyPayload(plan, "answer", [
+    { command: "todo list", failed: false, result: "1. buy milk" },
+    { command: "todo complete --id 9", failed: true, result: "Error: no such item 9" }
+  ], "remove item 9 and tell me which it was");
+  assert.equal(payload.request, "remove item 9 and tell me which it was");
+  assert.deepEqual(payload.criteria.map(c => c.kind), ["state", "answer", "answer"]);
+  assert.equal(payload.criteria[2].criterion, COVERAGE_CRITERION);
+  assert.deepEqual(payload.actions.map(a => a.result), ["1. buy milk", "Error: no such item 9"]);
 });
 
-test("requireOwnObservation downgrades every pass when the verifier made no checks", () => {
-  const verdict = { overall: "pass", criteria: [{ criterion: "c", status: "pass", evidence: "the log says so" }] };
-  const out = requireOwnObservation(verdict, []);
+test("salvageVerdict recovers complete entries from a reply cut off mid-JSON", () => {
+  const cut = '{"results":[{"criterion":"a","status":"pass","evidence":"saw it"},{"criterion":"b","status":"fail","evidence":"the list still sho';
+  const out = salvageVerdict(cut);
+  assert.equal(out.results.length, 2);
+  assert.deepEqual(out.results[0], { criterion: "a", status: "pass", evidence: "saw it" });
+  assert.equal(out.results[1].status, "fail");
+  assert.equal(salvageVerdict("no json here"), null);
+});
+
+test("stripFailureClass removes the harness label from the answer", () => {
+  assert.equal(stripFailureClass("FAILURE_CLASS: tool_error\nThe event moved to 16:00."), "The event moved to 16:00.");
+});
+
+test("mergeDenyPolicy never adds a failed command that contains a glob", () => {
+  const out = JSON.parse(mergeDenyPolicy('{"budget":{"calls":5}}', ["list *", "get --id 1"]));
+  assert.deepEqual(out.deny, [{ executeAux4: ["get --id 1"] }]);
+});
+
+test("requireOwnObservation downgrades unobserved passes on state criteria only", () => {
+  const verdict = { overall: "pass", criteria: [
+    { criterion: "the item is gone", status: "pass", evidence: "the log says so" },
+    { criterion: "the reply names it", status: "pass", evidence: "it does" }
+  ] };
+  const out = requireOwnObservation(verdict, [], ["the item is gone"]);
   assert.equal(out.overall, "fail");
   assert.equal(out.criteria[0].status, "unverifiable");
   assert.match(out.criteria[0].evidence, /no checks of its own/);
-  assert.deepEqual(requireOwnObservation(verdict, [{ command: "read" }]), verdict);
+  assert.equal(out.criteria[1].status, "pass");
+  assert.deepEqual(requireOwnObservation(verdict, [{ command: "read" }], ["the item is gone"]), verdict);
 });
 
 test("runLoop does not accept a pass the verifier never observed", async () => {
@@ -328,5 +358,62 @@ test("runLoop keeps every verify round, with the verifier's own checks, next to 
     assert.equal(rounds[0].attempt, 1);
     assert.deepEqual(rounds[0].checks, ["read the current state"]);
     assert.equal(rounds[0].criteria[0].status, "fail");
+  });
+});
+
+test("runLoop stops without retrying when the requester declines to confirm an action", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      calls++;
+      fs.writeFileSync(h, JSON.stringify({ messages: [
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "remove item 3" } }] } },
+        { role: "tool", tool_call_id: "c1", content: "User aborted" }
+      ] }));
+      return "I could not remove it: the confirmation was declined.";
+    });
+    assert.equal(outcome.stopped, "declined");
+    assert.equal(calls, 1);
+  });
+});
+
+test("runLoop never returns the failure-class label to the requester", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, () => "FAILURE_CLASS: incomplete\nDone now.");
+    assert.equal(outcome.content, "Done now.");
+  });
+});
+
+test("a verdict whose criteria were reworded is matched by position", async () => {
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: [{ text: "the reply names the item", kind: "answer" }], steps: [] }));
+else if (command.includes("loop-verify.md")) process.stdout.write(JSON.stringify({ results: [{ criterion: "Reply names item.", status: "pass", evidence: "it does" }, { criterion: "covers all", status: "pass", evidence: "yes" }] }));
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, () => "the item is X");
+    assert.equal(outcome.stopped, "pass");
+    assert.equal(outcome.verdict.criteria[0].criterion, "the reply names the item");
+  });
+});
+
+test("a verdict cut off mid-JSON is salvaged rather than read as one inner entry", async () => {
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: [{ text: "a", kind: "answer" }, { text: "b", kind: "answer" }], steps: [] }));
+else if (command.includes("loop-verify.md")) process.stdout.write('\`\`\`json\\n{"results":[{"criterion":"a","status":"pass","evidence":"ok"},{"criterion":"b","status":"fail","evidence":"no"},{"criterion":"c","sta');
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, () => "answer");
+    assert.equal(outcome.verdict.criteria[0].status, "pass");
+    assert.equal(outcome.verdict.criteria[1].status, "fail");
   });
 });

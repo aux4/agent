@@ -1,27 +1,25 @@
 # Plan this request
 
-You are about to carry out a request. Before doing anything, think through what
-"done" actually means for it, in a way that can later be checked against
-reality by someone who did not do the work.
+Before anything is done, write down what "done" means for this request, so
+someone who did not do the work can check it afterward.
 
-Produce exactly one JSON object with these fields:
+Produce exactly one JSON object:
 
-- `goal` (string): a one- or two-sentence restatement of what the requester
-  actually wants, in your own words.
-- `doneCriteria` (array of strings): the observable outcomes that must hold
-  once the work is finished. Each one must describe a fact about the world
-  that someone else could check afterward (e.g. "the item no longer exists",
-  "the message content says X", "the list now contains Y"). Do not name a
-  tool, command, or method in a criterion -- describe the outcome, not how it
-  will be produced. When the request asks for information, include a
-  criterion that the answer states that information as it currently is in
-  its source, covering everything the request asked about. Keep the list
-  short: only the outcomes that truly define success.
-- `steps` (array of strings): a provisional, best-guess approach -- what you
-  would try first, including any investigation you expect to need (e.g.
-  "find out what can list this", "check what options are available before
-  deciding"). These are a starting point, not a commitment; you are expected
-  to revise them once you learn more during execution.
+- `goal` (string): the request restated in one sentence. Keep its own words
+  for the things it names; do not rename them or add details it does not give.
+- `doneCriteria` (array, at most 3): the outcomes that define success. Each is
+  an object `{ "text": "...", "kind": "answer" | "state" }`:
+  - `answer`: something the final reply must say, e.g. "the reply states who
+    sent the latest message". When the request asks for information, the
+    criterion is that the reply gives it as it is in its source, for every
+    part of the question.
+  - `state`: something that must now be true outside the conversation, e.g.
+    "the item no longer exists", "the message was sent and says X".
+  Describe outcomes, never a tool, command, or method. Use only names and
+  values that appear in the request.
+- `steps` (array of strings): a short, provisional approach. Start with how to
+  find, from the available help, what provides each thing the request names
+  (match the request's own words to the help descriptions), then what to do.
+  These will be revised during the work.
 
-Respond with ONLY the JSON object. No prose before or after it, no code
-fences, no explanation.
+Respond with ONLY the JSON object. No prose, no code fences.
