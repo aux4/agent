@@ -260,6 +260,16 @@ export function extractAttemptLog(historyFile) {
 
 const NUDGE = /^you returned nothing\b/i;
 
+export function readTokenUsage(historyFile) {
+  if (!historyFile || !fs.existsSync(historyFile)) return { input: 0, cached: 0, output: 0 };
+  try {
+    const u = JSON.parse(fs.readFileSync(historyFile, "utf8"))?.tokenUsage || {};
+    return { input: u.input || 0, cached: u.cached || 0, output: u.output || 0 };
+  } catch {
+    return { input: 0, cached: 0, output: 0 };
+  }
+}
+
 function readMessages(historyFile) {
   if (!historyFile || !fs.existsSync(historyFile)) return [];
   try {
@@ -282,17 +292,23 @@ function usageOf(message) {
 // messages after `from`): model calls, tokens, tool calls, and the calls that
 // bought nothing -- failed or denied, exact repeats, help lookups, and empty
 // replies the model had to be nudged past.
-export function historyStats(historyFile, from = 0) {
+// Token totals come from the history's own tokenUsage (pass `usageBefore` to
+// get only what was spent after it); every assistant message, and every empty
+// reply the model was nudged past, is one model call.
+export function historyStats(historyFile, from = 0, usageBefore = null) {
   const messages = readMessages(historyFile).slice(from);
   const stats = { modelCalls: 0, input: 0, cached: 0, output: 0, toolCalls: 0, failed: 0, repeats: 0, help: 0, emptyReplies: 0 };
   const seen = new Set();
   const results = new Map();
   for (const m of messages) if (m?.role === "tool" && m.tool_call_id) results.set(m.tool_call_id, m.content);
   for (const m of messages) {
-    if (m?.role === "user" && NUDGE.test(String(m.content || ""))) stats.emptyReplies++;
+    if (m?.role === "user" && NUDGE.test(String(m.content || ""))) {
+      stats.emptyReplies++;
+      stats.modelCalls++;
+    }
     if (m?.role !== "assistant" && m?.role !== "assistant_with_tool") continue;
+    stats.modelCalls++;
     const u = usageOf(m);
-    if (u.input || u.output) stats.modelCalls++;
     stats.input += u.input;
     stats.cached += u.cached;
     stats.output += u.output;
@@ -305,6 +321,13 @@ export function historyStats(historyFile, from = 0) {
       if (/(^|\s)--help(\s|$)/.test(command)) stats.help++;
       if (call.id && isFailedResult(results.get(call.id))) stats.failed++;
     }
+  }
+  const total = readTokenUsage(historyFile);
+  if (total.input || total.output) {
+    const before = usageBefore || { input: 0, cached: 0, output: 0 };
+    stats.input = total.input - before.input;
+    stats.cached = total.cached - before.cached;
+    stats.output = total.output - before.output;
   }
   return stats;
 }
@@ -562,6 +585,19 @@ export const CHECK_BEFORE_IRREVERSIBLE = "Before an action that cannot be undone
 // so it has to say what it refers to.
 export const MESSAGES_STAND_ALONE = "Anything you send on the requester's behalf must make sense on its own: name the specific thing it answers or refers to (the item, the date and time), not just \"that\".";
 
+// One compact block of working rules, each aimed at a kind of call that buys
+// nothing: guessed command or parameter names, repeating a change that already
+// worked, retrying what the requester declined, and asking instead of answering.
+export const WORKING_RULES = [
+  "How to work:",
+  "- Find the command: match the request's own words to the help descriptions and to any list of commands you may run; drill down with --help from the most specific group.",
+  "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
+  "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools.",
+  "- If an action returns \"User aborted\", the requester declined it: stop and say so, do not retry it.",
+  "- Anything you send must name what it refers to (the item, the date and time), not just \"that\".",
+  "- If a question is ambiguous, answer with the reading the results best support and say which; ask only before changing something."
+].join("\n");
+
 export function composeExecuteQuestion(request, plan, recovery = "") {
   const criteria = plan.doneCriteria.map(c => `- ${c}`).join("\n");
   const steps = plan.steps.length ? `\n\nPossible starting points (provisional, revise as you learn more):\n${plan.steps.map(s => `- ${s}`).join("\n")}` : "";
@@ -574,10 +610,7 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
     "This request is done only when every one of the following is true:",
     criteria,
     "",
-    FIND_THE_COMMAND,
-    CHECK_BEFORE_IRREVERSIBLE,
-    MESSAGES_STAND_ALONE,
-    ANSWER_DONT_ASK,
+    WORKING_RULES,
     steps,
     recoveryNote
   ].join("\n");
@@ -690,9 +723,10 @@ export async function runLoop(options, history, execute, recovery = "") {
 
     const before = extractAttemptLog(history).length;
     const messagesBefore = readMessages(history).length;
+    const usageBefore = readTokenUsage(history);
     const executeStart = Date.now();
     lastContent = execute(question, history, deniedCommands);
-    const round = { attempt, execute: { ...historyStats(history, messagesBefore), ms: Date.now() - executeStart } };
+    const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
 
     if (isBlocked(lastContent)) {
@@ -700,7 +734,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       if (!offered) return done("blocked", attempt);
       pushedPastBlocked = true;
       lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands);
-      round.execute = { ...historyStats(history, messagesBefore), ms: Date.now() - executeStart };
+      round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart };
       if (isBlocked(lastContent)) return done("blocked", attempt);
     }
 

@@ -472,8 +472,8 @@ test("historyStats counts model calls, tokens, and calls that bought nothing", (
     { role: "assistant", content: { ...usage(220, 15), content: "done" } }
   ] }));
   const s = historyStats(file);
-  assert.deepEqual(s, { modelCalls: 4, input: 670, cached: 630, output: 75, toolCalls: 3, failed: 1, repeats: 1, help: 1, emptyReplies: 1 });
-  assert.equal(historyStats(file, 5).modelCalls, 2);
+  assert.deepEqual(s, { modelCalls: 5, input: 670, cached: 630, output: 75, toolCalls: 3, failed: 1, repeats: 1, help: 1, emptyReplies: 1 });
+  assert.equal(historyStats(file, 5).modelCalls, 3);
 });
 
 test("runLoop saves per-phase metrics next to the plan", async () => {
@@ -487,4 +487,13 @@ test("runLoop saves per-phase metrics next to the plan", async () => {
     assert.ok("verify" in saved.rounds[0] && "total" in saved);
     assert.equal(outcome.metrics.stopped, "pass");
   });
+});
+
+test("historyStats prefers the history's own tokenUsage, minus what was spent before", () => {
+  const file = tmpFile("history.json", JSON.stringify({ tokenUsage: { input: 900, cached: 600, output: 120 }, messages: [
+    { role: "user", content: "q" }, { role: "assistant", content: "a" }
+  ] }));
+  const s = historyStats(file, 0, { input: 400, cached: 300, output: 20 });
+  assert.equal(s.modelCalls, 1);
+  assert.deepEqual([s.input, s.cached, s.output], [500, 300, 100]);
 });
