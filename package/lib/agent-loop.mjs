@@ -360,6 +360,11 @@ function verifyExtraArgs(options, plan) {
   return (plan.stateCriteria || plan.doneCriteria).length > 0 ? sharedExtraArgs(options) : ["--tools", PLAN_TOOLS];
 }
 
+export function readVerdict(text) {
+  const loose = parseJSONLoose(text, null);
+  return Array.isArray(loose?.results) ? loose : salvageVerdict(text);
+}
+
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
   const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
   const question = `Evaluate this attempt and respond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload, null, 2)}`;
@@ -373,8 +378,18 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   const checks = verifyHistory ? extractAttemptLog(verifyHistory) : [];
   // A reply cut off mid-JSON can still contain a complete inner entry, which a
   // loose parse would return on its own; only a parse with results counts.
-  const loose = parseJSONLoose(result.stdout, null);
-  const parsed = Array.isArray(loose?.results) ? loose : salvageVerdict(result.stdout);
+  let parsed = readVerdict(result.stdout);
+  if (!parsed && verifyHistory) {
+    // Small models sometimes answer in prose or return nothing; one follow-up
+    // in the same conversation (its prefix is cached) usually yields the JSON.
+    const again = askOnce(options, {
+      instructions: verifyInstructionsPath(options.packageDir),
+      question: "Give your verdict now as ONLY the JSON object described in your instructions, one entry per criterion in the given order.",
+      history: verifyHistory,
+      extraArgs: ["--tools", PLAN_TOOLS]
+    });
+    parsed = readVerdict(again.stdout);
+  }
   const criteria = verifyCriteria(plan);
   const verdict = parsed
     ? normalizeVerdict(parsed, criteria)
@@ -430,6 +445,7 @@ export function composeDiagnoseQuestion(plan, verdict, attempts, request = "") {
     "Do not repeat, unchanged, any action listed above as FAILED -- it has already been denied for this retry.",
     "An action listed as ok may already have taken effect even if it was not confirmed: check the current state before doing it again, and never repeat an action that sends, creates, or deletes something.",
     FIND_THE_COMMAND,
+    CHECK_BEFORE_IRREVERSIBLE,
     ANSWER_DONT_ASK,
     "",
     "First, on a line by itself, classify the failure as exactly one of:",
@@ -454,6 +470,10 @@ export const FIND_THE_COMMAND = "To find what provides each thing the request na
 // not bounced back. Asking first is for actions that change something.
 export const ANSWER_DONT_ASK = "If part of a question is ambiguous, answer it with the reading the results best support and say which reading you used. Ask the requester only before an action that would change something, never instead of answering.";
 
+// Something sent or removed cannot be taken back, so whatever it depends on
+// has to be established first, not assumed.
+export const CHECK_BEFORE_IRREVERSIBLE = "Before an action that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools; if you could not get them, do not take the action -- find another way to get them.";
+
 export function composeExecuteQuestion(request, plan, recovery = "") {
   const criteria = plan.doneCriteria.map(c => `- ${c}`).join("\n");
   const steps = plan.steps.length ? `\n\nPossible starting points (provisional, revise as you learn more):\n${plan.steps.map(s => `- ${s}`).join("\n")}` : "";
@@ -467,6 +487,7 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
     criteria,
     "",
     FIND_THE_COMMAND,
+    CHECK_BEFORE_IRREVERSIBLE,
     ANSWER_DONT_ASK,
     steps,
     recoveryNote
@@ -498,6 +519,25 @@ export function sameFailureShape(a, b) {
     .sort()
     .join("|");
   return key(a) === key(b);
+}
+
+// When a denied command came back with the list of commands that may run, the
+// agent is not blocked: it has not yet tried what it is allowed to use.
+export function allowedCommandsOffered(attempts) {
+  for (const a of [...attempts].reverse()) {
+    const m = String(a.result || "").match(/Commands you may run:\s*([^\n]+)/i);
+    if (m) return m[1].replace(/\.\s*Use one of these.*$/i, "").trim();
+  }
+  return "";
+}
+
+export function composeNotBlockedQuestion(offered) {
+  return [
+    "You are not blocked yet: a permission message listed the commands you may run.",
+    `Commands you may run: ${offered}`,
+    "Pick the one whose name matches what you need (check its --help for parameters), use it, and finish the request.",
+    CHECK_BEFORE_IRREVERSIBLE
+  ].join("\n");
 }
 
 export function isBlocked(executeOutput) {
@@ -535,6 +575,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   let priorVerdict = null;
   let lastContent = "";
   let lastVerdict = null;
+  let pushedPastBlocked = false;
   const done = (stopped, attempt, note = "") => ({
     content: appendStatusNote(stripFailureClass(lastContent), note),
     plan,
@@ -551,7 +592,13 @@ export async function runLoop(options, history, execute, recovery = "") {
     const before = extractAttemptLog(history).length;
     lastContent = execute(question, history, deniedCommands);
 
-    if (isBlocked(lastContent)) return done("blocked", attempt);
+    if (isBlocked(lastContent)) {
+      const offered = !pushedPastBlocked && allowedCommandsOffered(extractAttemptLog(history));
+      if (!offered) return done("blocked", attempt);
+      pushedPastBlocked = true;
+      lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands);
+      if (isBlocked(lastContent)) return done("blocked", attempt);
+    }
 
     const attempts = extractAttemptLog(history);
     // The requester declined to confirm an action in this attempt: asking

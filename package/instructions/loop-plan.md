@@ -15,6 +15,10 @@ Produce exactly one JSON object:
     part of the question.
   - `state`: something that must now be true outside the conversation, e.g.
     "the item no longer exists", "the message was sent and says X".
+  When the reply or anything sent must convey a fact (an answer, a yes/no,
+  a time), the criterion says it agrees with where that fact comes from, e.g.
+  "the reply says whether the time is free, matching the schedule at that
+  time" -- not merely that it says something.
   Describe outcomes, never a tool, command, or method. Use only names and
   values that appear in the request.
 - `steps` (array of strings): a short, provisional approach. Start with how to

@@ -23,6 +23,8 @@ import {
   salvageVerdict,
   stripFailureClass,
   COVERAGE_CRITERION,
+  allowedCommandsOffered,
+  readVerdict,
   verdictLogPath,
   RETRY_BUDGET
 } from "../lib/agent-loop.mjs";
@@ -415,5 +417,41 @@ else if (command.includes("loop-verify.md")) process.stdout.write('\`\`\`json\\n
     const outcome = await runLoop(baseOptions(), history, () => "answer");
     assert.equal(outcome.verdict.criteria[0].status, "pass");
     assert.equal(outcome.verdict.criteria[1].status, "fail");
+  });
+});
+
+test("allowedCommandsOffered reads the list from the latest permission message", () => {
+  const attempts = [
+    { command: "x", result: "ok" },
+    { command: "y", result: 'Permission denied: command "y" is not allowed by the permissions configuration. Commands you may run: aux4 a list, aux4 b get. Use one of these instead' }
+  ];
+  assert.equal(allowedCommandsOffered(attempts), "aux4 a list, aux4 b get");
+  assert.equal(allowedCommandsOffered([{ command: "x", result: "ok" }]), "");
+});
+
+test("readVerdict only accepts a parse that carries results", () => {
+  assert.equal(readVerdict('{"criterion":"a","status":"pass"}').results.length, 1);
+  assert.equal(readVerdict("the task is complete"), null);
+});
+
+test("runLoop pushes once past a 'blocked' claim when allowed commands were offered", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const questions = [];
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      questions.push(question);
+      if (questions.length === 1) {
+        fs.writeFileSync(h, JSON.stringify({ messages: [
+          { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "guess" } }] } },
+          { role: "tool", tool_call_id: "c1", content: "Permission denied: nope. Commands you may run: aux4 real list." }
+        ] }));
+        return "FAILURE_CLASS: blocked\nI need access.";
+      }
+      return "Here it is.";
+    });
+    assert.equal(questions.length, 2);
+    assert.match(questions[1], /aux4 real list/);
+    assert.equal(outcome.stopped, "pass");
   });
 });
