@@ -479,8 +479,19 @@ export function salvageVerdict(text) {
 
 // Only state criteria need tools; a verify with none binds a single small
 // tool so it is one short call.
+// The verifier only observes, so it gets only the tools that observe: a
+// narrower tool list keeps small models on the one job of looking.
+const OBSERVE_TOOLS = ["executeAux4", "readFile", "listFiles", "searchFiles", "readReference"];
+
+export function verifyToolList(tools) {
+  const bound = String(tools || "").split(",").map(t => t.trim()).filter(Boolean);
+  const pick = bound.length ? bound.filter(t => OBSERVE_TOOLS.includes(t)) : OBSERVE_TOOLS;
+  return (pick.length ? pick : [PLAN_TOOLS]).join(",");
+}
+
 function verifyExtraArgs(options, plan) {
-  return (plan.stateCriteria || plan.doneCriteria).length > 0 ? sharedExtraArgs(options) : ["--tools", PLAN_TOOLS];
+  if ((plan.stateCriteria || plan.doneCriteria).length === 0) return ["--tools", PLAN_TOOLS];
+  return sharedExtraArgs({ ...options, tools: verifyToolList(options.tools) });
 }
 
 export function readVerdict(text) {
@@ -708,7 +719,9 @@ export const DO_IT_NOW = "You described what to do but did not call any tool. Do
 
 export function describedWithoutDoing(content, roundToolCalls) {
   const text = stripFailureClass(content);
-  return roundToolCalls === 0 && /\b(I will|I'll|I need to|I am going to|let me)\b/i.test(text);
+  if (roundToolCalls !== 0) return false;
+  // Narrated intent, or a tool call written out as text instead of made.
+  return /\b(I will|I'll|I need to|I am going to|let me)\b/i.test(text) || /^\s*`?\w+\(\s*["'{]/.test(text);
 }
 
 // The failure-class line is for the harness, not the requester.
@@ -775,9 +788,16 @@ export async function runLoop(options, history, execute, recovery = "") {
     lastContent = execute(question, history, deniedCommands);
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
-    if (attempt > 1 && !isBlocked(lastContent) && describedWithoutDoing(lastContent, round.execute.toolCalls)) {
-      lastContent = execute(DO_IT_NOW, history, deniedCommands);
-      round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart };
+    // One push per round, straight away (cheaper than verifying a round that
+    // did nothing): a question asked without looking, or a step described or
+    // written out as text instead of carried out.
+    if (!isBlocked(lastContent)) {
+      const push = askedWithoutLooking(lastContent, round.execute.toolCalls) ? LOOK_BEFORE_ASKING
+        : describedWithoutDoing(lastContent, round.execute.toolCalls) ? DO_IT_NOW : "";
+      if (push) {
+        lastContent = execute(push, history, deniedCommands);
+        round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: push === DO_IT_NOW ? "do-it-now" : "look-first" };
+      }
     }
 
     if (isBlocked(lastContent)) {

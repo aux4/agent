@@ -28,6 +28,7 @@ import {
   askedWithoutLooking,
   describedWithoutDoing,
   missingParameterHints,
+  verifyToolList,
   historyStats,
   metricsPath,
   readVerdict,
@@ -525,6 +526,7 @@ test("describedWithoutDoing spots a retry that only narrated its next step", () 
   assert.equal(describedWithoutDoing("I will send the reply with gmail send.", 0), true);
   assert.equal(describedWithoutDoing("I will send the reply.", 1), false);
   assert.equal(describedWithoutDoing("The meeting was moved.", 0), false);
+  assert.equal(describedWithoutDoing('executeAux4("aux4 ai skill list")', 0), true);
 });
 
 test("isBlocked accepts the BLOCKED: mark, and the answer drops it", async () => {
@@ -561,4 +563,22 @@ test("missingParameterHints explains aux4's missing-parameter error", () => {
   const hints = missingParameterHints([{ command: "x send --body hi", failed: true, result: "Error executing command: Error to enter the value of to" }]);
   assert.match(hints.join(" "), /missing the required --to parameter/);
   assert.deepEqual(missingParameterHints([{ command: "x", failed: false, result: "ok" }]), []);
+});
+
+test("verifyToolList keeps only the tools that observe", () => {
+  assert.equal(verifyToolList("executeAux4,writeFile,readFile,askUser"), "executeAux4,readFile");
+  assert.equal(verifyToolList(""), "executeAux4,readFile,listFiles,searchFiles,readReference");
+  assert.equal(verifyToolList("writeFile"), "readReference");
+});
+
+test("a round that asked without looking is pushed once before it is verified", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const questions = [];
+    const outcome = await runLoop(baseOptions(), history, q => { questions.push(q); return questions.length === 1 ? "What is the date?" : "Moved it."; });
+    assert.equal(questions.length, 2);
+    assert.match(questions[1], /without using any tool/);
+    assert.equal(outcome.content, "Moved it.");
+  });
 });
