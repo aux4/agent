@@ -10,8 +10,8 @@ import { spawnSync } from "node:child_process";
 
 export const RETRY_BUDGET = 2;
 // How much of each tool result the verifier sees, and in total.
-const RESULT_LIMIT = 1500;
-const RESULTS_TOTAL_LIMIT = 8000;
+const RESULT_LIMIT = 800;
+const RESULTS_TOTAL_LIMIT = 4000;
 const FAILURE_CLASSES = ["wrong_tool", "wrong_parameters", "tool_error", "incomplete", "misread_facts", "blocked"];
 
 export function runAux4(args, { allowFailure = false } = {}) {
@@ -367,7 +367,10 @@ export function readVerdict(text) {
 
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
   const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
-  const question = `Evaluate this attempt and respond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload, null, 2)}`;
+  const stateFirst = (plan.stateCriteria || plan.doneCriteria).length > 0
+    ? "First run one read-only command (a list or get like those in the actions) that shows the current state for the state criteria. Then "
+    : "";
+  const question = `${stateFirst}${stateFirst ? "r" : "R"}espond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload)}`;
   if (verifyHistory) fs.rmSync(verifyHistory, { force: true });
   const result = askOnce(options, {
     instructions: verifyInstructionsPath(options.packageDir),
@@ -412,7 +415,7 @@ export function saveVerdict(historyFile, attempt, attempts, verdict) {
   if (!file) return;
   try {
     const rounds = attempt === 1 ? [] : (parseJSONLoose(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "", []) || []);
-    rounds.push({ attempt, actionsAttempted: attempts.map(a => a.command), checks: verdict.checks || [], overall: verdict.overall, criteria: verdict.criteria });
+    rounds.push({ attempt, ms: verdict.ms, actionsAttempted: attempts.map(a => a.command), checks: verdict.checks || [], overall: verdict.overall, criteria: verdict.criteria });
     fs.writeFileSync(file, JSON.stringify(rounds, null, 2));
   } catch {
     // best-effort; the loop still works without a persisted verdict log
@@ -568,8 +571,9 @@ export function incompleteNote(verdict) {
 // perform one real execution turn (a normal `aux4 ai agent ask` call against
 // the caller's own history/conversation) and return its stdout text.
 export async function runLoop(options, history, execute, recovery = "") {
+  const planStart = Date.now();
   const plan = buildPlan(options);
-  savePlan(history, plan);
+  savePlan(history, { ...plan, ms: Date.now() - planStart });
 
   let deniedCommands = [];
   let priorVerdict = null;
@@ -590,6 +594,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request);
 
     const before = extractAttemptLog(history).length;
+    const executeStart = Date.now();
     lastContent = execute(question, history, deniedCommands);
 
     if (isBlocked(lastContent)) {
@@ -605,8 +610,9 @@ export async function runLoop(options, history, execute, recovery = "") {
     // again would only repeat the question, so report and stop.
     if (attempts.slice(before).some(a => a.declined)) return done("declined", attempt);
 
+    const verifyStart = Date.now();
     lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt));
-    saveVerdict(history, attempt, attempts, lastVerdict);
+    saveVerdict(history, attempt, attempts, { ...lastVerdict, ms: { execute: verifyStart - executeStart, verify: Date.now() - verifyStart } });
 
     if (lastVerdict.overall === "pass") return done("pass", attempt);
     if (sameFailureShape(priorVerdict, lastVerdict)) return done("no-progress", attempt, incompleteNote(lastVerdict));
