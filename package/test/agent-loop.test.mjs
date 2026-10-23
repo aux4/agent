@@ -509,11 +509,12 @@ test("historyStats prefers the history's own tokenUsage, minus what was spent be
 
 test("readBackCandidates offers the commands that worked, without help or repeats", () => {
   const out = readBackCandidates([
-    { command: "x list --help", failed: false },
-    { command: "x list", failed: false },
-    { command: "x get 1", failed: true },
-    { command: "x list", failed: false },
-    { command: "x delete 1", failed: false }
+    { tool: "executeAux4", command: "x list --help", failed: false },
+    { tool: "executeAux4", command: "x list", failed: false },
+    { tool: "executeAux4", command: "x get 1", failed: true },
+    { tool: "currentDateTime", command: "currentDateTime {}", failed: false },
+    { tool: "executeAux4", command: "x list", failed: false },
+    { tool: "executeAux4", command: "x delete 1", failed: false }
   ]);
   assert.deepEqual(out, ["x list", "x delete 1"]);
 });
@@ -570,8 +571,8 @@ test("missingParameterHints explains aux4's missing-parameter error", () => {
 
 test("verifyToolList keeps only the tools that observe", () => {
   assert.equal(verifyToolList("executeAux4,writeFile,readFile,askUser"), "executeAux4,readFile");
-  assert.equal(verifyToolList(""), "executeAux4,readFile,listFiles,searchFiles,readReference");
-  assert.equal(verifyToolList("writeFile"), "readReference");
+  assert.equal(verifyToolList(""), "executeAux4,readFile,listFiles,searchFiles");
+  assert.equal(verifyToolList("writeFile"), "currentDateTime");
 });
 
 test("a round that asked without looking is pushed once before it is verified", async () => {

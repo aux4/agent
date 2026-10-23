@@ -14,11 +14,12 @@ const RESULT_LIMIT = 800;
 const RESULTS_TOTAL_LIMIT = 4000;
 const FAILURE_CLASSES = ["wrong_tool", "wrong_parameters", "tool_error", "incomplete", "misread_facts", "blocked"];
 
-export function runAux4(args, { allowFailure = false } = {}) {
+export function runAux4(args, { allowFailure = false, timeout = 0 } = {}) {
   const result = spawnSync(process.env.AUX4_BIN || "aux4", args, {
     encoding: "utf8",
     env: process.env,
-    maxBuffer: 20 * 1024 * 1024
+    maxBuffer: 20 * 1024 * 1024,
+    ...(timeout ? { timeout, killSignal: "SIGKILL" } : {})
   });
   const stdout = result.stdout || "";
   const stderr = result.stderr || "";
@@ -91,7 +92,7 @@ function askOnce(options, { instructions, question, history = "", extraArgs = []
   args.push("--instructions", instructions);
   if (history) args.push("--history", history);
   args.push(...extraArgs, "--question", question);
-  return runAux4(args, { allowFailure: true });
+  return runAux4(args, { allowFailure: true, timeout: HELPER_TIMEOUT_MS });
 }
 
 // --- Plan -------------------------------------------------------------
@@ -131,9 +132,13 @@ export function fallbackPlan(request) {
   };
 }
 
-// Planning needs no tools. ai-agent binds every tool when --tools is empty, so
-// bind a single small, read-only one to keep the planning prompt short.
-const PLAN_TOOLS = "readReference";
+// Planning needs no tools, but ai-agent binds every tool when the list is
+// empty or matches nothing. Bind one tiny argument-free tool: if a model loops
+// on it, ai-agent's own repeat guard stops identical calls after three.
+const PLAN_TOOLS = "currentDateTime";
+// Hard cap on any single helper call (plan, pick, verdict) so a looping model
+// can never hang the run.
+const HELPER_TIMEOUT_MS = 180000;
 
 export function buildPlan(options, planHistory = "") {
   if (planHistory) fs.rmSync(planHistory, { force: true });
@@ -450,7 +455,7 @@ export function readBackCandidates(attempts, limit = 5) {
   const out = [];
   for (const a of attempts) {
     const command = a.command;
-    if (a.failed || !command || /(^|\s)--help(\s|$)/.test(command) || seen.has(command)) continue;
+    if (a.tool !== "executeAux4" || a.failed || !command || /(^|\s)--help(\s|$)/.test(command) || seen.has(command)) continue;
     seen.add(command);
     out.push(command);
   }
@@ -527,7 +532,7 @@ export function salvageVerdict(text) {
 // tool so it is one short call.
 // The verifier only observes, so it gets only the tools that observe: a
 // narrower tool list keeps small models on the one job of looking.
-const OBSERVE_TOOLS = ["executeAux4", "readFile", "listFiles", "searchFiles", "readReference"];
+const OBSERVE_TOOLS = ["executeAux4", "readFile", "listFiles", "searchFiles"];
 
 export function verifyToolList(tools) {
   const bound = String(tools || "").split(",").map(t => t.trim()).filter(Boolean);
