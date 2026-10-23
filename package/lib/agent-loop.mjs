@@ -135,9 +135,11 @@ export function fallbackPlan(request) {
 // bind a single small, read-only one to keep the planning prompt short.
 const PLAN_TOOLS = "readReference";
 
-export function buildPlan(options) {
+export function buildPlan(options, planHistory = "") {
+  if (planHistory) fs.rmSync(planHistory, { force: true });
   const result = askOnce(options, {
     instructions: planInstructionsPath(options.packageDir),
+    history: planHistory,
     question: `Request:\n${options.request}\n\nRespond with ONLY the JSON plan object described in your instructions. No prose, no code fences.`,
     extraArgs: ["--tools", PLAN_TOOLS]
   });
@@ -150,6 +152,12 @@ export function buildPlan(options) {
     plan.stateCriteria = fallback.stateCriteria;
   }
   return plan;
+}
+
+export function phaseHistoryPath(historyFile, phase) {
+  if (!historyFile) return "";
+  const base = historyFile.endsWith(".json") ? historyFile.slice(0, -5) : historyFile;
+  return `${base}.${phase}.json`;
 }
 
 export function planFilePath(historyFile) {
@@ -246,6 +254,79 @@ export function extractAttemptLog(historyFile) {
     }
   }
   return attempts;
+}
+
+// --- Metrics ----------------------------------------------------------------
+
+const NUDGE = /^you returned nothing\b/i;
+
+function readMessages(historyFile) {
+  if (!historyFile || !fs.existsSync(historyFile)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(historyFile, "utf8"));
+    return Array.isArray(data?.messages) ? data.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+function usageOf(message) {
+  const c = message?.content;
+  const meta = c?.kwargs?.response_metadata || c?.response_metadata || {};
+  const u = meta.tokenUsage || {};
+  const cached = meta.usage?.prompt_tokens_details?.cached_tokens || 0;
+  return { input: u.promptTokens || 0, output: u.completionTokens || 0, cached };
+}
+
+// Counts what one phase spent, from its history file (optionally only the
+// messages after `from`): model calls, tokens, tool calls, and the calls that
+// bought nothing -- failed or denied, exact repeats, help lookups, and empty
+// replies the model had to be nudged past.
+export function historyStats(historyFile, from = 0) {
+  const messages = readMessages(historyFile).slice(from);
+  const stats = { modelCalls: 0, input: 0, cached: 0, output: 0, toolCalls: 0, failed: 0, repeats: 0, help: 0, emptyReplies: 0 };
+  const seen = new Set();
+  const results = new Map();
+  for (const m of messages) if (m?.role === "tool" && m.tool_call_id) results.set(m.tool_call_id, m.content);
+  for (const m of messages) {
+    if (m?.role === "user" && NUDGE.test(String(m.content || ""))) stats.emptyReplies++;
+    if (m?.role !== "assistant" && m?.role !== "assistant_with_tool") continue;
+    const u = usageOf(m);
+    if (u.input || u.output) stats.modelCalls++;
+    stats.input += u.input;
+    stats.cached += u.cached;
+    stats.output += u.output;
+    for (const call of getToolCalls(m)) {
+      if (!call?.name) continue;
+      stats.toolCalls++;
+      const command = describeCall(call.name, call.args);
+      if (seen.has(command)) stats.repeats++;
+      seen.add(command);
+      if (/(^|\s)--help(\s|$)/.test(command)) stats.help++;
+      if (call.id && isFailedResult(results.get(call.id))) stats.failed++;
+    }
+  }
+  return stats;
+}
+
+export function addStats(a, b) {
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = (out[k] || 0) + v;
+  return out;
+}
+
+export function metricsPath(historyFile) {
+  return phaseHistoryPath(historyFile, "metrics");
+}
+
+export function saveMetrics(historyFile, metrics) {
+  const file = metricsPath(historyFile);
+  if (!file) return;
+  try {
+    fs.writeFileSync(file, JSON.stringify(metrics, null, 2));
+  } catch {
+    // best-effort
+  }
 }
 
 export function summarizeAttemptLog(attempts) {
@@ -477,6 +558,10 @@ export const ANSWER_DONT_ASK = "If part of a question is ambiguous, answer it wi
 // has to be established first, not assumed.
 export const CHECK_BEFORE_IRREVERSIBLE = "Before an action that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools; if you could not get them, do not take the action -- find another way to get them.";
 
+// A message sent on the requester's behalf is read without this conversation,
+// so it has to say what it refers to.
+export const MESSAGES_STAND_ALONE = "Anything you send on the requester's behalf must make sense on its own: name the specific thing it answers or refers to (the item, the date and time), not just \"that\".";
+
 export function composeExecuteQuestion(request, plan, recovery = "") {
   const criteria = plan.doneCriteria.map(c => `- ${c}`).join("\n");
   const steps = plan.steps.length ? `\n\nPossible starting points (provisional, revise as you learn more):\n${plan.steps.map(s => `- ${s}`).join("\n")}` : "";
@@ -491,6 +576,7 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
     "",
     FIND_THE_COMMAND,
     CHECK_BEFORE_IRREVERSIBLE,
+    MESSAGES_STAND_ALONE,
     ANSWER_DONT_ASK,
     steps,
     recoveryNote
@@ -572,21 +658,30 @@ export function incompleteNote(verdict) {
 // the caller's own history/conversation) and return its stdout text.
 export async function runLoop(options, history, execute, recovery = "") {
   const planStart = Date.now();
-  const plan = buildPlan(options);
+  const planHistory = phaseHistoryPath(history, "plan-run");
+  const plan = buildPlan(options, planHistory);
   savePlan(history, { ...plan, ms: Date.now() - planStart });
+  const metrics = { plan: { ...historyStats(planHistory), ms: Date.now() - planStart }, rounds: [] };
 
   let deniedCommands = [];
   let priorVerdict = null;
   let lastContent = "";
   let lastVerdict = null;
   let pushedPastBlocked = false;
-  const done = (stopped, attempt, note = "") => ({
-    content: appendStatusNote(stripFailureClass(lastContent), note),
-    plan,
-    verdict: lastVerdict,
-    stopped,
-    attempts: attempt
-  });
+  const done = (stopped, attempt, note = "") => {
+    metrics.stopped = stopped;
+    metrics.total = [metrics.plan, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
+      .reduce((acc, s) => addStats(acc, s), {});
+    saveMetrics(history, metrics);
+    return {
+      content: appendStatusNote(stripFailureClass(lastContent), note),
+      plan,
+      verdict: lastVerdict,
+      stopped,
+      attempts: attempt,
+      metrics
+    };
+  };
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
@@ -594,14 +689,18 @@ export async function runLoop(options, history, execute, recovery = "") {
       : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request);
 
     const before = extractAttemptLog(history).length;
+    const messagesBefore = readMessages(history).length;
     const executeStart = Date.now();
     lastContent = execute(question, history, deniedCommands);
+    const round = { attempt, execute: { ...historyStats(history, messagesBefore), ms: Date.now() - executeStart } };
+    metrics.rounds.push(round);
 
     if (isBlocked(lastContent)) {
       const offered = !pushedPastBlocked && allowedCommandsOffered(extractAttemptLog(history));
       if (!offered) return done("blocked", attempt);
       pushedPastBlocked = true;
       lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands);
+      round.execute = { ...historyStats(history, messagesBefore), ms: Date.now() - executeStart };
       if (isBlocked(lastContent)) return done("blocked", attempt);
     }
 
@@ -612,6 +711,7 @@ export async function runLoop(options, history, execute, recovery = "") {
 
     const verifyStart = Date.now();
     lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt));
+    round.verify = { ...historyStats(verifyHistoryPath(history, attempt)), ms: Date.now() - verifyStart };
     saveVerdict(history, attempt, attempts, { ...lastVerdict, ms: { execute: verifyStart - executeStart, verify: Date.now() - verifyStart } });
 
     if (lastVerdict.overall === "pass") return done("pass", attempt);

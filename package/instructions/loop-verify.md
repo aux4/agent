@@ -22,6 +22,6 @@ For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.
 
 Respond with ONLY this JSON, one entry per criterion, in the given order, with
-evidence of at most 20 words each:
+evidence of at most 12 words each:
 
 {"results":[{"criterion":"<exact criterion text>","status":"pass|fail|unverifiable","evidence":"<what you saw>"}]}

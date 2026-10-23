@@ -24,6 +24,8 @@ import {
   stripFailureClass,
   COVERAGE_CRITERION,
   allowedCommandsOffered,
+  historyStats,
+  metricsPath,
   readVerdict,
   verdictLogPath,
   RETRY_BUDGET
@@ -453,5 +455,36 @@ test("runLoop pushes once past a 'blocked' claim when allowed commands were offe
     assert.equal(questions.length, 2);
     assert.match(questions[1], /aux4 real list/);
     assert.equal(outcome.stopped, "pass");
+  });
+});
+
+test("historyStats counts model calls, tokens, and calls that bought nothing", () => {
+  const usage = (i, o) => ({ kwargs: { response_metadata: { tokenUsage: { promptTokens: i, completionTokens: o }, usage: { prompt_tokens_details: { cached_tokens: i - 10 } } } } });
+  const file = tmpFile("history.json", JSON.stringify({ messages: [
+    { role: "user", content: "do it" },
+    { role: "assistant_with_tool", content: { ...usage(100, 20), tool_calls: [{ id: "a", name: "executeAux4", args: { command: "x --help" } }] } },
+    { role: "tool", tool_call_id: "a", content: "help text" },
+    { role: "assistant_with_tool", content: { ...usage(150, 30), tool_calls: [{ id: "b", name: "executeAux4", args: { command: "x list" } }] } },
+    { role: "tool", tool_call_id: "b", content: "Error: nope" },
+    { role: "user", content: "You returned nothing. Look at the last tool result" },
+    { role: "assistant_with_tool", content: { ...usage(200, 10), tool_calls: [{ id: "c", name: "executeAux4", args: { command: "x list" } }] } },
+    { role: "tool", tool_call_id: "c", content: "ok" },
+    { role: "assistant", content: { ...usage(220, 15), content: "done" } }
+  ] }));
+  const s = historyStats(file);
+  assert.deepEqual(s, { modelCalls: 4, input: 670, cached: 630, output: 75, toolCalls: 3, failed: 1, repeats: 1, help: 1, emptyReplies: 1 });
+  assert.equal(historyStats(file, 5).modelCalls, 2);
+});
+
+test("runLoop saves per-phase metrics next to the plan", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, () => "answer");
+    const saved = JSON.parse(fs.readFileSync(metricsPath(history), "utf8"));
+    assert.equal(saved.stopped, "pass");
+    assert.equal(saved.rounds.length, 1);
+    assert.ok("verify" in saved.rounds[0] && "total" in saved);
+    assert.equal(outcome.metrics.stopped, "pass");
   });
 });

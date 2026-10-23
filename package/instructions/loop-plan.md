@@ -21,9 +21,11 @@ Produce exactly one JSON object:
   time" -- not merely that it says something.
   Describe outcomes, never a tool, command, or method. Use only names and
   values that appear in the request.
-- `steps` (array of strings): a short, provisional approach. Start with how to
-  find, from the available help, what provides each thing the request names
-  (match the request's own words to the help descriptions), then what to do.
-  These will be revised during the work.
+- `steps` (array, at most 4 short strings): a provisional approach. Start with
+  how to find, from the available help, what provides each thing the request
+  names (match the request's own words to the help descriptions), then what
+  to do. These will be revised during the work.
+
+Keep every string short: one plain sentence each.
 
 Respond with ONLY the JSON object. No prose, no code fences.
