@@ -306,7 +306,7 @@ test("verifyPayload gives the request verbatim, typed criteria plus coverage, an
     { command: "todo complete --id 9", failed: true, result: "Error: no such item 9" }
   ], "remove item 9 and tell me which it was");
   assert.equal(payload.request, "remove item 9 and tell me which it was");
-  assert.deepEqual(payload.criteria.map(c => c.kind), ["state", "answer", "answer"]);
+  assert.deepEqual(payload.criteria.map(c => c.kind), ["state", "answer", "answer", "answer"]);
   assert.equal(payload.criteria[2].criterion, COVERAGE_CRITERION);
   assert.deepEqual(payload.actions.map(a => a.result), ["1. buy milk", "Error: no such item 9"]);
 });
@@ -397,7 +397,7 @@ test("a verdict whose criteria were reworded is matched by position", async () =
 const args = process.argv.slice(2);
 const command = args.join(" ");
 if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: [{ text: "the reply names the item", kind: "answer" }], steps: [] }));
-else if (command.includes("loop-verify.md")) process.stdout.write(JSON.stringify({ results: [{ criterion: "Reply names item.", status: "pass", evidence: "it does" }, { criterion: "covers all", status: "pass", evidence: "yes" }] }));
+else if (command.includes("loop-verify.md")) process.stdout.write(JSON.stringify({ results: [{ criterion: "Reply names item.", status: "pass", evidence: "it does" }, { criterion: "covers all", status: "pass", evidence: "yes" }, { criterion: "honest", status: "pass", evidence: "matches" }] }));
 `);
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
   await withAux4Bin(fake, async () => {

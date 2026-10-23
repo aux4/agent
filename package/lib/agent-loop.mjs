@@ -399,6 +399,9 @@ export function fallbackVerdict(doneCriteria, reason) {
 // Every request also gets one implicit answer criterion, so a reply that
 // silently skips part of what was asked cannot pass.
 export const COVERAGE_CRITERION = "The final answer responds to every part of the request, using the request's own meaning";
+// And one implicit honesty criterion: the answer must match what the actions
+// actually did -- what was sent, changed, or found -- not what was intended.
+export const HONESTY_CRITERION = "The final answer accurately describes what the actions actually did, including the exact content of anything sent or changed";
 
 // A pass on a state criterion only counts when it rests on the verifier's own
 // observation made after the work. If the verify run made no checks of its
@@ -435,7 +438,7 @@ export function verifyPayload(plan, finalAnswer, attempts, request = "") {
 }
 
 export function verifyCriteria(plan) {
-  return [...plan.doneCriteria, COVERAGE_CRITERION];
+  return [...plan.doneCriteria, COVERAGE_CRITERION, HONESTY_CRITERION];
 }
 
 export function verifyHistoryPath(historyFile, attempt) {
@@ -592,10 +595,10 @@ export const WORKING_RULES = [
   "How to work:",
   "- Find the command: match the request's own words to the help descriptions and to any list of commands you may run; drill down with --help from the most specific group.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
-  "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools.",
+  "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
   "- If an action returns \"User aborted\", the requester declined it: stop and say so, do not retry it.",
   "- Anything you send must name what it refers to (the item, the date and time), not just \"that\".",
-  "- If a question is ambiguous, answer with the reading the results best support and say which; ask only before changing something."
+  "- Never ask the requester for something the tools can find out (a date, an id, a name): look it up. If a question is ambiguous, answer with the reading the results best support and say which."
 ].join("\n");
 
 export function composeExecuteQuestion(request, plan, recovery = "") {
