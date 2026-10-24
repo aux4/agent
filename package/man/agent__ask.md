@@ -52,27 +52,22 @@ task-specific labels and field names. A ZIP-to-city form, for example, is labele
 Lookup” with “ZIP code”, “City”, and “Find city” controls.
 
 Every real execution turn always runs through a generic plan -> execute -> verify ->
-diagnose -> retry loop; there is no flag to disable it. Before acting, a single
-planning call fixes a `goal` and a set of checkable, tool-agnostic `doneCriteria` for
-the run (saved next to the conversation history as `<history>.plan.json`); the
-criteria describe observable outcomes ("the item no longer exists"), never a tool or
-command. After the model answers, a fresh-context verifier -- its own throwaway
-conversation, limited by its instructions to read-only checks under the same
-`--permissions` as the run, and told which actions were attempted but not what they
-returned -- checks each criterion against reality and returns `pass`, `fail`, or
-`unverifiable` with evidence; `unverifiable` never counts as a pass, and a `pass` from
-a verifier that made no checks of its own is turned into `unverifiable`. Every verify
-round is kept as `<history>.verify.json` (and its conversation as
-`<history>.verify-<n>.json`). If any criterion is not a pass, the agent gets up to 2 diagnosed retries: the
-failed criteria, verifier evidence, and a log of every action actually taken are fed
-back into the same conversation, the model classifies the failure (`wrong_tool`,
-`wrong_parameters`, `tool_error`, `incomplete`, `misread_facts`, or `blocked`), and
-any exact repeat of an action that already failed is denied for that retry (layered
-onto `--policy` as a `deny` rule). The loop stops on an all-pass verdict, a spent
-retry budget, the same criterion failing the same way twice in a row (no progress),
-or a `blocked` diagnosis -- something only the requester can resolve. On any
-non-pass stop, the returned answer states plainly what was confirmed, what was not,
-and why.
+retry loop; there is no flag to disable it. A short planning call (no tools) fixes a
+`goal` and at most 3 typed `doneCriteria` -- `answer` (what the reply must say,
+agreeing with its source) or `state` (what must now be true) -- in the request's own
+words, saved as `<history>.plan.json`. The run gets those criteria plus a short block
+of working rules, and a round that asked without looking, narrated a step, or wrote a
+tool call as text is pushed once. To verify `state` criteria the harness re-runs the
+already-successful read command that best matches them (never one with a change
+verb); one short verifier call, with no tools, judges every criterion, plus coverage
+and honesty checks, from the request, the answer, the raw results and that read. On
+a miss the agent rewrites its answer (when only the answer was off) or retries with
+the unmet criteria, the attempt log and hints; failed actions and changes that
+already went through are denied, and retries run on a 10-call budget. It stops on a
+pass, 2 spent retries, no progress, a declined confirmation, or a `BLOCKED:` reply,
+and says plainly what is not confirmed. Plans, verdicts and per-phase metrics (calls,
+tokens, wasted calls, timings) are kept next to the history (`<history>.plan.json`,
+`.verify.json`, `.metrics.json`).
 
 The queue server must be running before executing this command.
 

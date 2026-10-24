@@ -89,31 +89,40 @@ agent response.
 Every real execution turn -- the normal run, and a playbook's fallback to the agent after a failed
 replay -- always goes through a generic loop. There is no flag to turn it off:
 
-1. **Plan.** One call fixes a `goal` and a list of checkable `doneCriteria` for this run before any
-   work starts. Criteria describe observable outcomes ("the item no longer exists", "the message
-   says X"), never a tool or command, and are saved next to the conversation history as
-   `<history>.plan.json`. An accompanying provisional `steps` list is just a starting point; the
-   agent is expected to revise it as it learns.
-2. **Execute.** The normal agent run, now told what done means.
-3. **Verify.** A fresh conversation -- not the run's own history -- is asked to confirm each
-   criterion against reality. It is told which actions were attempted but not what they returned,
-   so it has to look at the current state itself. It may use the same tools and `--permissions` as
-   the run, but its instructions limit it to read-only checks: list, read, or otherwise observe,
-   never act. Each criterion comes back `pass`, `fail`, or `unverifiable` with evidence;
-   `unverifiable` never counts as a pass. A `pass` from a verifier that made no checks of its own is
-   turned into `unverifiable`. Every verify round (attempted actions, the verifier's own checks, and
-   each verdict with its evidence) is kept as `<history>.verify.json`, and each round's verifier
-   conversation as `<history>.verify-<n>.json`.
-4. **Diagnose and retry.** If anything is not a pass, the failed criteria, the verifier's evidence,
-   and a log of every action actually taken are fed back into the run's own conversation. The model
-   must first classify the failure as one of `wrong_tool`, `wrong_parameters`, `tool_error`,
-   `incomplete`, `misread_facts`, or `blocked`, then revise its approach and act again. Any action
-   that already failed is denied for the retry (added to `--policy` as a `deny` rule), so it cannot
-   be repeated unchanged.
-5. **Stop.** The loop ends on an all-pass verdict, a spent retry budget (2 retries), the same
-   criterion failing the same way twice in a row (no progress), or a `blocked` diagnosis -- something
-   only the requester, not the agent, can resolve. Whenever it stops without a full pass, the
-   returned answer says plainly what is confirmed, what is not, and why.
+1. **Plan.** One short call (no tools) fixes a `goal` and at most 3 `doneCriteria`, each typed
+   `answer` (what the reply must say, agreeing with its source) or `state` (what must now be true
+   outside the conversation). Criteria use the request's own words and never name a tool. A
+   provisional `steps` list starts with finding, from the help, what provides each thing the
+   request names. Saved as `<history>.plan.json`.
+2. **Execute.** The normal agent run, told what done means plus a short block of working rules:
+   find the command by matching the request's words to help text and allowed-command lists; read
+   `--help` before the first use of a command that changes something; get the facts an
+   irreversible action depends on first and state what they imply; stop if the requester declined
+   a confirmation; name what a sent message refers to; look things up instead of asking. A round
+   that asked without using any tool, narrated a step, or wrote a tool call as text is pushed once
+   straight away (a text-form call is removed from the history first).
+3. **Verify.** For `state` criteria the harness reads the current state itself: it re-runs the
+   already-successful command that shares the most words with the criteria, and only one with no
+   change verb (send, delete, update, ...). A single short verifier call (no tools) then judges
+   every criterion against the request, the answer, each action's raw result, and that fresh
+   read. Two criteria are always added: the answer covers every part of the request, and it
+   describes what the actions actually did. With no read possible, `state` criteria are judged
+   from the actions' own results; with no successful action at all, a `state` pass becomes
+   `unverifiable`. A reply cut off mid-JSON is salvaged; an unparseable one is asked once more.
+4. **Retry.** If anything is not a pass: when only `answer` criteria failed, the agent rewrites its
+   answer without acting again; otherwise it gets the unmet criteria, the attempt log, any list of
+   allowed commands a denial offered, and plain hints for aux4 missing-parameter errors, and must
+   fix the problem by acting. Failed actions, and changes that already went through, are denied
+   for the retry (`--policy` `deny`), and a retry runs on a 10-call tool budget.
+5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
+   failure with nothing new tried), the requester declining a confirmation, or a `BLOCKED:` reply
+   (only after the agent searched the help and any allowed-command list). Otherwise the answer
+   says plainly what is not confirmed, and the harness label never reaches the requester.
+
+Each run also writes `<history>.metrics.json`: model calls, tokens (input, cached, output), tool
+calls, and the calls that bought nothing (failed, repeated, help lookups, empty replies) for the
+plan, every execute round and every verify, with timings. Helper calls (plan, verdict) are capped
+at 90 seconds.
 
 Use `--output json` when a client needs presentation metadata:
 

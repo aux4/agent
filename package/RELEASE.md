@@ -1,5 +1,25 @@
 # Release notes
 
+## 4.4.0
+
+- Leaner, more reliable plan/verify/retry loop, measured on local Gemma 4 (4B and 26B,
+  thinking off): every journey of the dojo suite passes on both, at 2-7 minutes per suite.
+- Plan: one short call with no tools; at most 3 criteria, typed `answer` or `state`, in the
+  request's own words.
+- Verify: the harness re-reads the current state itself (re-running an already-successful
+  read command with no change verb, chosen by word overlap with the criteria) and one short
+  verifier call with no tools judges it, plus coverage and honesty checks. Cut-off verdicts
+  are salvaged; reworded entries are matched by position.
+- Retry: answer-only fixes rewrite the answer without acting; otherwise the retry acts with
+  the unmet criteria, attempt log, offered allowed-command list and missing-parameter hints.
+  Failed actions and completed changes are denied; retries run on a 10-call budget; no-progress
+  only when nothing new was tried; a declined confirmation stops the loop; `BLOCKED:` marks a
+  real block.
+- One-shot pushes for asking without looking, narrating a step, or writing a tool call as text.
+- `<history>.metrics.json`: per-phase model calls, tokens, tool calls, wasted calls, timings.
+- Helper calls bind one argument-free tool and are capped at 90 seconds (a looping model can
+  no longer hang a run).
+
 ## 4.3.1
 
 - The verifier now has to observe for itself. It is told which actions were
