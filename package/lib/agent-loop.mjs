@@ -729,7 +729,7 @@ export const MESSAGES_STAND_ALONE = "Anything you send on the requester's behalf
 export const WORKING_RULES = [
   "How to work:",
   "- Find the command: match the request's own words to the help descriptions and to any list of commands you may run; drill down with --help from the most specific group.",
-  "- To find the command for something, run `aux4 aux4 pkger find --query \"<a few words: the service and the thing, e.g. calendar events>\"`; if nothing fits, try other words (the product name, the object, the action). Then read that command's --help. A package name (scope/name) is not a command.",
+  "- Use the installed commands listed above when they fit; otherwise find one with --help (aux4 --help lists every group). A package name (scope/name) is not a command.",
   "- Never guess a command name. If a call returns \"Command not found\", run --help on its parent group (drop the last word) and use a command listed there, or look for another command that does the same thing.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",

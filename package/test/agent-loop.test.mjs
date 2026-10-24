@@ -684,7 +684,7 @@ test("isReadCommand needs a read verb among the command words and no change verb
 });
 
 test("working rules forbid guessing commands and say how to recover from Command not found", () => {
-  assert.match(WORKING_RULES, /aux4 aux4 pkger find --query/);
+  assert.match(WORKING_RULES, /Use the installed commands listed above/);
   assert.match(WORKING_RULES, /Never guess a command name/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
 });
