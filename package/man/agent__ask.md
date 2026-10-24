@@ -6,6 +6,25 @@ The agent runs on a tight, immutable base discipline (`instructions/agent.md`): 
 
 The agent's identity is read from the `bio:` section of the config file (`name`, `role`, `description`) and injected into the base prompt as an `# Agent Identity` section. If no `bio:` is present, the agent runs without an identity section.
 
+Every real execution turn always runs through a generic plan -> execute -> verify ->
+retry loop; there is no flag to disable it. A short planning call (no tools) fixes a
+`goal` and at most 3 typed `doneCriteria` -- `answer` (what the reply must say,
+agreeing with its source) or `state` (what must now be true) -- in the request's own
+words, saved as `<history>.plan.json`. The run gets those criteria plus a short block
+of working rules, and a round that asked without looking, narrated a step, or wrote a
+tool call as text is pushed once. To verify `state` criteria the harness re-runs the
+already-successful command that best matches them, and only one whose command words
+include a read verb (get, list, show, ...) and no change verb -- the re-run does not go
+back through ai-agent's ask/deny prompt; one short verifier call, with no tools, judges every criterion, plus coverage
+and honesty checks, from the request, the answer, the raw results and that read. On
+a miss the agent rewrites its answer (when only the answer was off) or retries with
+the unmet criteria, the attempt log and hints; failed actions and changes that
+already went through are denied, and retries run on a 10-call budget. It stops on a
+pass, 2 spent retries, no progress, a declined confirmation, or a `BLOCKED:` reply,
+and says plainly what is not confirmed. Plans, verdicts and per-phase metrics (calls,
+tokens, wasted calls, timings) are kept next to the history (`<history>.plan.json`,
+`.verify.json`, `.metrics.json`).
+
 The queue server must be running before executing this command.
 
 #### Usage

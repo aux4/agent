@@ -64,6 +64,47 @@ aux4 agent ask "<request>" [options]
 | `--policy` | Guardrails as JSON, e.g. `{"budget":{"calls":40}}` | unbounded |
 | `--permissions` | Command allow-list as JSON, e.g. `{"allow":["aux4 google gmail list"]}`; confines the run | unrestricted |
 
+#### The plan / verify / retry loop
+
+Every `ask` always goes through a generic loop. There is no flag to turn it off:
+
+1. **Plan.** One short call (no tools) fixes a `goal` and at most 3 `doneCriteria`, each typed
+   `answer` (what the reply must say, agreeing with its source) or `state` (what must now be true
+   outside the conversation). Criteria use the request's own words and never name a tool. A
+   provisional `steps` list starts with finding, from the help, what provides each thing the
+   request names. Saved as `<history>.plan.json`.
+2. **Execute.** The normal agent run, told what done means plus a short block of working rules:
+   find the command by matching the request's words to help text and allowed-command lists; read
+   `--help` before the first use of a command that changes something; get the facts an
+   irreversible action depends on first and state what they imply; stop if the requester declined
+   a confirmation; name what a sent message refers to; look things up instead of asking. A round
+   that asked without using any tool, narrated a step, or wrote a tool call as text is pushed once
+   straight away (a text-form call is removed from the history first).
+3. **Verify.** For `state` criteria the harness reads the current state itself: it re-runs the
+   already-successful command that shares the most words with the criteria, and only one whose
+   command words include a read verb (get, list, show, view, search, ...) and no change verb.
+   That re-run does not go back through ai-agent's runtime ask/deny prompt, which is why only
+   commands that already ran successfully, and read, qualify. A single short verifier call (no tools) then judges
+   every criterion against the request, the answer, each action's raw result, and that fresh
+   read. Two criteria are always added: the answer covers every part of the request, and it
+   describes what the actions actually did. With no read possible, `state` criteria are judged
+   from the actions' own results; with no successful action at all, a `state` pass becomes
+   `unverifiable`. A reply cut off mid-JSON is salvaged; an unparseable one is asked once more.
+4. **Retry.** If anything is not a pass: when only `answer` criteria failed, the agent rewrites its
+   answer without acting again; otherwise it gets the unmet criteria, the attempt log, any list of
+   allowed commands a denial offered, and plain hints for aux4 missing-parameter errors, and must
+   fix the problem by acting. Failed actions, and changes that already went through, are denied
+   for the retry (`--policy` `deny`), and a retry runs on a 10-call tool budget.
+5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
+   failure with nothing new tried), the requester declining a confirmation, or a `BLOCKED:` reply
+   (only after the agent searched the help and any allowed-command list). Otherwise the answer
+   says plainly what is not confirmed, and the harness label never reaches the requester.
+
+Each run also writes `<history>.metrics.json`: model calls, tokens (input, cached, output), tool
+calls, and the calls that bought nothing (failed, repeated, help lookups, empty replies) for the
+plan, every execute round and every verify, with timings. Helper calls (plan, verdict) are capped
+at 90 seconds.
+
 ### `agent new`
 
 Start a new conversation. Saves the current session to the knowledge base, then clears the history.

@@ -106,7 +106,7 @@
             "set:toolsFlag=${response}",
             "nout:if(policy!=) && echo --policy '${policy}' || echo ''",
             "set:policyFlag=${response}",
-            "aux4 ai agent ask --configFile ${configFile} param(config) --autoCompact true --baseInstructions ${packageDir}/instructions/agent.md param(bio) ${instructionsFlag} ${skillsFlag} ${imageFlag} ${toolsFlag} ${policyFlag} param(permissions) --history ${historyFile} --question \"${request}\""
+            "node ${packageDir}/lib/ask.mjs --packageDir ${packageDir} --configFile value(configFile) param(config) param(bio) --instructions value(resolvedInstructions) --skills value(resolvedSkills) --image value(image) param(tools) param(policy) param(permissions) --history value(historyFile) --request value(request)"
           ],
           "help": {
             "text": "Send a request to the agent",
