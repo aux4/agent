@@ -739,6 +739,17 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
 
 // Policy deny entries are globs, so a failed command that itself contains "*"
 // would deny more than that one command; those are left out.
+// A retry fixes one specific failure, so it gets a small tool budget: a model
+// that starts looping on refused calls is stopped quickly.
+export const RETRY_CALL_BUDGET = 10;
+
+export function capRetryBudget(policyJSON) {
+  const policy = parseJSONLoose(policyJSON, {}) || {};
+  const calls = policy?.budget?.calls;
+  const capped = typeof calls === "number" ? Math.min(calls, RETRY_CALL_BUDGET) : RETRY_CALL_BUDGET;
+  return JSON.stringify({ ...policy, budget: { ...(policy.budget || {}), calls: capped } });
+}
+
 export function mergeDenyPolicy(policyJSON, failedCommands) {
   const policy = parseJSONLoose(policyJSON, {}) || {};
   if (!failedCommands.length) return JSON.stringify(policy);
@@ -871,7 +882,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     const messagesBefore = readMessages(history).length;
     const usageBefore = readTokenUsage(history);
     const executeStart = Date.now();
-    lastContent = execute(question, history, deniedCommands);
+    lastContent = execute(question, history, deniedCommands, attempt > 1);
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
     // One push per round, straight away (cheaper than verifying a round that

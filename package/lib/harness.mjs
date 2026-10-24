@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { runLoop, mergeDenyPolicy } from "./agent-loop.mjs";
+import { runLoop, mergeDenyPolicy, capRetryBudget } from "./agent-loop.mjs";
 
 const MODES = [
   "markdown",
@@ -1081,10 +1081,11 @@ function runAgentAsk(options, history, question) {
 // always runs inside the generic plan/verify/retry loop (lib/agent-loop.mjs).
 // There is no opt-out: `aux4 agent ask` is never a single unchecked model call.
 async function runAgentTask(options, history, recovery = "") {
-  const execute = (question, h, deniedCommands) => {
+  const execute = (question, h, deniedCommands, retry = false) => {
+    const base = options.policy || '{"budget":{"calls":60}}';
     const effectiveOptions = {
       ...options,
-      policy: mergeDenyPolicy(options.policy || '{"budget":{"calls":60}}', deniedCommands)
+      policy: mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands)
     };
     return runAgentAsk(effectiveOptions, h, question).stdout.trim();
   };

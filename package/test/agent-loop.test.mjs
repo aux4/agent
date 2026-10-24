@@ -31,6 +31,7 @@ import {
   verifyToolList,
   isSafeReadBack,
   pickFromReply,
+  capRetryBudget,
   onlyAnswerFailed,
   historyStats,
   metricsPath,
@@ -634,4 +635,10 @@ test("onlyAnswerFailed is true when every state criterion holds and only answer 
   assert.equal(onlyAnswerFailed(plan, { criteria: [{ criterion: "moved", status: "pass" }, { criterion: "honest", status: "fail" }] }), true);
   assert.equal(onlyAnswerFailed(plan, { criteria: [{ criterion: "moved", status: "fail" }, { criterion: "honest", status: "fail" }] }), false);
   assert.equal(onlyAnswerFailed(plan, { criteria: [{ criterion: "moved", status: "pass" }, { criterion: "honest", status: "pass" }] }), false);
+});
+
+test("capRetryBudget keeps retries on a small tool budget", () => {
+  assert.deepEqual(JSON.parse(capRetryBudget('{"budget":{"calls":25,"usd":1}}')).budget, { calls: 10, usd: 1 });
+  assert.equal(JSON.parse(capRetryBudget('{"budget":{"calls":4}}')).budget.calls, 4);
+  assert.equal(JSON.parse(capRetryBudget("")).budget.calls, 10);
 });
