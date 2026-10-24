@@ -198,9 +198,17 @@ function getToolCalls(message) {
   return [];
 }
 
-function isFailedResult(content) {
+function isFailedResult(content, command = "") {
   const text = typeof content === "string" ? content : JSON.stringify(content || "");
-  return /^\s*(error\b|permission denied|command not found)/i.test(text) || /⛔\s*policy denied/i.test(text) || isDeclinedResult(text);
+  return /^\s*(error\b|permission denied|command not found)/i.test(text) || /⛔\s*policy denied/i.test(text) || isDeclinedResult(text) || didNothing(text, command);
+}
+
+// An action that reports it affected nothing ("count": 0, "matched": 0, ...)
+// did not do its job, even when it says "ok". For a read, zero results is a
+// real answer, so only non-read commands count.
+export function didNothing(text, command = "") {
+  if (!command || isReadCommand(command)) return false;
+  return /"(count|matched|affected|updated|changed|modified)"\s*:\s*0\b/i.test(String(text || ""));
 }
 
 // The requester was asked to confirm an action and did not. Retrying cannot
@@ -245,7 +253,7 @@ export function extractAttemptLog(historyFile) {
       if (!call || !call.name) continue;
       const result = call.id ? resultsById.get(call.id) : undefined;
       const resultContent = result ? result.content : undefined;
-      const failed = result ? isFailedResult(resultContent) : false;
+      const failed = result ? isFailedResult(resultContent, describeCall(call.name, call.args)) : false;
       const resultText = typeof resultContent === "string" ? resultContent : JSON.stringify(resultContent ?? "");
       attempts.push({
         tool: call.name,
@@ -324,7 +332,7 @@ export function historyStats(historyFile, from = 0, usageBefore = null) {
       if (seen.has(command)) stats.repeats++;
       seen.add(command);
       if (/(^|\s)--help(\s|$)/.test(command)) stats.help++;
-      if (call.id && isFailedResult(results.get(call.id))) stats.failed++;
+      if (call.id && isFailedResult(results.get(call.id), command)) stats.failed++;
     }
   }
   const total = readTokenUsage(historyFile);
@@ -475,7 +483,7 @@ const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update
 // An allowlist, not a denylist: a command is re-run only when one of its
 // command words (before the first flag) is a read verb and none is a change
 // verb. A change verb nobody listed then simply means "not re-run".
-const READ_VERB = new Set(["get", "list", "show", "view", "read", "find", "search", "describe", "fetch", "status", "count", "info", "inspect", "query", "freebusy", "ls", "cat"]);
+const READ_VERB = new Set(["get", "list", "show", "view", "read", "find", "search", "describe", "fetch", "status", "count", "info", "inspect", "query", "freebusy", "ls", "cat", "snapshot", "screenshot", "extract"]);
 
 export function isReadCommand(command) {
   if (!command || CHANGE_VERB.test(command)) return false;
@@ -512,6 +520,9 @@ export function pickReadBack(plan, candidates) {
       bestScore = score;
     }
   });
+  // Nothing overlaps: the latest read still shows the state after the work
+  // (a page, a list), and the verifier decides whether it is relevant.
+  if (!best && reads.length) return { command: reads[reads.length - 1], none: false, fallback: true };
   return { command: best, none: !best };
 }
 

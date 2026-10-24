@@ -14,9 +14,11 @@ Judge each criterion by its kind:
   use that meaning.
 - `state`: the raw results come from before or during the work, so they do
   not prove the current state. When `currentState` is given, it was read just
-  now, after the work: judge from it. Otherwise judge from the actions' own
-  results (a send or change that returned success did happen; one that
-  returned an error did not).
+  now, after the work: judge from it when it shows the outcome. Otherwise
+  judge from the actions' own results, but only a result that shows the
+  effect counts (an id, the stored or changed value, a count above zero). A
+  bare "ok" or "success", or a count of 0, does not prove anything happened:
+  that is `unverifiable` or `fail`, never `pass`.
 
 For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.

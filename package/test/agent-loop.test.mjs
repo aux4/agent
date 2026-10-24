@@ -30,6 +30,7 @@ import {
   missingParameterHints,
   isSafeReadBack,
   isReadCommand,
+  didNothing,
   pickFromReply,
   pickReadBack,
   capRetryBudget,
@@ -668,7 +669,10 @@ test("a send whose state no read can show is judged from its own successful resu
 test("pickReadBack picks by word overlap with the state criteria, or nothing", () => {
   const plan = { stateCriteria: ["the Budget review meeting is cancelled on the calendar"] };
   assert.equal(pickReadBack(plan, ["x mail list", "x calendar events list", "x calendar events delete 7"]).command, "x calendar events list");
-  assert.equal(pickReadBack({ stateCriteria: ["the reply is on the same thread"] }, ["x calendar events list"]).none, true);
+  const fallback = pickReadBack({ stateCriteria: ["the reply is on the same thread"] }, ["x calendar events list"]);
+  assert.equal(fallback.command, "x calendar events list");
+  assert.equal(fallback.fallback, true);
+  assert.equal(pickReadBack({ stateCriteria: ["anything"] }, ["x mail send --to a"]).none, true);
 });
 
 test("isReadCommand needs a read verb among the command words and no change verb", () => {
@@ -678,4 +682,15 @@ test("isReadCommand needs a read verb among the command words and no change verb
   assert.equal(isReadCommand("aux4 x tasks mark --done true"), false);
   assert.equal(isReadCommand("aux4 x events list --then delete"), false);
   assert.equal(isReadCommand("aux4 x sync"), false);
+});
+
+test("didNothing flags a non-read action that affected nothing", () => {
+  assert.equal(didNothing('{"status":"ok","type":"form","count":0}', "aux4 browser component fill --field Name"), true);
+  assert.equal(didNothing('{"status":"ok","count":2}', "aux4 browser component fill --field Name"), false);
+  assert.equal(didNothing('{"items":[],"count":0}', "aux4 x events list"), false);
+});
+
+test("a page snapshot counts as a read-back", () => {
+  assert.equal(isReadCommand("aux4 browser snapshot --session s1 --format text"), true);
+  assert.equal(isReadCommand("aux4 github actions trigger"), false);
 });
