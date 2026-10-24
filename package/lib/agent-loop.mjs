@@ -476,10 +476,13 @@ export function isSafeReadBack(command, candidates) {
   return Boolean(command) && candidates.includes(command) && !CHANGE_VERB.test(command);
 }
 
-export function pickReadBack(options, plan, candidates) {
+// Returns the command to re-run, or "" -- with `none` true when the picker
+// said none of them shows the state (re-reading cannot help; judge from the
+// recorded results instead).
+export function pickReadBack(options, plan, candidates, pickHistory = "") {
   const reads = candidates.filter(c => !CHANGE_VERB.test(c));
-  if (!reads.length) return "";
-  if (reads.length === 1) return reads[0];
+  if (!reads.length) return { command: "", none: true };
+  if (reads.length === 1) return { command: reads[0], none: false };
   const question = [
     "Which ONE of these commands, run again now, best shows the current state for:",
     ...(plan.stateCriteria || []).map(c => `- ${c}`),
@@ -489,8 +492,10 @@ export function pickReadBack(options, plan, candidates) {
     "",
     "Reply with only the number of that command, or 0 if none of them shows it."
   ].join("\n");
-  const result = askOnce(options, { instructions: verifyInstructionsPath(options.packageDir), question, extraArgs: ["--tools", PLAN_TOOLS] });
-  return pickFromReply(result.stdout, reads);
+  if (pickHistory) fs.rmSync(pickHistory, { force: true });
+  const result = askOnce(options, { instructions: verifyInstructionsPath(options.packageDir), question, history: pickHistory, extraArgs: ["--tools", PLAN_TOOLS] });
+  const command = pickFromReply(result.stdout, reads);
+  return { command, none: !command && /^\s*0\b/.test(String(result.stdout || "")) };
 }
 
 // Small models rarely copy a long command back exactly; a number is easy.
@@ -556,8 +561,14 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   const hasState = (plan.stateCriteria || plan.doneCriteria).length > 0;
   // The harness reads the current state itself when it safely can.
   let readNow = null;
+  // Only when there are successful actions can their own results be the
+  // evidence; with nothing done, a pass can only be trust in the answer.
+  const anySuccess = attempts.some(a => !a.failed);
+  let noReadPossible = anySuccess && !readBack.some(c => !CHANGE_VERB.test(c));
   if (hasState && readBack.length) {
-    const command = pickReadBack(options, plan, readBack);
+    const pick = pickReadBack(options, plan, readBack, verifyHistory ? verifyHistory.replace(/\.json$/, ".pick.json") : "");
+    const command = pick.command;
+    if (pick.none && anySuccess) noReadPossible = true;
     if (isSafeReadBack(command, readBack)) {
       const r = runReadBack(command);
       if (r.ok) readNow = { command, output: r.output };
@@ -599,7 +610,9 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
     : fallbackVerdict(criteria, "the verifier's output could not be parsed, so this outcome could not be confirmed");
   // Without a history file the verifier's own calls can't be counted, so the
   // own-observation rule only applies when there is one.
-  const observed = verifyHistory ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria) : verdict;
+  // When nothing can re-read the state (only the action's own result shows
+  // it), the verifier's judgement from the recorded results stands.
+  const observed = verifyHistory && !noReadPossible ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria) : verdict;
   return { ...observed, checks: checks.map(c => c.command) };
 }
 

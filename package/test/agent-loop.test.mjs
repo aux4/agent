@@ -653,3 +653,18 @@ test("dropTrailingTextCall removes a tool call written as text, and nothing else
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).messages.length, 1);
   assert.equal(dropTrailingTextCall(file), false);
 });
+
+test("a send whose state no read can show is judged from its own successful result", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass", verifierObserves: false });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, (q, h) => {
+      fs.writeFileSync(h, JSON.stringify({ messages: [
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "x mail send --to a" } }] } },
+        { role: "tool", tool_call_id: "c1", content: '{"id":"m1","labelIds":["SENT"]}' }
+      ] }));
+      return "sent it";
+    });
+    assert.equal(outcome.stopped, "pass");
+  });
+});
