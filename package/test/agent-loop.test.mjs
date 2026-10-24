@@ -28,9 +28,9 @@ import {
   askedWithoutLooking,
   describedWithoutDoing,
   missingParameterHints,
-  verifyToolList,
   isSafeReadBack,
   pickFromReply,
+  pickReadBack,
   capRetryBudget,
   dropTrailingTextCall,
   onlyAnswerFailed,
@@ -571,11 +571,6 @@ test("missingParameterHints explains aux4's missing-parameter error", () => {
   assert.deepEqual(missingParameterHints([{ command: "x", failed: false, result: "ok" }]), []);
 });
 
-test("verifyToolList keeps only the tools that observe", () => {
-  assert.equal(verifyToolList("executeAux4,writeFile,readFile,askUser"), "executeAux4,readFile");
-  assert.equal(verifyToolList(""), "executeAux4,readFile,listFiles,searchFiles");
-  assert.equal(verifyToolList("writeFile"), "currentDateTime");
-});
 
 test("a round that asked without looking is pushed once before it is verified", async () => {
   const fake = planVerifyFake({ verifyStatus: "pass" });
@@ -613,13 +608,13 @@ else if (command.includes("loop-verify.md")) {
   await withAux4Bin(fake, async () => {
     const outcome = await runLoop(baseOptions(), history, (q, h) => {
       fs.writeFileSync(h, JSON.stringify({ messages: [
-        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "echo empty" } }] } },
-        { role: "tool", tool_call_id: "c1", content: "empty" }
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "echo item list empty" } }] } },
+        { role: "tool", tool_call_id: "c1", content: "item list empty" }
       ] }));
       return "removed it";
     });
     assert.equal(outcome.stopped, "pass");
-    assert.deepEqual(outcome.verdict.checks, ["echo empty"]);
+    assert.deepEqual(outcome.verdict.checks, ["echo item list empty"]);
   });
 });
 
@@ -667,4 +662,10 @@ test("a send whose state no read can show is judged from its own successful resu
     });
     assert.equal(outcome.stopped, "pass");
   });
+});
+
+test("pickReadBack picks by word overlap with the state criteria, or nothing", () => {
+  const plan = { stateCriteria: ["the Budget review meeting is cancelled on the calendar"] };
+  assert.equal(pickReadBack(plan, ["x mail list", "x calendar events list", "x calendar events delete 7"]).command, "x calendar events list");
+  assert.equal(pickReadBack({ stateCriteria: ["the reply is on the same thread"] }, ["x calendar events list"]).none, true);
 });

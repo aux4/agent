@@ -14,10 +14,9 @@ Judge each criterion by its kind:
   use that meaning.
 - `state`: the raw results come from before or during the work, so they do
   not prove the current state. When `currentState` is given, it was read just
-  now, after the work: judge from it. Otherwise look again yourself with a
-  read-only action (list, get, read) and compare. Never create, change, send, or remove
-  anything; if only a changing action could confirm it, the criterion is
-  unverifiable.
+  now, after the work: judge from it. Otherwise judge from the actions' own
+  results (a send or change that returned success did happen; one that
+  returned an error did not).
 
 For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.

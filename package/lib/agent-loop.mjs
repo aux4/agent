@@ -138,7 +138,7 @@ export function fallbackPlan(request) {
 const PLAN_TOOLS = "currentDateTime";
 // Hard cap on any single helper call (plan, pick, verdict) so a looping model
 // can never hang the run.
-const HELPER_TIMEOUT_MS = 180000;
+const HELPER_TIMEOUT_MS = 90000;
 
 export function buildPlan(options, planHistory = "") {
   if (planHistory) fs.rmSync(planHistory, { force: true });
@@ -476,26 +476,28 @@ export function isSafeReadBack(command, candidates) {
   return Boolean(command) && candidates.includes(command) && !CHANGE_VERB.test(command);
 }
 
-// Returns the command to re-run, or "" -- with `none` true when the picker
-// said none of them shows the state (re-reading cannot help; judge from the
-// recorded results instead).
-export function pickReadBack(options, plan, candidates, pickHistory = "") {
+// Picks, without a model call, which already-successful read command to
+// re-run: the one sharing the most words with the state criteria (latest wins
+// a tie). A model picking from a list looped for minutes on a 26B, so this is
+// plain word overlap. No overlap means no read can show the state.
+function words(text) {
+  return new Set(String(text || "").toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2).map(w => w.replace(/s$/, "")));
+}
+
+export function pickReadBack(plan, candidates) {
   const reads = candidates.filter(c => !CHANGE_VERB.test(c));
-  if (!reads.length) return { command: "", none: true };
-  if (reads.length === 1) return { command: reads[0], none: false };
-  const question = [
-    "Which ONE of these commands, run again now, best shows the current state for:",
-    ...(plan.stateCriteria || []).map(c => `- ${c}`),
-    "",
-    "Commands:",
-    ...reads.map((c, i) => `${i + 1}. ${c}`),
-    "",
-    "Reply with only the number of that command, or 0 if none of them shows it."
-  ].join("\n");
-  if (pickHistory) fs.rmSync(pickHistory, { force: true });
-  const result = askOnce(options, { instructions: verifyInstructionsPath(options.packageDir), question, history: pickHistory, extraArgs: ["--tools", PLAN_TOOLS] });
-  const command = pickFromReply(result.stdout, reads);
-  return { command, none: !command && /^\s*0\b/.test(String(result.stdout || "")) };
+  const target = words((plan.stateCriteria || []).join(" "));
+  let best = "";
+  let bestScore = 0;
+  reads.forEach(c => {
+    let score = 0;
+    for (const w of words(c)) if (target.has(w)) score++;
+    if (score > 0 && score >= bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  });
+  return { command: best, none: !best };
 }
 
 // Small models rarely copy a long command back exactly; a number is easy.
@@ -535,20 +537,6 @@ export function salvageVerdict(text) {
 
 // Only state criteria need tools; a verify with none binds a single small
 // tool so it is one short call.
-// The verifier only observes, so it gets only the tools that observe: a
-// narrower tool list keeps small models on the one job of looking.
-const OBSERVE_TOOLS = ["executeAux4", "readFile", "listFiles", "searchFiles"];
-
-export function verifyToolList(tools) {
-  const bound = String(tools || "").split(",").map(t => t.trim()).filter(Boolean);
-  const pick = bound.length ? bound.filter(t => OBSERVE_TOOLS.includes(t)) : OBSERVE_TOOLS;
-  return (pick.length ? pick : [PLAN_TOOLS]).join(",");
-}
-
-function verifyExtraArgs(options, plan) {
-  if ((plan.stateCriteria || plan.doneCriteria).length === 0) return ["--tools", PLAN_TOOLS];
-  return sharedExtraArgs({ ...options, tools: verifyToolList(options.tools) });
-}
 
 export function readVerdict(text) {
   const loose = parseJSONLoose(text, null);
@@ -566,25 +554,26 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   const anySuccess = attempts.some(a => !a.failed);
   let noReadPossible = anySuccess && !readBack.some(c => !CHANGE_VERB.test(c));
   if (hasState && readBack.length) {
-    const pick = pickReadBack(options, plan, readBack, verifyHistory ? verifyHistory.replace(/\.json$/, ".pick.json") : "");
+    const pick = pickReadBack(plan, readBack);
     const command = pick.command;
-    if (pick.none && anySuccess) noReadPossible = true;
+    if (anySuccess && !isSafeReadBack(pick.command, readBack)) noReadPossible = true;
     if (isSafeReadBack(command, readBack)) {
       const r = runReadBack(command);
       if (r.ok) readNow = { command, output: r.output };
     }
   }
   if (readNow) payload.currentState = { readJustNowWith: readNow.command, result: readNow.output };
-  const stateFirst = hasState && !readNow
-    ? `First run one read-only command that shows the current state for the state criteria${readBack.length ? ` -- re-run whichever of these lists or reads the item: ${readBack.join(" | ")}` : ""}. Then `
-    : hasState ? "Judge the state criteria from currentState, which was read just now, after the work. Then " : "";
+  const stateFirst = hasState && readNow
+    ? "Judge the state criteria from currentState, which was read just now, after the work. Then "
+    : hasState ? "No later read can show the current state, so judge the state criteria from the actions' own results. Then " : "";
   const question = `${stateFirst}${stateFirst ? "r" : "R"}espond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload)}`;
   if (verifyHistory) fs.rmSync(verifyHistory, { force: true });
   const result = askOnce(options, {
     instructions: verifyInstructionsPath(options.packageDir),
     question,
     history: verifyHistory,
-    extraArgs: readNow ? ["--tools", PLAN_TOOLS] : verifyExtraArgs(options, plan)
+    // The verifier never gets real tools: the harness does the looking.
+    extraArgs: ["--tools", PLAN_TOOLS]
   });
   const checks = [
     ...(readNow ? [{ command: readNow.command }] : []),
