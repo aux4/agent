@@ -761,7 +761,7 @@ export function findCommands(queries) {
     if (!Array.isArray(list)) continue;
     lists.push(list
       .map(item => ({ command: String(item?.command || "").trim(), description: String(item?.description || "") }))
-      .filter(item => item.command && !/^aux4 (ai agent|agent|aux4 pkger)(\s|$)/.test(item.command)));
+      .filter(item => item.command && !/^aux4 (ai agent|agent ask|aux4 pkger)(\s|$)/.test(item.command)));
   }
   const found = new Map();
   for (let rank = 0; rank < FIND_LIMIT && found.size < MAX_FOUND; rank++) {

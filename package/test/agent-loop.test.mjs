@@ -694,7 +694,7 @@ test("findCommands merges pkger find results by rank and leaves out the agent's 
   const bin = path.join(dir, "aux4");
   fs.writeFileSync(bin, `#!/usr/bin/env node
 const q = process.argv[process.argv.indexOf("--query") + 1];
-const out = q === "open web page" ? [{command:"aux4 ai agent ask",score:9},{command:"aux4 aux4 pkger find",score:8},{command:"aux4 browser open",description:"Open a page.",score:1},{command:"aux4 browser read",score:0.5}]
+const out = q === "open web page" ? [{command:"aux4 ai agent ask",score:9},{command:"aux4 aux4 pkger find",score:8},{command:"aux4 agent ask",score:7},{command:"aux4 agent browser run",description:"Run a goal.",score:0.1},{command:"aux4 browser open",description:"Open a page.",score:1},{command:"aux4 browser read",score:0.5}]
   : [{command:"aux4 google gmail trash",score:50},{command:"aux4 google gmail list",description:"List messages.",score:40},{command:"aux4 browser open",score:30}];
 console.log(JSON.stringify(out));
 `, { mode: 0o755 });
@@ -702,7 +702,7 @@ console.log(JSON.stringify(out));
   process.env.AUX4_BIN = bin;
   try {
     const found = findCommands(["open https://example.com/x", "b", ""]);
-    assert.deepEqual(found.map(f => f.command), ["aux4 browser open", "aux4 google gmail trash", "aux4 browser read", "aux4 google gmail list"]);
+    assert.deepEqual(found.map(f => f.command), ["aux4 agent browser run", "aux4 google gmail trash", "aux4 browser open", "aux4 google gmail list", "aux4 browser read"]);
     const text = describeFoundCommands(found);
     assert.match(text, /found with aux4 aux4 pkger find/);
     assert.match(text, /- aux4 google gmail list -- List messages\./);
