@@ -696,6 +696,11 @@ export function composeRewriteQuestion(verdict) {
   ].join("\n");
 }
 
+function untriedHint(request, attempts) {
+  const untried = untriedCommandGroups(request, attempts);
+  return untried.length ? ["", `Installed commands that may do this and that you have not tried yet: ${untried.join("; ")}`] : [];
+}
+
 export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", lookFirst = false) {
   const failed = verdict.criteria.filter(c => c.status !== "pass");
   const lines = failed.map(c => `- ${c.criterion} (${c.status}): ${c.evidence}`).join("\n");
@@ -714,6 +719,7 @@ export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", l
     summarizeAttemptLog(attempts),
     ...(allowedCommandsOffered(attempts) ? ["", `Commands you may run: ${allowedCommandsOffered(attempts)}`] : []),
     ...missingParameterHints(attempts),
+    ...untriedHint(request || plan.goal, attempts),
     "",
     "Work out why (wrong command, wrong parameters, a tool error, a step not done, a misread fact) and fix it now by calling the tools. Do not just describe the fix -- do it.",
     "Actions listed as FAILED are denied for this retry. An action listed as ok may already have taken effect: check the current state before doing it again, and never repeat one that sends, creates, or deletes something.",
@@ -745,7 +751,7 @@ export const MESSAGES_STAND_ALONE = "Anything you send on the requester's behalf
 // worked, retrying what the requester declined, and asking instead of answering.
 export const WORKING_RULES = [
   "How to work:",
-  "- Use only the tools you have: everything else (web pages, mail, files, services) is reached through aux4 commands; find them by matching the request's own words to the help descriptions, drilling down with --help.",
+  "- Use only the tools you have: everything else (web pages, mail, files, services) is reached through aux4 commands; find them by matching the request's own words to the help descriptions, drilling down with --help. Commands are `aux4 <group> ...`; `aux4 aux4 ...` is only for aux4's own tools (pkger, releaser).",
   "- If more than one command or package matches (e.g. two that both manage calendars), and one returns nothing, try the others before concluding it does not exist.",
   "- If a command fails (an error, a missing login, an unknown option), read the error and try another way -- other parameters, another command for the same thing -- before giving up.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
