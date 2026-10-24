@@ -694,7 +694,7 @@ test("findCommands merges pkger find results by rank and leaves out the agent's 
   const bin = path.join(dir, "aux4");
   fs.writeFileSync(bin, `#!/usr/bin/env node
 const q = process.argv[process.argv.indexOf("--query") + 1];
-const out = q === "open web page" ? [{command:"aux4 ai agent ask",score:9},{command:"aux4 browser open",description:"Open a page.",score:1},{command:"aux4 browser read",score:0.5}]
+const out = q === "open web page" ? [{command:"aux4 ai agent ask",score:9},{command:"aux4 aux4 pkger find",score:8},{command:"aux4 browser open",description:"Open a page.",score:1},{command:"aux4 browser read",score:0.5}]
   : [{command:"aux4 google gmail trash",score:50},{command:"aux4 google gmail list",description:"List messages.",score:40},{command:"aux4 browser open",score:30}];
 console.log(JSON.stringify(out));
 `, { mode: 0o755 });
