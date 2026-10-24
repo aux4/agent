@@ -683,6 +683,7 @@ test("isReadCommand needs a read verb among the command words and no change verb
 
 test("working rules forbid guessing commands and say how to recover from Command not found", () => {
   assert.match(WORKING_RULES, /run --help \(it lists every command group\)/);
+  assert.match(WORKING_RULES, /Before saying no tool can do something, run --help on every group that could contain it/);
   assert.match(WORKING_RULES, /Never guess a command name/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
 });

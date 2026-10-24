@@ -730,6 +730,7 @@ export const WORKING_RULES = [
   "How to work:",
   "- Find the command: match the request's own words to the help descriptions and to any list of commands you may run; drill down with --help from the most specific group.",
   "- To see which commands exist, run --help (it lists every command group), then <group> --help to drill down. A package name (scope/name) is not a command.",
+  "- Group names are often a vendor or product, not the thing it offers (a mail or calendar service can sit under its company's group). Before saying no tool can do something, run --help on every group that could contain it.",
   "- Never guess a command name. If a call returns \"Command not found\", run --help on its parent group (drop the last word) and use a command listed there, or look for another command that does the same thing.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
