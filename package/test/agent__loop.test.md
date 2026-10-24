@@ -46,3 +46,19 @@ rm -rf .agent
 ```expect
 REQUEST: Email them: it's at 14:00, "room 2"
 ```
+
+## command index
+
+### should pass the command-index unit suite
+
+```timeout
+15000
+```
+
+```execute
+node command-index.test.mjs
+```
+
+```expect:partial
+pass 4
+```

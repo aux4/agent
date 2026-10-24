@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { commandHints } from "./command-index.mjs";
 
 export const RETRY_BUDGET = 2;
 // How much of each tool result the verifier sees, and in total.
@@ -761,12 +762,14 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
   const recoveryNote = recovery
     ? `\n\nA previously attempted shortcut failed. Complete the request another way. Failure:\n${String(recovery).slice(0, 4000)}`
     : "";
+  const hints = commandHints(request);
   return [
     request,
     "",
     "This request is done only when every one of the following is true:",
     criteria,
     "",
+    ...(hints ? [hints, ""] : []),
     WORKING_RULES,
     steps,
     recoveryNote
