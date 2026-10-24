@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   parseJSONLoose,
+  WORKING_RULES,
   extractAttemptLog,
   summarizeAttemptLog,
   mergeDenyPolicy,
@@ -678,4 +679,9 @@ test("isReadCommand needs a read verb among the command words and no change verb
   assert.equal(isReadCommand("aux4 x tasks mark --done true"), false);
   assert.equal(isReadCommand("aux4 x events list --then delete"), false);
   assert.equal(isReadCommand("aux4 x sync"), false);
+});
+
+test("working rules forbid guessing commands and say how to recover from Command not found", () => {
+  assert.match(WORKING_RULES, /Never guess a command name/);
+  assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
 });
