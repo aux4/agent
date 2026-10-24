@@ -575,6 +575,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   const hasState = (plan.stateCriteria || plan.doneCriteria).length > 0;
   // The harness reads the current state itself when it safely can.
   let readNow = null;
+  let readBackError = "";
   // Only when there are successful actions can their own results be the
   // evidence; with nothing done, a pass can only be trust in the answer.
   const anySuccess = attempts.some(a => !a.failed);
@@ -586,6 +587,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
     if (isSafeReadBack(command, readBack)) {
       const r = runReadBack(command);
       if (r.ok) readNow = { command, output: r.output };
+      else readBackError = `${command}: ${String(r.output || "").slice(0, 200)}`;
     }
   }
   if (readNow) payload.currentState = { readJustNowWith: readNow.command, result: readNow.output };
@@ -628,7 +630,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   // When nothing can re-read the state (only the action's own result shows
   // it), the verifier's judgement from the recorded results stands.
   const observed = verifyHistory && !noReadPossible ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria) : verdict;
-  return { ...observed, checks: checks.map(c => c.command) };
+  return { ...observed, checks: checks.map(c => c.command), ...(readBackError ? { readBackError } : {}) };
 }
 
 export function verdictLogPath(historyFile) {
@@ -643,7 +645,7 @@ export function saveVerdict(historyFile, attempt, attempts, verdict) {
   if (!file) return;
   try {
     const rounds = attempt === 1 ? [] : (parseJSONLoose(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "", []) || []);
-    rounds.push({ attempt, ms: verdict.ms, actionsAttempted: attempts.map(a => a.command), checks: verdict.checks || [], overall: verdict.overall, criteria: verdict.criteria });
+    rounds.push({ attempt, ms: verdict.ms, actionsAttempted: attempts.map(a => a.command), checks: verdict.checks || [], ...(verdict.readBackError ? { readBackError: verdict.readBackError } : {}), overall: verdict.overall, criteria: verdict.criteria });
     fs.writeFileSync(file, JSON.stringify(rounds, null, 2));
   } catch {
     // best-effort; the loop still works without a persisted verdict log
@@ -674,6 +676,9 @@ export function missingParameterHints(attempts) {
 // Every state criterion holds and only what the answer says is off: fix the
 // answer, not the world.
 export function onlyAnswerFailed(plan, verdict) {
+  // With no state criteria (an information request) there is no confirmed
+  // work to protect: the retry must be free to look again.
+  if (!(plan.stateCriteria || plan.doneCriteria).length) return false;
   const state = new Set(plan.stateCriteria || plan.doneCriteria);
   const unmet = verdict.criteria.filter(c => c.status !== "pass");
   return unmet.length > 0 && unmet.every(c => !state.has(c.criterion)) &&
@@ -769,7 +774,7 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
 // would deny more than that one command; those are left out.
 // A retry fixes one specific failure, so it gets a small tool budget: a model
 // that starts looping on refused calls is stopped quickly.
-export const RETRY_CALL_BUDGET = 10;
+export const RETRY_CALL_BUDGET = 20;
 
 export function capRetryBudget(policyJSON) {
   const policy = parseJSONLoose(policyJSON, {}) || {};

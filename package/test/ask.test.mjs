@@ -16,6 +16,6 @@ test("buildAskArgs reproduces the plain ask call when nothing was denied", () =>
 test("buildAskArgs layers denials and a retry budget onto the caller's policy", () => {
   const args = buildAskArgs({ configFile: "c.yaml", packageDir: "/pkg", policy: '{"budget":{"calls":25}}' }, "h.json", "q", ["x delete 1"], true);
   const policy = JSON.parse(args[args.indexOf("--policy") + 1]);
-  assert.equal(policy.budget.calls, 10);
+  assert.equal(policy.budget.calls, 20);
   assert.deepEqual(policy.deny, [{ executeAux4: ["x delete 1"] }]);
 });
