@@ -744,11 +744,14 @@ export const MESSAGES_STAND_ALONE = "Anything you send on the requester's behalf
 // worked, retrying what the requester declined, and asking instead of answering.
 export const WORKING_RULES = [
   "How to work:",
-  "- Find the command: match the request's own words to the help descriptions and to any list of commands you may run; drill down with --help from the most specific group.",
+  "- Use only the tools you have: everything else (web pages, mail, files, services) is reached through aux4 commands; find them by matching the request's own words to the help descriptions, drilling down with --help.",
+  "- If more than one command or package matches (e.g. two that both manage calendars), and one returns nothing, try the others before concluding it does not exist.",
+  "- If a command fails (an error, a missing login, an unknown option), read the error and try another way -- other parameters, another command for the same thing -- before giving up.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
   "- If an action returns \"User aborted\", the requester declined it: stop and say so, do not retry it.",
   "- Anything you send must name what it refers to (the item, the date and time), not just \"that\".",
+  "- Do not submit or send with a required value you could not find: say what is missing instead.",
   "- Never ask the requester for something the tools can find out (a date, an id, a name): look it up. If a question is ambiguous, answer with the reading the results best support and say which."
 ].join("\n");
 
