@@ -102,8 +102,10 @@ replay -- always goes through a generic loop. There is no flag to turn it off:
    that asked without using any tool, narrated a step, or wrote a tool call as text is pushed once
    straight away (a text-form call is removed from the history first).
 3. **Verify.** For `state` criteria the harness reads the current state itself: it re-runs the
-   already-successful command that shares the most words with the criteria, and only one with no
-   change verb (send, delete, update, ...). A single short verifier call (no tools) then judges
+   already-successful command that shares the most words with the criteria, and only one whose
+   command words include a read verb (get, list, show, view, search, ...) and no change verb.
+   That re-run does not go back through ai-agent's runtime ask/deny prompt, which is why only
+   commands that already ran successfully, and read, qualify. A single short verifier call (no tools) then judges
    every criterion against the request, the answer, each action's raw result, and that fresh
    read. Two criteria are always added: the answer covers every part of the request, and it
    describes what the actions actually did. With no read possible, `state` criteria are judged

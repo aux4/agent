@@ -58,8 +58,9 @@ agreeing with its source) or `state` (what must now be true) -- in the request's
 words, saved as `<history>.plan.json`. The run gets those criteria plus a short block
 of working rules, and a round that asked without looking, narrated a step, or wrote a
 tool call as text is pushed once. To verify `state` criteria the harness re-runs the
-already-successful read command that best matches them (never one with a change
-verb); one short verifier call, with no tools, judges every criterion, plus coverage
+already-successful command that best matches them, and only one whose command words
+include a read verb (get, list, show, ...) and no change verb -- the re-run does not go
+back through ai-agent's ask/deny prompt; one short verifier call, with no tools, judges every criterion, plus coverage
 and honesty checks, from the request, the answer, the raw results and that read. On
 a miss the agent rewrites its answer (when only the answer was off) or retries with
 the unmet criteria, the attempt log and hints; failed actions and changes that

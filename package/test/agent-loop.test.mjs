@@ -29,6 +29,7 @@ import {
   describedWithoutDoing,
   missingParameterHints,
   isSafeReadBack,
+  isReadCommand,
   pickFromReply,
   pickReadBack,
   capRetryBudget,
@@ -668,4 +669,13 @@ test("pickReadBack picks by word overlap with the state criteria, or nothing", (
   const plan = { stateCriteria: ["the Budget review meeting is cancelled on the calendar"] };
   assert.equal(pickReadBack(plan, ["x mail list", "x calendar events list", "x calendar events delete 7"]).command, "x calendar events list");
   assert.equal(pickReadBack({ stateCriteria: ["the reply is on the same thread"] }, ["x calendar events list"]).none, true);
+});
+
+test("isReadCommand needs a read verb among the command words and no change verb", () => {
+  assert.equal(isReadCommand("aux4 x calendar events list --timeMin 1"), true);
+  assert.equal(isReadCommand("aux4 x mail get msg-1"), true);
+  assert.equal(isReadCommand("aux4 x calendar events respond --id 1 --response accepted"), false);
+  assert.equal(isReadCommand("aux4 x tasks mark --done true"), false);
+  assert.equal(isReadCommand("aux4 x events list --then delete"), false);
+  assert.equal(isReadCommand("aux4 x sync"), false);
 });

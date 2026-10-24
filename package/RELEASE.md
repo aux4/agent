@@ -7,7 +7,8 @@
 - Plan: one short call with no tools; at most 3 criteria, typed `answer` or `state`, in the
   request's own words.
 - Verify: the harness re-reads the current state itself (re-running an already-successful
-  read command with no change verb, chosen by word overlap with the criteria) and one short
+  command whose command words include a read verb and no change verb -- an allowlist, since
+  the re-run skips ai-agent's ask/deny prompt -- chosen by word overlap with the criteria) and one short
   verifier call with no tools judges it, plus coverage and honesty checks. Cut-off verdicts
   are salvaged; reworded entries are matched by position.
 - Retry: answer-only fixes rewrite the answer without acting; otherwise the retry acts with

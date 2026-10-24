@@ -472,8 +472,23 @@ export function readBackCandidates(attempts, limit = 5) {
 
 const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update|patch|put|post|create|insert|add|set|write|move|cancel|modify|edit|rename|upload|publish|deploy|pay|approve|install|uninstall)\b/i;
 
+// An allowlist, not a denylist: a command is re-run only when one of its
+// command words (before the first flag) is a read verb and none is a change
+// verb. A change verb nobody listed then simply means "not re-run".
+const READ_VERB = new Set(["get", "list", "show", "view", "read", "find", "search", "describe", "fetch", "status", "count", "info", "inspect", "query", "freebusy", "ls", "cat"]);
+
+export function isReadCommand(command) {
+  if (!command || CHANGE_VERB.test(command)) return false;
+  const words = [];
+  for (const token of String(command).trim().split(/\s+/)) {
+    if (token.startsWith("-")) break;
+    words.push(token.toLowerCase());
+  }
+  return words.some(w => READ_VERB.has(w));
+}
+
 export function isSafeReadBack(command, candidates) {
-  return Boolean(command) && candidates.includes(command) && !CHANGE_VERB.test(command);
+  return Boolean(command) && candidates.includes(command) && isReadCommand(command);
 }
 
 // Picks, without a model call, which already-successful read command to
@@ -485,7 +500,7 @@ function words(text) {
 }
 
 export function pickReadBack(plan, candidates) {
-  const reads = candidates.filter(c => !CHANGE_VERB.test(c));
+  const reads = candidates.filter(isReadCommand);
   const target = words((plan.stateCriteria || []).join(" "));
   let best = "";
   let bestScore = 0;
@@ -552,7 +567,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   // Only when there are successful actions can their own results be the
   // evidence; with nothing done, a pass can only be trust in the answer.
   const anySuccess = attempts.some(a => !a.failed);
-  let noReadPossible = anySuccess && !readBack.some(c => !CHANGE_VERB.test(c));
+  let noReadPossible = anySuccess && !readBack.some(isReadCommand);
   if (hasState && readBack.length) {
     const pick = pickReadBack(plan, readBack);
     const command = pick.command;
