@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   parseJSONLoose,
   WORKING_RULES,
+  findCommands,
+  describeFoundCommands,
   extractAttemptLog,
   summarizeAttemptLog,
   mergeDenyPolicy,
@@ -685,4 +687,29 @@ test("working rules forbid guessing commands and say how to recover from Command
   assert.match(WORKING_RULES, /aux4 aux4 pkger find --query/);
   assert.match(WORKING_RULES, /Never guess a command name/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
+});
+
+test("findCommands merges pkger find results, keeps the best score, and leaves out the agent's own commands", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-"));
+  const bin = path.join(dir, "aux4");
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const q = process.argv[process.argv.indexOf("--query") + 1];
+const out = q === "a" ? [{command:"aux4 google gmail trash",description:"Move a message to the trash.",score:3},{command:"aux4 ai agent ask",score:9}]
+  : [{command:"aux4 google gmail trash",score:5},{command:"aux4 google gmail list",description:"List messages.",score:4}];
+console.log(JSON.stringify(out));
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const found = findCommands(["a", "b", ""]);
+    assert.deepEqual(found.map(f => f.command), ["aux4 google gmail trash", "aux4 google gmail list"]);
+    assert.equal(found[0].score, 5);
+    const text = describeFoundCommands(found);
+    assert.match(text, /found with aux4 aux4 pkger find/);
+    assert.match(text, /- aux4 google gmail list -- List messages\./);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(describeFoundCommands([]), "");
 });

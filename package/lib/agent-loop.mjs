@@ -738,7 +738,40 @@ export const WORKING_RULES = [
   "- Never ask the requester for something the tools can find out (a date, an id, a name): look it up. If a question is ambiguous, answer with the reading the results best support and say which."
 ].join("\n");
 
-export function composeExecuteQuestion(request, plan, recovery = "") {
+// Small models often cannot find a command three or four groups deep, so the
+// harness looks up which installed commands fit the request (and each planned
+// step) with `aux4 aux4 pkger find`, the same search the agent is told to use,
+// and lists them. Commands of the agent itself are left out.
+const FIND_LIMIT = 6;
+const FIND_TIMEOUT_MS = 20000;
+const MAX_FOUND = 8;
+
+export function findCommands(queries) {
+  const found = new Map();
+  for (const query of queries.map(q => String(q || "").trim()).filter(Boolean)) {
+    const result = runAux4(["aux4", "pkger", "find", "--query", query.slice(0, 300), "--limit", String(FIND_LIMIT)], { allowFailure: true, timeout: FIND_TIMEOUT_MS });
+    const list = parseJSONLoose(result.stdout, []);
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      const command = String(item?.command || "").trim();
+      if (!command || /^aux4 (ai agent|agent)(\s|$)/.test(command)) continue;
+      const score = Number(item.score) || 0;
+      const prior = found.get(command);
+      if (!prior || prior.score < score) found.set(command, { command, description: String(item.description || ""), score });
+    }
+  }
+  return [...found.values()].sort((a, b) => b.score - a.score).slice(0, MAX_FOUND);
+}
+
+export function describeFoundCommands(found) {
+  if (!found.length) return "";
+  return [
+    "Installed commands that may fit (found with aux4 aux4 pkger find; read a command's --help before using it):",
+    ...found.map(f => `- ${f.command}${f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : ""}`)
+  ].join("\n");
+}
+
+export function composeExecuteQuestion(request, plan, recovery = "", foundCommands = "") {
   const criteria = plan.doneCriteria.map(c => `- ${c}`).join("\n");
   const steps = plan.steps.length ? `\n\nPossible starting points (provisional, revise as you learn more):\n${plan.steps.map(s => `- ${s}`).join("\n")}` : "";
   const recoveryNote = recovery
@@ -750,6 +783,7 @@ export function composeExecuteQuestion(request, plan, recovery = "") {
     "This request is done only when every one of the following is true:",
     criteria,
     "",
+    ...(foundCommands ? [foundCommands, ""] : []),
     WORKING_RULES,
     steps,
     recoveryNote
@@ -914,7 +948,7 @@ export async function runLoop(options, history, execute, recovery = "") {
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
-      ? composeExecuteQuestion(options.request, plan, recovery)
+      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands([options.request, ...plan.steps])))
       : onlyAnswerFailed(plan, priorVerdict)
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
