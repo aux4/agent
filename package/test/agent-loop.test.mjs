@@ -32,6 +32,7 @@ import {
   isSafeReadBack,
   pickFromReply,
   capRetryBudget,
+  dropTrailingTextCall,
   onlyAnswerFailed,
   historyStats,
   metricsPath,
@@ -641,4 +642,14 @@ test("capRetryBudget keeps retries on a small tool budget", () => {
   assert.deepEqual(JSON.parse(capRetryBudget('{"budget":{"calls":25,"usd":1}}')).budget, { calls: 10, usd: 1 });
   assert.equal(JSON.parse(capRetryBudget('{"budget":{"calls":4}}')).budget.calls, 4);
   assert.equal(JSON.parse(capRetryBudget("")).budget.calls, 10);
+});
+
+test("dropTrailingTextCall removes a tool call written as text, and nothing else", () => {
+  const file = tmpFile("history.json", JSON.stringify({ messages: [
+    { role: "user", content: "do it" },
+    { role: "assistant", content: 'executeAux4("aux4 x list")' }
+  ] }));
+  assert.equal(dropTrailingTextCall(file), true);
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).messages.length, 1);
+  assert.equal(dropTrailingTextCall(file), false);
 });

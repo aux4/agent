@@ -810,13 +810,35 @@ export function isBlocked(executeOutput) {
 }
 
 // A retry that only described what it would do, without a single tool call.
-export const DO_IT_NOW = "You described what to do but did not call any tool. Do it now: call the tool that carries out the next step.";
+export const DO_IT_NOW = "You described what to do but did not call any tool. Do it now: make a real tool call (a function call, not text) for the next step.";
+
+export const TEXT_TOOL_CALL = /^\s*`?\w+\(\s*["'{]/;
+
+// Small models copy their own last output: a tool call written as text stays
+// in the history and gets written again. Drop that trailing text-only reply
+// so the push starts from a clean state.
+export function dropTrailingTextCall(historyFile) {
+  if (!historyFile || !fs.existsSync(historyFile)) return false;
+  try {
+    const data = JSON.parse(fs.readFileSync(historyFile, "utf8"));
+    const messages = Array.isArray(data?.messages) ? data.messages : [];
+    const last = messages[messages.length - 1];
+    if (last?.role === "assistant" && typeof last.content === "string" && TEXT_TOOL_CALL.test(last.content)) {
+      messages.pop();
+      fs.writeFileSync(historyFile, JSON.stringify({ ...data, messages }));
+      return true;
+    }
+  } catch {
+    // leave the history as it is
+  }
+  return false;
+}
 
 export function describedWithoutDoing(content, roundToolCalls) {
   const text = stripFailureClass(content);
   if (roundToolCalls !== 0) return false;
   // Narrated intent, or a tool call written out as text instead of made.
-  return /\b(I will|I'll|I need to|I am going to|let me)\b/i.test(text) || /^\s*`?\w+\(\s*["'{]/.test(text);
+  return /\b(I will|I'll|I need to|I am going to|let me)\b/i.test(text) || TEXT_TOOL_CALL.test(text);
 }
 
 // The failure-class line is for the harness, not the requester.
@@ -892,6 +914,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       const push = askedWithoutLooking(lastContent, round.execute.toolCalls) ? LOOK_BEFORE_ASKING
         : describedWithoutDoing(lastContent, round.execute.toolCalls) ? DO_IT_NOW : "";
       if (push) {
+        if (push === DO_IT_NOW) dropTrailingTextCall(history);
         lastContent = execute(push, history, deniedCommands);
         round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: push === DO_IT_NOW ? "do-it-now" : "look-first" };
       }
