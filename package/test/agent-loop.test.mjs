@@ -27,6 +27,7 @@ import {
   readBackCandidates,
   askedWithoutLooking,
   describedWithoutDoing,
+  untriedCommandGroups,
   missingParameterHints,
   isSafeReadBack,
   isReadCommand,
@@ -467,6 +468,7 @@ test("runLoop pushes once past a 'blocked' claim when allowed commands were offe
     });
     assert.equal(questions.length, 2);
     assert.match(questions[1], /aux4 real list/);
+    assert.match(questions[1], /not tried/);
     assert.equal(outcome.stopped, "pass");
   });
 });
@@ -695,4 +697,14 @@ test("didNothing flags a non-read action that affected nothing", () => {
 test("a page snapshot counts as a read-back", () => {
   assert.equal(isReadCommand("aux4 browser snapshot --session s1 --format text"), true);
   assert.equal(isReadCommand("aux4 github actions trigger"), false);
+});
+
+test("untriedCommandGroups lists suggested groups no attempt has used", () => {
+  const groups = [
+    { path: "calendar", description: "Manage calendar events", leaves: [{ name: "search", text: "" }] },
+    { path: "google calendar events", description: "Manage events on a calendar", leaves: [{ name: "list", text: "" }, { name: "delete", text: "" }] },
+    ...["db tables", "mail inbox", "files upload", "jwt verify", "repo commits", "kb articles"].map(path => ({ path, description: `${path} tools`, leaves: [{ name: "list", text: "" }] }))
+  ];
+  const untried = untriedCommandGroups("cancel the meeting on my calendar", [{ command: "aux4 calendar search --query x" }], groups);
+  assert.deepEqual(untried, ["aux4 google calendar events (list, delete)"]);
 });

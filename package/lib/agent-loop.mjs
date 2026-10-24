@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { commandHints } from "./command-index.mjs";
+import { commandHints, matchGroups, loadGroups } from "./command-index.mjs";
 
 export const RETRY_BUDGET = 2;
 // How much of each tool result the verifier sees, and in total.
@@ -832,10 +832,19 @@ export function askedWithoutLooking(content, roundToolCalls) {
 
 export const LOOK_BEFORE_ASKING = "You asked the requester a question without using any tool. Do not ask: find the answer with the tools first (look for the command whose help matches the request's words), then finish the request.";
 
+// Command groups the index suggested for this request that no attempt has used
+// yet: until they are tried, a "blocked" claim is premature.
+export function untriedCommandGroups(request, attempts, groups = null) {
+  const matches = matchGroups(request, groups || loadGroups());
+  const used = attempts.map(a => ` ${String(a.command || "").replace(/^aux4\s+/, "")} `);
+  return matches.filter(g => !used.some(u => u.includes(` ${g.path} `)))
+    .map(g => `aux4 ${g.path} (${g.leaves.slice(0, 6).map(l => l.name).join(", ")})`);
+}
+
 export function composeNotBlockedQuestion(offered) {
   return [
-    "You are not blocked yet: a permission message listed the commands you may run.",
-    `Commands you may run: ${offered}`,
+    "You are not blocked yet: there are commands you have not tried that may do this.",
+    `Commands to try: ${offered}`,
     "Pick the one whose name matches what you need (check its --help for parameters), use it, and finish the request.",
     CHECK_BEFORE_IRREVERSIBLE
   ].join("\n");
@@ -960,7 +969,9 @@ export async function runLoop(options, history, execute, recovery = "") {
     }
 
     if (isBlocked(lastContent)) {
-      const offered = !pushedPastBlocked && allowedCommandsOffered(extractAttemptLog(history));
+      const tried = extractAttemptLog(history);
+      const untried = pushedPastBlocked ? [] : untriedCommandGroups(options.request, tried);
+      const offered = !pushedPastBlocked && (allowedCommandsOffered(tried) || untried.join("; "));
       if (!offered) return done("blocked", attempt);
       pushedPastBlocked = true;
       lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands);
