@@ -746,21 +746,32 @@ const FIND_LIMIT = 6;
 const FIND_TIMEOUT_MS = 20000;
 const MAX_FOUND = 8;
 
+// A URL is not a word the docs use: it is searched as "web page". Scores from
+// different queries do not compare, so results are merged by rank: every
+// query's best match first, then every query's second, and so on.
+export function findQuery(text) {
+  return String(text || "").replace(/https?:\/\/\S+/gi, "web page").trim().slice(0, 300);
+}
+
 export function findCommands(queries) {
-  const found = new Map();
-  for (const query of queries.map(q => String(q || "").trim()).filter(Boolean)) {
-    const result = runAux4(["aux4", "pkger", "find", "--query", query.slice(0, 300), "--limit", String(FIND_LIMIT)], { allowFailure: true, timeout: FIND_TIMEOUT_MS });
+  const lists = [];
+  for (const query of queries.map(findQuery).filter(Boolean)) {
+    const result = runAux4(["aux4", "pkger", "find", "--query", query, "--limit", String(FIND_LIMIT)], { allowFailure: true, timeout: FIND_TIMEOUT_MS });
     const list = parseJSONLoose(result.stdout, []);
     if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      const command = String(item?.command || "").trim();
-      if (!command || /^aux4 (ai agent|agent)(\s|$)/.test(command)) continue;
-      const score = Number(item.score) || 0;
-      const prior = found.get(command);
-      if (!prior || prior.score < score) found.set(command, { command, description: String(item.description || ""), score });
+    lists.push(list
+      .map(item => ({ command: String(item?.command || "").trim(), description: String(item?.description || "") }))
+      .filter(item => item.command && !/^aux4 (ai agent|agent)(\s|$)/.test(item.command)));
+  }
+  const found = new Map();
+  for (let rank = 0; rank < FIND_LIMIT && found.size < MAX_FOUND; rank++) {
+    for (const list of lists) {
+      const item = list[rank];
+      if (item && !found.has(item.command)) found.set(item.command, item);
+      if (found.size >= MAX_FOUND) break;
     }
   }
-  return [...found.values()].sort((a, b) => b.score - a.score).slice(0, MAX_FOUND);
+  return [...found.values()];
 }
 
 export function describeFoundCommands(found) {
