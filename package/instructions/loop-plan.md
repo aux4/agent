@@ -28,6 +28,12 @@ Produce exactly one JSON object:
   page", not "use the browser tool"): the tools are found during the work.
   These will be revised during the work.
 
+- `lookFor` (array, 1 to 4 short phrases of 2 to 6 words): the kinds of
+  command the work needs, each as what it does to what, in plain words, e.g.
+  "read email in the inbox", "fill and submit a form on a web page",
+  "cancel a meeting on the calendar". No names, values or addresses from the
+  request, and no tool names.
+
 Keep every string short: one plain sentence each.
 
 Respond with ONLY the JSON object. No prose, no code fences.

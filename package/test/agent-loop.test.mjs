@@ -8,6 +8,7 @@ import {
   parseJSONLoose,
   WORKING_RULES,
   findCommands,
+  lookupQueries,
   describeFoundCommands,
   extractAttemptLog,
   summarizeAttemptLog,
@@ -716,4 +717,10 @@ console.log(JSON.stringify(out));
     fs.rmSync(dir, { recursive: true, force: true });
   }
   assert.equal(describeFoundCommands([]), "");
+});
+
+test("command lookup searches the plan's short lookFor phrases, else the request and steps", () => {
+  assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"], lookFor: ["fill and submit a form on a web page"] }), ["fill and submit a form on a web page"]);
+  assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"], lookFor: [] }), ["Book a trip", "s1"]);
+  assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"] }), ["Book a trip", "s1"]);
 });

@@ -115,11 +115,15 @@ function normalizePlan(raw) {
   const steps = Array.isArray(raw?.steps)
     ? raw.steps.map(String).map(s => s.trim()).filter(Boolean)
     : [];
+  const lookFor = Array.isArray(raw?.lookFor)
+    ? raw.lookFor.map(String).map(s => s.trim()).filter(Boolean).slice(0, 4)
+    : [];
   return {
     goal,
     doneCriteria: criteria.map(c => c.text),
     stateCriteria: criteria.filter(c => c.kind === "state").map(c => c.text),
-    steps
+    steps,
+    lookFor
   };
 }
 
@@ -781,6 +785,15 @@ export function findCommands(queries) {
 // Each command is written as the executeAux4 call that runs it: a small model
 // shown a bare "aux4 agent browser find" tends to call it as a tool of that
 // name, which no parser accepts, and the turn comes back empty.
+// Command search works on short phrases about what a command does ("read email
+// in the inbox"); a whole task sentence pulls in commands that merely share a
+// word with it ("order" -> a todo list's order). The plan's lookFor phrases are
+// searched when there are any; otherwise the request and its steps.
+export function lookupQueries(request, plan) {
+  const lookFor = Array.isArray(plan?.lookFor) ? plan.lookFor.filter(Boolean) : [];
+  return lookFor.length ? lookFor : [request, ...(plan?.steps || [])];
+}
+
 export function describeFoundCommands(found) {
   if (!found.length) return "";
   return [
@@ -966,7 +979,7 @@ export async function runLoop(options, history, execute, recovery = "") {
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
-      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands([options.request, ...plan.steps])))
+      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))))
       : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);

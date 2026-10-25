@@ -13,7 +13,7 @@ node agent-loop.test.mjs
 ```
 
 ```expect:partial
-pass 57
+pass 58
 ```
 
 ### should pass the ask entry-point unit suite
