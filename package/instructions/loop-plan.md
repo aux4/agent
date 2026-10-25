@@ -24,7 +24,9 @@ Produce exactly one JSON object:
 - `steps` (array, at most 4 short strings): a provisional approach. Start with
   how to find, from the available help, what provides each thing the request
   names (match the request's own words to the help descriptions), then what
-  to do. These will be revised during the work.
+  to do. Say what to find or do, not which tool to use ("open the products
+  page", not "use the browser tool"): the tools are found during the work.
+  These will be revised during the work.
 
 Keep every string short: one plain sentence each.
 

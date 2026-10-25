@@ -662,7 +662,11 @@ export function missingParameterHints(attempts) {
 
 // Every state criterion holds and only what the answer says is off: fix the
 // answer, not the world.
-export function onlyAnswerFailed(plan, verdict) {
+// A rewrite-only retry ("do not run any more actions") is for an answer that
+// misstates results it already has. With no successful tool result there is
+// nothing to restate: the work was never done, so the retry must act.
+export function onlyAnswerFailed(plan, verdict, attempts = null) {
+  if (Array.isArray(attempts) && !attempts.some(a => !a.failed)) return false;
   const state = new Set(plan.stateCriteria || plan.doneCriteria);
   const unmet = verdict.criteria.filter(c => c.status !== "pass");
   return unmet.length > 0 && unmet.every(c => !state.has(c.criterion)) &&
@@ -960,7 +964,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
       ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands([options.request, ...plan.steps])))
-      : onlyAnswerFailed(plan, priorVerdict)
+      : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
 
