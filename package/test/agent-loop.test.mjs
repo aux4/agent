@@ -709,8 +709,8 @@ console.log(JSON.stringify(out));
     const found = findCommands(["open https://example.com/x", "b", ""]);
     assert.deepEqual(found.map(f => f.command), ["aux4 agent browser run", "aux4 google gmail trash", "aux4 browser open", "aux4 google gmail list", "aux4 browser read"]);
     const text = describeFoundCommands(found);
-    assert.match(text, /found with aux4 aux4 pkger find/);
-    assert.match(text, /- aux4 google gmail list -- List messages\./);
+    assert.match(text, /run them through the executeAux4 tool/);
+    assert.match(text, /- executeAux4 \{"command": "aux4 google gmail list --help"\} -- List messages\./);
   } finally {
     if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
     fs.rmSync(dir, { recursive: true, force: true });

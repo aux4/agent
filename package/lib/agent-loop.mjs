@@ -778,11 +778,14 @@ export function findCommands(queries) {
   return [...found.values()];
 }
 
+// Each command is written as the executeAux4 call that runs it: a small model
+// shown a bare "aux4 agent browser find" tends to call it as a tool of that
+// name, which no parser accepts, and the turn comes back empty.
 export function describeFoundCommands(found) {
   if (!found.length) return "";
   return [
-    "Installed commands that may fit (found with aux4 aux4 pkger find; read a command's --help before using it):",
-    ...found.map(f => `- ${f.command}${f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : ""}`)
+    "Installed aux4 commands that may fit -- run them through the executeAux4 tool:",
+    ...found.map(f => `- executeAux4 {"command": "${f.command} --help"}${f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : ""}`)
   ].join("\n");
 }
 
