@@ -567,6 +567,20 @@ export function readVerdict(text) {
 
 // --- Provenance -----------------------------------------------------------
 
+// A raw "Label=value" string becomes an entered value unless it's the
+// confirmation decision itself or an unfilled placeholder -- shared by
+// enteredValues (parsed from a full command string) and unsourcedFieldValues
+// (parsed from the pending call's own --field values, before it has run).
+function parseFieldEntry(raw) {
+  const text = String(raw || "");
+  const i = text.indexOf("=");
+  if (i <= 0) return null;
+  const label = text.slice(0, i).trim();
+  const value = text.slice(i + 1).trim();
+  if (!value || /^confirm$/i.test(label) || /^<.*>$/.test(value)) return null;
+  return { label, value };
+}
+
 // Values the agent put into a form or a message: every `--field "Label=value"`
 // of a call (the confirmation flag is a decision, not a value).
 export function enteredValues(command) {
@@ -575,12 +589,8 @@ export function enteredValues(command) {
   let m;
   while ((m = re.exec(String(command || ""))) !== null) {
     const raw = m[1] ?? m[2] ?? m[3] ?? "";
-    const i = raw.indexOf("=");
-    if (i <= 0) continue;
-    const label = raw.slice(0, i).trim();
-    const value = raw.slice(i + 1).trim();
-    if (!value || /^confirm$/i.test(label) || /^<.*>$/.test(value)) continue;
-    out.push({ label, value });
+    const entry = parseFieldEntry(raw);
+    if (entry) out.push(entry);
   }
   return out;
 }
@@ -602,6 +612,25 @@ export function unsourcedValues(attempts, request = "") {
       if (missing.length) found.push({ label, value, command: attempt.command });
     }
     for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
+  }
+  return found;
+}
+
+// Same provenance check as unsourcedValues, but for a call that has NOT run
+// yet -- the hooks path (see "Hooks integration" below) checks the pending
+// confirmation's own --field values against everything that happened before
+// it, instead of re-parsing it out of a finished attempt log.
+export function unsourcedFieldValues(fields, attempts, request = "") {
+  const seen = new Set(tokens(request));
+  for (const attempt of attempts) {
+    for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
+  }
+  const found = [];
+  for (const raw of fields || []) {
+    const entry = parseFieldEntry(raw);
+    if (!entry) continue;
+    const missing = tokens(entry.value).filter(t => !seen.has(t));
+    if (missing.length) found.push(entry);
   }
   return found;
 }
@@ -654,6 +683,58 @@ export function applyProvenance(verdict, attempts, request = "") {
     overall: "fail",
     criteria: [...verdict.criteria, { criterion: PROVENANCE_CRITERION, status: "fail", evidence: `${evidence}. A value that cannot be found must not be made up: say it is missing.` }]
   };
+}
+
+// --- Hooks integration (HARN-030) -----------------------------------------
+// aux4/ai-agent >=1.3.0 can check a tool call BEFORE it runs, inside the round
+// (its own `--hooks`, following aux4 core's hook standard). When it's
+// available, the provenance check becomes a `before` hook on
+// agent:browser/run (gated on `field` containing `confirm=yes`, so only the
+// confirmation call is ever checked) instead of the two-round gate above:
+// one round, not two, and the model sees the SAME check either way (this
+// hook calls `aux4 agent check-values`, which shares unsourcedFieldValues
+// with the gate's own unsourcedValues). Capability is detected, never
+// assumed, by probing the installed ai-agent's own --help for `--hooks` --
+// an older ai-agent silently keeps using the gate.
+let hooksSupportCache = null;
+
+export function detectAiAgentHooksSupport() {
+  if (hooksSupportCache !== null) return hooksSupportCache;
+  try {
+    const result = runAux4(["ai", "agent", "ask", "--help"], { allowFailure: true });
+    hooksSupportCache = result.ok && /--hooks\b/.test(result.stdout);
+  } catch {
+    hooksSupportCache = false;
+  }
+  return hooksSupportCache;
+}
+
+// Exposed for tests -- never call from production code outside this module.
+export function resetHooksSupportCacheForTests() {
+  hooksSupportCache = null;
+}
+
+export function checkValuesHooksFile(packageDir) {
+  return {
+    hooks: [
+      {
+        tool: "executeAux4",
+        command: "agent:browser/run",
+        params: { field: "confirm=yes" },
+        before: [
+          `node ${packageDir}/lib/check-values.mjs --request "\${__request}" --history "\${__history}" --fieldsJson '\${field}'`
+        ]
+      }
+    ]
+  };
+}
+
+// Written once per run next to the history file so a hook hitting the same
+// agent:browser/run call always reads the live history -- never a stale copy.
+export function writeCheckValuesHooksFile(packageDir, history) {
+  const file = `${history}.hooks.json`;
+  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir), null, 2));
+  return file;
 }
 
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
@@ -1133,7 +1214,10 @@ export async function runLoop(options, history, execute, recovery = "") {
     const executeStart = Date.now();
     nextQuestion = "";
     // The gate opens for one round only: a later irreversible step is held again.
-    const gateOpen = confirmOpen;
+    // When ai-agent supports hooks (HARN-030), the confirmation is checked
+    // in-round by its own `before` hook instead -- there is nothing left for
+    // this permission-level gate to do, so it never denies the call.
+    const gateOpen = confirmOpen || options.hooksSupported;
     confirmOpen = false;
     options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN];
     lastContent = execute(question, history, deniedCommands, attempt > 1);

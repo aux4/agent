@@ -6,7 +6,10 @@
 // `aux4 ai agent ask` call against the caller's own history.
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { runLoop, mergeDenyPolicy, addDenyPatterns, capRetryBudget, runAux4, activeDelegations, delegatedDenyPatterns } from "./agent-loop.mjs";
+import {
+  runLoop, mergeDenyPolicy, addDenyPatterns, capRetryBudget, runAux4, activeDelegations, delegatedDenyPatterns,
+  detectAiAgentHooksSupport, writeCheckValuesHooksFile
+} from "./agent-loop.mjs";
 
 // Flags arrive as `--name value` pairs; empty or missing values drop out.
 export function parseArgs(argv) {
@@ -40,6 +43,7 @@ export function buildAskArgs(options, history, question, deniedCommands = [], re
     const withDenials = mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands);
     args.push("--policy", addDenyPatterns(withDenials, delegated));
   }
+  if (options.hooksFile) args.push("--hooks", options.hooksFile);
   args.push("--history", history, "--question", question);
   return args;
 }
@@ -49,6 +53,13 @@ export async function main(argv) {
   options.delegations = activeDelegations();
   options.delegatedDeny = delegatedDenyPatterns(options.delegations);
   const history = options.history;
+  // HARN-030: when the installed aux4/ai-agent supports tool-call hooks, use
+  // one for the value-provenance check (agent-loop.mjs checkValuesHooksFile)
+  // instead of the two-round confirmation gate -- same check, one round.
+  options.hooksSupported = detectAiAgentHooksSupport();
+  if (options.hooksSupported) {
+    options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history);
+  }
   const execute = (question, h, deniedCommands, retry = false) =>
     runAux4(buildAskArgs(options, h, question, deniedCommands, retry)).stdout.trim();
   const outcome = await runLoop(options, history, execute);

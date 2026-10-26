@@ -1,7 +1,7 @@
 {
   "scope": "agent",
   "name": "agent",
-  "version": "4.0.3",
+  "version": "4.1.0",
   "description": "AI agent powered by on-demand skills",
   "license": "Apache-2.0",
   "tags": [
@@ -241,6 +241,33 @@
           ],
           "help": {
             "text": "View past executions and their task lists"
+          }
+        },
+        {
+          "name": "check-values",
+          "private": true,
+          "execute": [
+            "node ${packageDir}/lib/check-values.mjs --request value(request) --history value(history) --fieldsJson value(fieldsJson)"
+          ],
+          "help": {
+            "text": "Check that every value in a pending confirmation call came from the request or an earlier tool result. Used as an aux4/ai-agent tool-call hook (before phase on agent:browser/run); exits non-zero naming any value that cannot be found anywhere.",
+            "variables": [
+              {
+                "name": "request",
+                "text": "The user's original request this round",
+                "default": ""
+              },
+              {
+                "name": "history",
+                "text": "Path to the ai-agent history file",
+                "default": ""
+              },
+              {
+                "name": "fieldsJson",
+                "text": "The pending call's --field values, as a JSON array or a single string",
+                "default": ""
+              }
+            ]
           }
         }
       ]
