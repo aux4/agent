@@ -56,7 +56,8 @@ import {
   RETRY_BUDGET,
   runReadBack,
   isNoChangeCriterion,
-  unverifiableOnlyAfterChange
+  unverifiableOnlyAfterChange,
+  commandWords
 } from "../lib/agent-loop.mjs";
 
 function tmpFile(name, content) {
@@ -990,3 +991,10 @@ if (command.includes("loop-plan.md")) {
 function spawnSyncBare(command) {
   return spawnSync("sh", ["-c", command], { encoding: "utf8" });
 }
+
+test("commandWords splits like executeAux4, with no shell expansion", () => {
+  assert.deepEqual(commandWords(`google calendar events list --query "Budget review" --x '$HOME;rm'`),
+    ["google", "calendar", "events", "list", "--query", "Budget review", "--x", "$HOME;rm"]);
+  assert.deepEqual(commandWords(`a "say \\"hi\\"" b\\ c`), ["a", 'say "hi"', "b c"]);
+  assert.equal(commandWords(`a "open`), null);
+});

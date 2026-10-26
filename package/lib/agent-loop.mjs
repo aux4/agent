@@ -562,9 +562,41 @@ export function pickFromReply(reply, reads) {
 // uses (respecting AUX4_BIN) put back in front of it; without that, the shell
 // tries to run "google" (or "agent", ...) itself and fails every time, which
 // is why the read-back silently never produced a check.
+// Splits a command the way aux4/ai-agent's executeAux4 does (no shell): '...' is
+// literal, "..." allows \" and \\ escapes, an unquoted backslash escapes the next
+// character, nothing is ever expanded. Returns null for an unterminated quote.
+export function commandWords(command) {
+  const words = [];
+  let word = null;
+  let quote = null;
+  const text = String(command || "");
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null; else word += ch;
+    } else if (quote === '"') {
+      if (ch === "\\" && (text[i + 1] === '"' || text[i + 1] === "\\")) { word += text[++i]; }
+      else if (ch === '"') quote = null;
+      else word += ch;
+    } else if (/\s/.test(ch)) {
+      if (word !== null) { words.push(word); word = null; }
+    } else {
+      if (word === null) word = "";
+      if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === "\\" && i + 1 < text.length) word += text[++i];
+      else word += ch;
+    }
+  }
+  if (quote) return null;
+  if (word !== null) words.push(word);
+  return words;
+}
+
 export function runReadBack(command) {
   const bin = process.env.AUX4_BIN || "aux4";
-  const result = spawnSync("sh", ["-c", `${bin} ${command}`], { encoding: "utf8", env: process.env, timeout: 60000, maxBuffer: 5 * 1024 * 1024 });
+  const words = commandWords(command);
+  if (!words || words.length === 0) return { ok: false, output: "invalid command" };
+  const result = spawnSync(bin, words, { encoding: "utf8", env: process.env, timeout: 60000, maxBuffer: 5 * 1024 * 1024 });
   const out = `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
   return { ok: result.status === 0, output: out.slice(0, RESULT_LIMIT * 2) };
 }
