@@ -1201,7 +1201,9 @@ export async function runLoop(options, history, execute, recovery = "") {
   };
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
-    const notes = [...(options.delegations || []).map(d => d.note), CONFIRM_NOTE].join("\n");
+    // The two-step note describes the fallback gate only; with tool-call hooks
+    // nothing is held, and telling the agent otherwise sends it round in circles.
+    const notes = [...(options.delegations || []).map(d => d.note), ...(options.hooksSupported ? [] : [CONFIRM_NOTE])].join("\n");
     const question = nextQuestion ? nextQuestion : attempt === 1
       ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))), notes)
       : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
