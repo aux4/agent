@@ -743,6 +743,7 @@ export const WORKING_RULES = [
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
   "- If an action returns \"User aborted\", the requester declined it: stop and say so, do not retry it.",
   "- Anything you send must name what it refers to (the item, the date and time), not just \"that\".",
+  "- Never make up a value (an id, a code, a number, a name): use only values the request gives or a tool returned. If a required value cannot be found, do not submit or send -- say exactly what is missing.",
   "- Never ask the requester for something the tools can find out (a date, an id, a name): look it up. If a question is ambiguous, answer with the reading the results best support and say which."
 ].join("\n");
 

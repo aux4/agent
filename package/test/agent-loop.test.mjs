@@ -744,3 +744,8 @@ test("the execute question carries the delegation note", () => {
   const q = composeExecuteQuestion("do it", { doneCriteria: ["done"], steps: [] }, "", "", "Web pages: use aux4 agent browser run");
   assert.match(q, /Web pages: use aux4 agent browser run/);
 });
+
+test("working rules forbid making up a value and submitting without it", () => {
+  assert.match(WORKING_RULES, /Never make up a value/);
+  assert.match(WORKING_RULES, /If a required value cannot be found, do not submit or send/);
+});
