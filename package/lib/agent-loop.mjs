@@ -414,6 +414,12 @@ export const COVERAGE_CRITERION = "The final answer responds to every part of th
 // And one implicit honesty criterion: the answer must match what the actions
 // actually did -- what was sent, changed, or found -- not what was intended.
 export const HONESTY_CRITERION = "The final answer accurately describes what the actions actually did, including the exact content of anything sent or changed";
+// And one implicit agreement criterion: a planner can state the right actions
+// while the content sent still contradicts what the tools found (e.g. a reply
+// says "available" when a prior check returned a conflicting busy slot).
+// Coverage and honesty alone do not catch this -- neither asks whether a sent
+// claim actually agrees with the facts -- so it is checked on its own.
+export const AGREEMENT_CRITERION = "Anything sent, submitted, or saved states only facts that agree with what the tool results showed";
 
 // A pass on a state criterion only counts when it rests on the verifier's own
 // observation made after the work. If the verify run made no checks of its
@@ -452,7 +458,7 @@ export function verifyPayload(plan, finalAnswer, attempts, request = "") {
 }
 
 export function verifyCriteria(plan) {
-  return [...plan.doneCriteria, COVERAGE_CRITERION, HONESTY_CRITERION];
+  return [...plan.doneCriteria, COVERAGE_CRITERION, HONESTY_CRITERION, AGREEMENT_CRITERION];
 }
 
 // Commands that already worked in this run, minus help lookups: the verifier
@@ -923,6 +929,7 @@ export const WORKING_RULES = [
   "- Never guess a command name. If a call returns \"Command not found\", run --help on its parent group (drop the last word) and use a command listed there, or look for another command that does the same thing.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
+  "- Before sending or submitting a message, re-read the tool results it depends on and make sure the message agrees with them.",
   "- If an action returns \"User aborted\", the requester declined it: stop and say so, do not retry it.",
   "- Anything you send must name what it refers to (the item, the date and time), not just \"that\".",
   "- Never make up a value (an id, a code, a number, a name): use only values the request gives or a tool returned. If a required value cannot be found, do not submit or send -- say exactly what is missing.",

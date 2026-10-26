@@ -1,5 +1,21 @@
 # Release notes
 
+## 4.1.1
+
+- The plan step could drop part of a request that named what a reply or message had to say
+  (e.g. "reply telling them whether the time works"), keeping only the surrounding action
+  ("a reply is sent"). A planner working to a 3-criteria cap then verified only that something
+  was sent, not that it said the right thing -- so a reply could state the opposite of what an
+  earlier tool result showed and still pass. `instructions/loop-plan.md` now tells the planner
+  to give every distinct part of the request its own criterion (combine parts rather than
+  dropping one).
+- Added a fixed verify criterion, `AGREEMENT_CRITERION` (`lib/agent-loop.mjs`), checked on every
+  run alongside the existing coverage and honesty checks: anything sent, submitted, or saved
+  must state only facts that agree with what the tool results showed. This catches the case
+  above even when the plan still under-specifies the content.
+- `WORKING_RULES` gained one line: before sending or submitting a message, re-read the tool
+  results it depends on and make sure the message agrees with them.
+
 ## 4.0.4
 
 - `ask` now always runs every execution turn through a generic plan -> execute -> verify ->

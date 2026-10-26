@@ -33,6 +33,9 @@ import {
   salvageVerdict,
   stripFailureClass,
   COVERAGE_CRITERION,
+  HONESTY_CRITERION,
+  AGREEMENT_CRITERION,
+  verifyCriteria,
   allowedCommandsOffered,
   readBackCandidates,
   askedWithoutLooking,
@@ -326,9 +329,16 @@ test("verifyPayload gives the request verbatim, typed criteria plus coverage, an
     { command: "todo complete --id 9", failed: true, result: "Error: no such item 9" }
   ], "remove item 9 and tell me which it was");
   assert.equal(payload.request, "remove item 9 and tell me which it was");
-  assert.deepEqual(payload.criteria.map(c => c.kind), ["state", "answer", "answer", "answer"]);
+  assert.deepEqual(payload.criteria.map(c => c.kind), ["state", "answer", "answer", "answer", "answer"]);
   assert.equal(payload.criteria[2].criterion, COVERAGE_CRITERION);
+  assert.equal(payload.criteria[3].criterion, HONESTY_CRITERION);
+  assert.equal(payload.criteria[4].criterion, AGREEMENT_CRITERION);
   assert.deepEqual(payload.actions.map(a => a.result), ["1. buy milk", "Error: no such item 9"]);
+});
+
+test("verifyCriteria appends coverage, honesty, and agreement after the plan's own criteria", () => {
+  const plan = { doneCriteria: ["a", "b"] };
+  assert.deepEqual(verifyCriteria(plan), ["a", "b", COVERAGE_CRITERION, HONESTY_CRITERION, AGREEMENT_CRITERION]);
 });
 
 test("salvageVerdict recovers complete entries from a reply cut off mid-JSON", () => {
@@ -419,7 +429,7 @@ test("a verdict whose criteria were reworded is matched by position", async () =
 const args = process.argv.slice(2);
 const command = args.join(" ");
 if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: [{ text: "the reply names the item", kind: "answer" }], steps: [] }));
-else if (command.includes("loop-verify.md")) process.stdout.write(JSON.stringify({ results: [{ criterion: "Reply names item.", status: "pass", evidence: "it does" }, { criterion: "covers all", status: "pass", evidence: "yes" }, { criterion: "honest", status: "pass", evidence: "matches" }] }));
+else if (command.includes("loop-verify.md")) process.stdout.write(JSON.stringify({ results: [{ criterion: "Reply names item.", status: "pass", evidence: "it does" }, { criterion: "covers all", status: "pass", evidence: "yes" }, { criterion: "honest", status: "pass", evidence: "matches" }, { criterion: "agrees", status: "pass", evidence: "matches" }] }));
 `);
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
   await withAux4Bin(fake, async () => {
@@ -699,6 +709,10 @@ test("working rules forbid guessing commands and say how to recover from Command
   assert.match(WORKING_RULES, /Use the installed commands listed above/);
   assert.match(WORKING_RULES, /Never guess a command name/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
+});
+
+test("working rules say to re-check a message against tool results before sending it", () => {
+  assert.match(WORKING_RULES, /Before sending or submitting a message, re-read the tool results it depends on/);
 });
 
 test("findCommands merges pkger find results by rank and leaves out the agent's own commands", () => {

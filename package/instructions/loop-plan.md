@@ -7,8 +7,13 @@ Produce exactly one JSON object:
 
 - `goal` (string): the request restated in one sentence. Keep its own words
   for the things it names; do not rename them or add details it does not give.
-- `doneCriteria` (array, at most 3): the outcomes that define success. Each is
-  an object `{ "text": "...", "kind": "answer" | "state" }`:
+- `doneCriteria` (array, at most 3): the outcomes that define success. Give
+  every distinct part of the request its own criterion, including what a
+  reply, message, or form must say -- not only the action around it (e.g. a
+  request to reply saying whether a time works needs a criterion for the
+  reply being sent AND one for what it must say). Dropping a part because the
+  list is short is wrong; combine parts into one criterion instead of
+  omitting one. Each is an object `{ "text": "...", "kind": "answer" | "state" }`:
   - `answer`: something the final reply must say, e.g. "the reply states who
     sent the latest message". When the request asks for information, the
     criterion is that the reply gives it as it is in its source, for every
