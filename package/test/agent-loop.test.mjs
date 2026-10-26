@@ -9,6 +9,9 @@ import {
   WORKING_RULES,
   findCommands,
   lookupQueries,
+  activeDelegations,
+  delegatedDenyPatterns,
+  addDenyPatterns,
   describeFoundCommands,
   extractAttemptLog,
   summarizeAttemptLog,
@@ -723,4 +726,21 @@ test("command lookup searches the plan's short lookFor phrases, else the request
   assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"], lookFor: ["fill and submit a form on a web page"] }), ["fill and submit a form on a web page"]);
   assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"], lookFor: [] }), ["Book a trip", "s1"]);
   assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"] }), ["Book a trip", "s1"]);
+});
+
+test("a capability with a goal-level agent is delegated: its low-level commands are denied to the calling agent", () => {
+  const delegations = activeDelegations(new Set(["main", "agent", "agent:browser", "browser"]));
+  assert.equal(delegations.length, 1);
+  assert.match(delegations[0].note, /aux4 agent browser run/);
+  assert.deepEqual(delegatedDenyPatterns(delegations), ["browser", "browser *", "aux4 browser", "aux4 browser *"]);
+  assert.deepEqual(activeDelegations(new Set(["main", "browser"])), []);
+  const policy = JSON.parse(addDenyPatterns('{"budget":{"calls":60},"deny":[{"executeAux4":["x"]}]}', ["browser *"]));
+  assert.deepEqual(policy.budget, { calls: 60 });
+  assert.deepEqual(policy.deny, [{ executeAux4: ["x"] }, { executeAux4: ["browser *"] }]);
+  assert.equal(addDenyPatterns("{}", []), "{}");
+});
+
+test("the execute question carries the delegation note", () => {
+  const q = composeExecuteQuestion("do it", { doneCriteria: ["done"], steps: [] }, "", "", "Web pages: use aux4 agent browser run");
+  assert.match(q, /Web pages: use aux4 agent browser run/);
 });

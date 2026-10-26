@@ -19,3 +19,9 @@ test("buildAskArgs layers denials and a retry budget onto the caller's policy", 
   assert.equal(policy.budget.calls, 10);
   assert.deepEqual(policy.deny, [{ executeAux4: ["x delete 1"] }]);
 });
+
+test("buildAskArgs adds the delegated deny patterns to the policy", () => {
+  const args = buildAskArgs({ packageDir: "/p", delegatedDeny: ["browser", "browser *"] }, "h.json", "q");
+  const policy = JSON.parse(args[args.indexOf("--policy") + 1]);
+  assert.deepEqual(policy.deny, [{ executeAux4: ["browser", "browser *"] }]);
+});

@@ -802,7 +802,7 @@ export function describeFoundCommands(found) {
   ].join("\n");
 }
 
-export function composeExecuteQuestion(request, plan, recovery = "", foundCommands = "") {
+export function composeExecuteQuestion(request, plan, recovery = "", foundCommands = "", delegationNote = "") {
   const criteria = plan.doneCriteria.map(c => `- ${c}`).join("\n");
   const steps = plan.steps.length ? `\n\nPossible starting points (provisional, revise as you learn more):\n${plan.steps.map(s => `- ${s}`).join("\n")}` : "";
   const recoveryNote = recovery
@@ -815,6 +815,7 @@ export function composeExecuteQuestion(request, plan, recovery = "", foundComman
     criteria,
     "",
     ...(foundCommands ? [foundCommands, ""] : []),
+    ...(delegationNote ? [delegationNote, ""] : []),
     WORKING_RULES,
     steps,
     recoveryNote
@@ -832,6 +833,49 @@ export function capRetryBudget(policyJSON) {
   const calls = policy?.budget?.calls;
   const capped = typeof calls === "number" ? Math.min(calls, RETRY_CALL_BUDGET) : RETRY_CALL_BUDGET;
   return JSON.stringify({ ...policy, budget: { ...(policy.budget || {}), calls: capped } });
+}
+
+// A capability that has a goal-level agent is reached through that agent: the
+// low-level commands it drives are not for the calling agent (a model that knows
+// them from training goes around the agent and drives every click itself).
+// Only the calling agent's own executeAux4 calls are denied; the goal-level
+// agent runs the low-level commands as its own processes, untouched.
+export const DELEGATIONS = [
+  {
+    via: "agent:browser",
+    group: "browser",
+    note: "Web pages: use aux4 agent browser run / aux4 agent browser find -- they open, read, fill and click for you. Direct aux4 browser commands are not available to you."
+  }
+];
+
+// Installed profiles, from aux4's own command file (read only).
+export function installedProfiles(file = process.env.AUX4_GLOBAL_FILE || path.join(process.env.HOME || "", ".aux4.config", "global.aux4")) {
+  try {
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    return new Set((data?.profiles || []).map(p => p.name));
+  } catch {
+    return new Set();
+  }
+}
+
+export function activeDelegations(profiles = installedProfiles()) {
+  return DELEGATIONS.filter(d => profiles.has(d.via));
+}
+
+export function delegatedDenyPatterns(delegations) {
+  return delegations.flatMap(d => [d.group, `${d.group} *`, `aux4 ${d.group}`, `aux4 ${d.group} *`]);
+}
+
+// Adds glob deny patterns to a policy (mergeDenyPolicy only takes literal
+// failed commands, never globs).
+export function addDenyPatterns(policyJSON, patterns) {
+  const policy = parseJSONLoose(policyJSON, {}) || {};
+  if (!patterns.length) return JSON.stringify(policy);
+  const deny = Array.isArray(policy.deny) ? [...policy.deny] : [];
+  const existing = new Set(deny.flatMap(entry => entry?.executeAux4 || []));
+  const fresh = patterns.filter(p => !existing.has(p));
+  if (fresh.length) deny.push({ executeAux4: fresh });
+  return JSON.stringify({ ...policy, deny });
 }
 
 export function mergeDenyPolicy(policyJSON, failedCommands) {
@@ -979,7 +1023,7 @@ export async function runLoop(options, history, execute, recovery = "") {
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
     const question = attempt === 1
-      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))))
+      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))), (options.delegations || []).map(d => d.note).join("\n"))
       : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);

@@ -6,7 +6,7 @@
 // `aux4 ai agent ask` call against the caller's own history.
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { runLoop, mergeDenyPolicy, capRetryBudget, runAux4 } from "./agent-loop.mjs";
+import { runLoop, mergeDenyPolicy, addDenyPatterns, capRetryBudget, runAux4, activeDelegations, delegatedDenyPatterns } from "./agent-loop.mjs";
 
 // Flags arrive as `--name value` pairs; empty or missing values drop out.
 export function parseArgs(argv) {
@@ -34,9 +34,11 @@ export function buildAskArgs(options, history, question, deniedCommands = [], re
   for (const name of ["bio", "instructions", "skills", "image", "tools", "permissions"]) {
     if (options[name]) args.push(`--${name}`, options[name]);
   }
-  if (options.policy || retry || deniedCommands.length) {
+  const delegated = options.delegatedDeny || [];
+  if (options.policy || retry || deniedCommands.length || delegated.length) {
     const base = options.policy || "{}";
-    args.push("--policy", mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands));
+    const withDenials = mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands);
+    args.push("--policy", addDenyPatterns(withDenials, delegated));
   }
   args.push("--history", history, "--question", question);
   return args;
@@ -44,6 +46,8 @@ export function buildAskArgs(options, history, question, deniedCommands = [], re
 
 export async function main(argv) {
   const options = parseArgs(argv);
+  options.delegations = activeDelegations();
+  options.delegatedDeny = delegatedDenyPatterns(options.delegations);
   const history = options.history;
   const execute = (question, h, deniedCommands, retry = false) =>
     runAux4(buildAskArgs(options, h, question, deniedCommands, retry)).stdout.trim();
