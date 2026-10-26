@@ -12,6 +12,8 @@ export const RETRY_BUDGET = 2;
 // How much of each tool result the verifier sees, and in total.
 const RESULT_LIMIT = 800;
 const RESULTS_TOTAL_LIMIT = 4000;
+// How much of each tool result is kept to check where entered values came from.
+const SOURCE_LIMIT = 50000;
 const FAILURE_CLASSES = ["wrong_tool", "wrong_parameters", "tool_error", "incomplete", "misread_facts", "blocked"];
 
 export function runAux4(args, { allowFailure = false, timeout = 0 } = {}) {
@@ -258,6 +260,7 @@ export function extractAttemptLog(historyFile) {
         failed,
         declined: result ? isDeclinedResult(resultContent) : false,
         result: resultText.slice(0, RESULT_LIMIT),
+        source: resultText.slice(0, SOURCE_LIMIT),
         resultSummary: resultText.slice(0, 300)
       });
     }
@@ -562,6 +565,60 @@ export function readVerdict(text) {
   return Array.isArray(loose?.results) ? loose : salvageVerdict(text);
 }
 
+// --- Provenance -----------------------------------------------------------
+
+// Values the agent put into a form or a message: every `--field "Label=value"`
+// of a call (the confirmation flag is a decision, not a value).
+export function enteredValues(command) {
+  const out = [];
+  const re = /--field\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))/g;
+  let m;
+  while ((m = re.exec(String(command || ""))) !== null) {
+    const raw = m[1] ?? m[2] ?? m[3] ?? "";
+    const i = raw.indexOf("=");
+    if (i <= 0) continue;
+    const label = raw.slice(0, i).trim();
+    const value = raw.slice(i + 1).trim();
+    if (!value || /^confirm$/i.test(label) || /^<.*>$/.test(value)) continue;
+    out.push({ label, value });
+  }
+  return out;
+}
+
+function tokens(text) {
+  return String(text || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+// A value is sourced when every word and number in it appears in the request or
+// in a result the agent had already received -- "1990-03-14" from "14/03/1990"
+// is; a "12345" that appears nowhere is not. Made-up values are the one thing
+// the verifier cannot judge from the answer, so the harness checks them itself.
+export function unsourcedValues(attempts, request = "") {
+  const seen = new Set(tokens(request));
+  const found = [];
+  for (const attempt of attempts) {
+    for (const { label, value } of enteredValues(attempt.command)) {
+      const missing = tokens(value).filter(t => !seen.has(t));
+      if (missing.length) found.push({ label, value, command: attempt.command });
+    }
+    for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
+  }
+  return found;
+}
+
+export const PROVENANCE_CRITERION = "every value entered or sent came from the request or a tool result";
+
+export function applyProvenance(verdict, attempts, request = "") {
+  const unsourced = unsourcedValues(attempts, request);
+  if (!unsourced.length) return verdict;
+  const evidence = unsourced.map(u => `"${u.label}" = "${u.value}" appears neither in the request nor in any tool result before it was used`).join("; ");
+  return {
+    ...verdict,
+    overall: "fail",
+    criteria: [...verdict.criteria, { criterion: PROVENANCE_CRITERION, status: "fail", evidence: `${evidence}. A value that cannot be found must not be made up: say it is missing.` }]
+  };
+}
+
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
   const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
   const readBack = readBackCandidates(attempts);
@@ -621,7 +678,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   // When nothing can re-read the state (only the action's own result shows
   // it), the verifier's judgement from the recorded results stands.
   const observed = verifyHistory && !noReadPossible ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria) : verdict;
-  return { ...observed, checks: checks.map(c => c.command) };
+  return { ...applyProvenance(observed, attempts, options.request), checks: checks.map(c => c.command) };
 }
 
 export function verdictLogPath(historyFile) {

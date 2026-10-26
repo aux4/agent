@@ -9,6 +9,9 @@ import {
   WORKING_RULES,
   findCommands,
   lookupQueries,
+  enteredValues,
+  unsourcedValues,
+  applyProvenance,
   activeDelegations,
   delegatedDenyPatterns,
   addDenyPatterns,
@@ -748,4 +751,40 @@ test("the execute question carries the delegation note", () => {
 test("working rules forbid making up a value and submitting without it", () => {
   assert.match(WORKING_RULES, /Never make up a value/);
   assert.match(WORKING_RULES, /If a required value cannot be found, do not submit or send/);
+});
+
+test("enteredValues reads --field values and skips the confirmation and placeholders", () => {
+  const cmd = `agent browser run --session 'a0' --goal 'g' --field 'Full name=Jamie Fox' --field "Email=jamie@example.com" --field 'Employee id=<value>' --field 'confirm=yes'`;
+  assert.deepEqual(enteredValues(cmd), [{ label: "Full name", value: "Jamie Fox" }, { label: "Email", value: "jamie@example.com" }]);
+});
+
+test("a value that appears in no tool result and not in the request is flagged as made up", () => {
+  const request = "Register for membership at http://127.0.0.1:7400/membership for Jamie Fox, jamie@example.com. Use the employee id on file.";
+  const attempts = [
+    { command: "kb search Jamie Fox employee id", source: "No documents have been indexed yet." },
+    { command: "agent browser run --session 'a0' --goal 'g' --field 'Full name=Jamie Fox' --field 'Email=jamie@example.com' --field 'Employee id=12345'", source: "{}" }
+  ];
+  assert.deepEqual(unsourcedValues(attempts, request).map(u => u.value), ["12345"]);
+  const verdict = applyProvenance({ overall: "pass", criteria: [{ criterion: "registered", status: "pass", evidence: "" }] }, attempts, request);
+  assert.equal(verdict.overall, "fail");
+  assert.match(verdict.criteria.at(-1).evidence, /"Employee id" = "12345" appears neither in the request nor in any tool result/);
+});
+
+test("values reformatted from the request or read from an earlier result count as sourced", () => {
+  const request = "Fill out the contact form for Priya Shah, date of birth 14/03/1990.";
+  const attempts = [
+    { command: "google gmail get --messageId m1", source: "Your shipping confirmation code is QZ-58213." },
+    { command: "agent browser run --field 'Full name=Priya Shah' --field 'Date of birth=1990-03-14' --field 'Code=QZ-58213'", source: "" }
+  ];
+  assert.deepEqual(unsourcedValues(attempts, request), []);
+  const v = { overall: "pass", criteria: [] };
+  assert.equal(applyProvenance(v, attempts, request), v);
+});
+
+test("a value only counts as sourced from results received BEFORE it was used", () => {
+  const attempts = [
+    { command: "agent browser run --field 'Code=QZ-1'", source: "" },
+    { command: "google gmail get --messageId m1", source: "code QZ-1" }
+  ];
+  assert.equal(unsourcedValues(attempts, "save the form").length, 1);
 });
