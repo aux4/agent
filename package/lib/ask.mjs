@@ -34,7 +34,7 @@ export function buildAskArgs(options, history, question, deniedCommands = [], re
   for (const name of ["bio", "instructions", "skills", "image", "tools", "permissions"]) {
     if (options[name]) args.push(`--${name}`, options[name]);
   }
-  const delegated = options.delegatedDeny || [];
+  const delegated = [...(options.delegatedDeny || []), ...(options.gateDeny || [])];
   if (options.policy || retry || deniedCommands.length || delegated.length) {
     const base = options.policy || "{}";
     const withDenials = mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands);

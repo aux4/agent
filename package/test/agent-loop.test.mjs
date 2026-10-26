@@ -788,3 +788,47 @@ test("a value only counts as sourced from results received BEFORE it was used", 
   ];
   assert.equal(unsourcedValues(attempts, "save the form").length, 1);
 });
+
+function heldRound(fields) {
+  return JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: `agent browser run --session 's1' --goal 'register' ${fields}` } }] } },
+    { role: "tool", tool_call_id: "c1", content: "{\"status\":\"needs-input\",\"reason\":\"Register cannot be undone\"}" },
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "c2", name: "executeAux4", args: { command: "agent browser run --session 's1' --goal 'register' --field 'confirm=yes'" } }] } },
+    { role: "tool", tool_call_id: "c2", content: "⛔ policy denied_action: policy denies executeAux4 \"agent browser run --session 's1' --goal 'register' --field 'confirm=yes'\". Choose another approach." }
+  ] });
+}
+
+test("a held confirmation whose values all have a source is released: the next round runs it with the gate open", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions(), request: "Register Jamie Fox, jamie@example.com, employee id E-77." };
+    const seen = [];
+    const outcome = await runLoop(options, history, (question, h) => {
+      seen.push({ question, gate: [...(options.gateDeny || [])] });
+      if (seen.length === 1) fs.writeFileSync(h, heldRound("--field 'Full name=Jamie Fox' --field 'Employee id=E-77'"));
+      return seen.length === 1 ? "waiting for the confirmation" : "registered";
+    });
+    assert.deepEqual(seen[0].gate, ["*confirm=yes*"]);
+    assert.match(seen[1].question, /Run the confirmation now, exactly as before: agent browser run --session 's1' --goal 'register' --field 'confirm=yes'/);
+    assert.deepEqual(seen[1].gate, []);
+    assert.equal(outcome.stopped, "pass");
+  });
+});
+
+test("a held confirmation with a made-up value is never released", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions(), request: "Register Jamie Fox, jamie@example.com. Use the employee id on file." };
+    const seen = [];
+    await runLoop(options, history, (question, h) => {
+      seen.push({ question, gate: [...(options.gateDeny || [])] });
+      if (seen.length === 1) fs.writeFileSync(h, heldRound("--field 'Full name=Jamie Fox' --field 'Employee id=12345'"));
+      return "done";
+    });
+    assert.match(seen[1].question, /The confirmation was NOT run/);
+    assert.match(seen[1].question, /"Employee id" = "12345"/);
+    assert.ok(seen.every(s => s.gate.includes("*confirm=yes*")), "the gate never opens");
+  });
+});

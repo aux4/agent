@@ -606,6 +606,43 @@ export function unsourcedValues(attempts, request = "") {
   return found;
 }
 
+// --- Confirmation gate ---------------------------------------------------
+// Anything that cannot be undone goes through a confirmation call (agent/browser
+// stops before it and offers `--field 'confirm=yes'`). The harness cannot see a
+// call while a round runs, so it holds every confirmation for one round: the
+// confirmation is denied, the harness checks where every entered value came
+// from, and only then lets the agent run it -- a made-up value never reaches
+// the page.
+export const CONFIRM_PATTERN = "*confirm=yes*";
+export const CONFIRM_NOTE = "Anything that cannot be undone is confirmed in two steps: when you run a confirmation (confirm=yes), it is held while the values you entered are checked, and then you are told to run it again. Do not try another way around it.";
+
+export function heldConfirmation(attempts) {
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const a = attempts[i];
+    if (/confirm=yes/.test(a.command || "") && /policy denie|denied_action/i.test(a.result || "")) return { index: i, command: a.command };
+  }
+  return null;
+}
+
+export function composeConfirmQuestion(command) {
+  const call = String(command || "").replace(/^executeAux4\s*/, "");
+  return [
+    "The values you entered were checked: each one comes from the request or from a tool result.",
+    `Run the confirmation now, exactly as before: ${call}`,
+    "Then report what it did."
+  ].join("\n");
+}
+
+export function composeNotConfirmedQuestion(unsourced) {
+  const lines = unsourced.map(u => `- "${u.label}" = "${u.value}" appears neither in the request nor in any tool result`);
+  return [
+    "The confirmation was NOT run, because these values did not come from anywhere:",
+    ...lines,
+    "",
+    "Never make up a value. If you can find the real value with the tools, use it. Otherwise do not submit: reply saying exactly which value is missing."
+  ].join("\n");
+}
+
 export const PROVENANCE_CRITERION = "every value entered or sent came from the request or a tool result";
 
 export function applyProvenance(verdict, attempts, request = "") {
@@ -1063,6 +1100,9 @@ export async function runLoop(options, history, execute, recovery = "") {
   let lastVerdict = null;
   let pushedPastBlocked = false;
   let lookFirst = false;
+  let confirmOpen = false;
+  let commitGranted = false;
+  let nextQuestion = "";
   const priorCommands = new Set();
   const done = (stopped, attempt, note = "") => {
     metrics.stopped = stopped;
@@ -1080,8 +1120,9 @@ export async function runLoop(options, history, execute, recovery = "") {
   };
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
-    const question = attempt === 1
-      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))), (options.delegations || []).map(d => d.note).join("\n"))
+    const notes = [...(options.delegations || []).map(d => d.note), CONFIRM_NOTE].join("\n");
+    const question = nextQuestion ? nextQuestion : attempt === 1
+      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))), notes)
       : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
@@ -1090,6 +1131,11 @@ export async function runLoop(options, history, execute, recovery = "") {
     const messagesBefore = readMessages(history).length;
     const usageBefore = readTokenUsage(history);
     const executeStart = Date.now();
+    nextQuestion = "";
+    // The gate opens for one round only: a later irreversible step is held again.
+    const gateOpen = confirmOpen;
+    confirmOpen = false;
+    options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN];
     lastContent = execute(question, history, deniedCommands, attempt > 1);
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
@@ -1119,6 +1165,24 @@ export async function runLoop(options, history, execute, recovery = "") {
     // The requester declined to confirm an action in this attempt: asking
     // again would only repeat the question, so report and stop.
     if (attempts.slice(before).some(a => a.declined)) return done("declined", attempt);
+
+    // A confirmation held this round: check the entered values before it may run.
+    const held = gateOpen ? null : heldConfirmation(attempts);
+    if (held && held.index >= before) {
+      const unsourced = unsourcedValues(attempts.slice(0, held.index + 1), options.request);
+      round.confirmation = { command: held.command, unsourced: unsourced.map(u => `${u.label}=${u.value}`) };
+      if (!unsourced.length) {
+        confirmOpen = true;
+        deniedCommands = deniedCommands.filter(c => !/confirm=yes/.test(c));
+        nextQuestion = composeConfirmQuestion(held.command);
+        // The commit round is the second half of one action, not a retry.
+        if (!commitGranted) { commitGranted = true; attempt--; }
+        continue;
+      }
+      nextQuestion = composeNotConfirmedQuestion(unsourced);
+      if (attempt > RETRY_BUDGET) { lastVerdict = applyProvenance({ overall: "fail", criteria: [] }, attempts, options.request); return done("budget", attempt, incompleteNote(lastVerdict)); }
+      continue;
+    }
 
     const verifyStart = Date.now();
     lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt));
