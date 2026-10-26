@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 import {
   parseJSONLoose,
@@ -52,7 +53,10 @@ import {
   metricsPath,
   readVerdict,
   verdictLogPath,
-  RETRY_BUDGET
+  RETRY_BUDGET,
+  runReadBack,
+  isNoChangeCriterion,
+  unverifiableOnlyAfterChange
 } from "../lib/agent-loop.mjs";
 
 function tmpFile(name, content) {
@@ -624,18 +628,21 @@ else if (command.includes("loop-verify.md")) {
   const seen = payload.currentState ? payload.currentState.result : "";
   process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: seen.includes("empty") ? "pass" : "fail", evidence: seen })) }));
 }
+// The harness's own read-back shells out to "\${AUX4_BIN} <bare command>" --
+// the same bare form the executeAux4 tool recorded, with no "aux4" prefix.
+else if (command === "item list") process.stdout.write("item list empty");
 `);
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
   await withAux4Bin(fake, async () => {
     const outcome = await runLoop(baseOptions(), history, (q, h) => {
       fs.writeFileSync(h, JSON.stringify({ messages: [
-        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "echo item list empty" } }] } },
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "item list" } }] } },
         { role: "tool", tool_call_id: "c1", content: "item list empty" }
       ] }));
       return "removed it";
     });
     assert.equal(outcome.stopped, "pass");
-    assert.deepEqual(outcome.verdict.checks, ["echo item list empty"]);
+    assert.deepEqual(outcome.verdict.checks, ["item list"]);
   });
 });
 
@@ -855,3 +862,131 @@ test("a placeholder copied verbatim is never a sourced value, even when its word
   ];
   assert.deepEqual(unsourcedValues(attempts, request).map(u => `${u.label}=${u.value}`), ["Full name=<value>", "Message=<value>"]);
 });
+
+// --- HARN-034: the harness's own read-back actually runs ---------------------
+
+test("runReadBack prepends the aux4 binary -- the recorded command is bare, with no 'aux4' of its own (HARN-034)", () => {
+  // The attempt log stores the executeAux4 tool's own argument, which never
+  // includes a leading "aux4" (aux4/ai-agent's own docs: "without the aux4
+  // prefix"). Shelling that bare string out directly, as the code did before
+  // this fix, tries to run a program literally named "google" or "agent" and
+  // always fails, which is why checks.length was 0 on every round that relied
+  // on it (calendar-cancel, products-cheapest-match, reply-decline-conflict).
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+if (args.join(" ") === "google calendar events list --query x") process.stdout.write("still there");
+`);
+  const prior = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = fake;
+  try {
+    const result = runReadBack('google calendar events list --query x');
+    assert.equal(result.ok, true);
+    assert.equal(result.output, "still there");
+  } finally {
+    if (prior === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = prior;
+  }
+});
+
+test("runReadBack fails when the bare command is run without the binary in front of it (the bug this fixes)", () => {
+  // Demonstrates the failure mode directly: a shell has no program named
+  // "google", so running the bare recorded command verbatim always errors.
+  const result = spawnSyncBare("google calendar events list --query x");
+  assert.notEqual(result.status, 0);
+});
+
+test("isNoChangeCriterion recognizes an absence-of-change criterion by its own wording, not by any task's exact phrase (HARN-034)", () => {
+  assert.equal(isNoChangeCriterion("no changes were made to the site at http://x/products"), true);
+  assert.equal(isNoChangeCriterion("nothing was submitted on the form"), true);
+  assert.equal(isNoChangeCriterion("the request was completed without modifying the record"), true);
+  assert.equal(isNoChangeCriterion("the Budget review meeting is deleted from the calendar"), false);
+  assert.equal(isNoChangeCriterion("a reply is sent to the unread email"), false);
+});
+
+test("requireOwnObservation passes a no-change state criterion deterministically when no change-verb command ran (products-cheapest-match)", () => {
+  const verdict = { overall: "pass", criteria: [
+    { criterion: "no changes were made to the site at http://x/products", status: "pass", evidence: "the action was a find, not a change" }
+  ] };
+  const attempts = [{ command: "agent browser find --url http://x/products \"cheapest headphone\"", failed: false }];
+  const out = requireOwnObservation(verdict, [], ["no changes were made to the site at http://x/products"], attempts);
+  assert.equal(out.overall, "pass");
+  assert.equal(out.criteria[0].status, "pass");
+  assert.match(out.criteria[0].evidence, /no action that could change anything was run/);
+});
+
+test("requireOwnObservation still downgrades a no-change criterion when a change-verb command actually ran", () => {
+  const verdict = { overall: "pass", criteria: [
+    { criterion: "no changes were made to the record", status: "pass", evidence: "looks fine" }
+  ] };
+  const attempts = [{ command: "aux4 crm update --id 1 --field x", failed: false }];
+  const out = requireOwnObservation(verdict, [], ["no changes were made to the record"], attempts);
+  assert.equal(out.criteria[0].status, "unverifiable");
+});
+
+test("unverifiableOnlyAfterChange is true only when nothing failed, something remains unverifiable, and a change already succeeded (reply-decline-conflict)", () => {
+  const change = [{ command: "google gmail send --to a --threadId t --body b", failed: false }];
+  const noChangeYet = [{ command: "google gmail list --unread", failed: false }];
+  const unverifiableAfterSend = { overall: "fail", criteria: [
+    { criterion: "the calendar is checked", status: "unverifiable" },
+    { criterion: "a reply is sent", status: "unverifiable" },
+    { criterion: "answer criterion", status: "pass" }
+  ] };
+  const realFailure = { overall: "fail", criteria: [
+    { criterion: "the meeting is moved to 16:00", status: "fail" },
+    { criterion: "answer criterion", status: "pass" }
+  ] };
+  assert.equal(unverifiableOnlyAfterChange(unverifiableAfterSend, change), true);
+  // calendar-reschedule: a real, actionable failure must still retry.
+  assert.equal(unverifiableOnlyAfterChange(realFailure, change), false);
+  // Nothing has changed yet: a retry can still do something new.
+  assert.equal(unverifiableOnlyAfterChange(unverifiableAfterSend, noChangeYet), false);
+  // Already passing: no reason to stop early via this rule.
+  assert.equal(unverifiableOnlyAfterChange({ overall: "pass", criteria: [] }, change), false);
+});
+
+test("the fixed read-back lets calendar-cancel pass on the first round instead of retrying on a downgrade (HARN-034)", async () => {
+  // Reproduces the calendar-cancel journey: a successful read, then a
+  // successful delete, in one round. Before the fix, runReadBack's missing
+  // "aux4" prefix meant checks.length was always 0, so both state criteria
+  // were downgraded to unverifiable and a second, redundant round followed.
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) {
+  process.stdout.write(JSON.stringify({
+    goal: "g",
+    doneCriteria: [
+      { text: "the meeting is cancelled on the calendar", kind: "state" },
+      { text: "the meeting is deleted from the calendar", kind: "state" }
+    ],
+    steps: []
+  }));
+} else if (command.includes("loop-verify.md")) {
+  const q = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(q.slice(q.indexOf("{")));
+  const seen = payload.currentState ? payload.currentState.result : "";
+  const gone = seen.includes('"items":[]');
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: gone ? "pass" : "fail", evidence: seen })) }));
+} else if (command === "calendar events list --query budget") {
+  process.stdout.write('{"items":[]}');
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions(), history, (q, h) => {
+      fs.writeFileSync(h, JSON.stringify({ messages: [
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "calendar events list --query budget" } }] } },
+        { role: "tool", tool_call_id: "c1", content: '{"items":[{"id":"evt-1"}]}' },
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "c2", name: "executeAux4", args: { command: "calendar events delete --eventId evt-1" } }] } },
+        { role: "tool", tool_call_id: "c2", content: "" }
+      ] }));
+      return "cancelled and deleted it";
+    });
+    assert.equal(outcome.stopped, "pass");
+    assert.equal(outcome.attempts, 1);
+    assert.deepEqual(outcome.verdict.checks, ["calendar events list --query budget"]);
+  });
+});
+
+function spawnSyncBare(command) {
+  return spawnSync("sh", ["-c", command], { encoding: "utf8" });
+}

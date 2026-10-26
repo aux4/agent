@@ -421,18 +421,36 @@ export const HONESTY_CRITERION = "The final answer accurately describes what the
 // claim actually agrees with the facts -- so it is checked on its own.
 export const AGREEMENT_CRITERION = "Anything sent, submitted, or saved states only facts that agree with what the tool results showed";
 
+// A state criterion phrased as an absence of change ("nothing was changed",
+// "no changes were made to the site", "without modifying the record") needs
+// no fresh observation to decide: if no change-verb command ran at all, there
+// is nothing that could have changed, and that fact is already in the attempt
+// log the harness holds, not something only a later look could show.
+const NO_CHANGE_CRITERION = /\bno\b[^.]*\b(change|changes|modification|modifications)\b|\bnothing\b[^.]*\b(changed|modified|submitted|sent|updated|created|deleted|removed|written|saved)\b|\bwithout\b[^.]*\b(chang\w*|modif\w*|submit\w*|send\w*|sent|updat\w*|creat\w*|delet\w*)\b/i;
+
+export function isNoChangeCriterion(criterion) {
+  return NO_CHANGE_CRITERION.test(String(criterion || ""));
+}
+
 // A pass on a state criterion only counts when it rests on the verifier's own
 // observation made after the work. If the verify run made no checks of its
-// own, those passes become unverifiable. Answer criteria are judged from the
+// own, those passes become unverifiable -- except a no-change criterion when
+// no change-verb command ran: the attempt log alone already proves it, so it
+// is marked pass instead of unverifiable. Answer criteria are judged from the
 // recorded tool results, so they need no new check.
-export function requireOwnObservation(verdict, checks, stateCriteria = null) {
+export function requireOwnObservation(verdict, checks, stateCriteria = null, attempts = []) {
   if (checks.length > 0) return verdict;
   const isState = c => stateCriteria === null || stateCriteria.includes(c.criterion);
+  const noChangeRan = !attempts.some(a => !a.failed && CHANGE_VERB.test(a.command));
   // Earlier results show the state before or during the work, so neither a
   // pass nor a fail on a state criterion can rest on them alone.
-  const criteria = verdict.criteria.map(c => c.status !== "unverifiable" && isState(c)
-    ? { ...c, status: "unverifiable", evidence: `not observed by the verifier itself (it made no checks of its own)${c.evidence ? `; it said: ${c.evidence}` : ""}` }
-    : c);
+  const criteria = verdict.criteria.map(c => {
+    if (c.status === "unverifiable" || !isState(c)) return c;
+    if (noChangeRan && isNoChangeCriterion(c.criterion)) {
+      return { ...c, status: "pass", evidence: "no action that could change anything was run in this attempt, so nothing changed" };
+    }
+    return { ...c, status: "unverifiable", evidence: `not observed by the verifier itself (it made no checks of its own)${c.evidence ? `; it said: ${c.evidence}` : ""}` };
+  });
   return { overall: criteria.every(c => c.status === "pass") ? "pass" : "fail", criteria };
 }
 
@@ -537,8 +555,16 @@ export function pickFromReply(reply, reads) {
   return Number.isInteger(n) && n >= 1 && n <= reads.length ? reads[n - 1] : "";
 }
 
+// The command stored on an attempt is the executeAux4 tool's own argument --
+// "google calendar events list ..." -- never prefixed with the binary name,
+// because that is also how policy deny patterns match it (see mergeDenyPolicy).
+// Running it directly with the shell therefore needs the same binary runAux4
+// uses (respecting AUX4_BIN) put back in front of it; without that, the shell
+// tries to run "google" (or "agent", ...) itself and fails every time, which
+// is why the read-back silently never produced a check.
 export function runReadBack(command) {
-  const result = spawnSync("sh", ["-c", command], { encoding: "utf8", env: process.env, timeout: 60000, maxBuffer: 5 * 1024 * 1024 });
+  const bin = process.env.AUX4_BIN || "aux4";
+  const result = spawnSync("sh", ["-c", `${bin} ${command}`], { encoding: "utf8", env: process.env, timeout: 60000, maxBuffer: 5 * 1024 * 1024 });
   const out = `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
   return { ok: result.status === 0, output: out.slice(0, RESULT_LIMIT * 2) };
 }
@@ -808,7 +834,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   // own-observation rule only applies when there is one.
   // When nothing can re-read the state (only the action's own result shows
   // it), the verifier's judgement from the recorded results stands.
-  const observed = verifyHistory && !noReadPossible ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria) : verdict;
+  const observed = verifyHistory && !noReadPossible ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria, attempts) : verdict;
   return { ...applyProvenance(observed, attempts, options.request), checks: checks.map(c => c.command) };
 }
 
@@ -1083,6 +1109,20 @@ export function mergeDenyPolicy(policyJSON, failedCommands) {
 
 // --- Stop conditions --------------------------------------------------------
 
+// A round where nothing actually failed -- every unmet criterion is only
+// unverifiable -- after a change already succeeded has nothing left for a
+// retry to add: the one thing a retry could do to satisfy a state criterion
+// is run the change again, and a change that already succeeded is denied on
+// every later round (see deniedCommands below). Spending a whole execute
+// round to repeat a denied call and land on the same verdict teaches nothing,
+// so the loop stops here instead, with the best answer it already has.
+export function unverifiableOnlyAfterChange(verdict, attempts) {
+  if (!verdict || verdict.overall === "pass") return false;
+  if (verdict.criteria.some(c => c.status === "fail")) return false;
+  if (!verdict.criteria.some(c => c.status === "unverifiable")) return false;
+  return attempts.some(a => !a.failed && CHANGE_VERB.test(a.command));
+}
+
 export function sameFailureShape(a, b) {
   if (!a || !b) return false;
   const key = verdict => verdict.criteria
@@ -1290,6 +1330,10 @@ export async function runLoop(options, history, execute, recovery = "") {
     saveVerdict(history, attempt, attempts, { ...lastVerdict, ms: { execute: verifyStart - executeStart, verify: Date.now() - verifyStart } });
 
     if (lastVerdict.overall === "pass") return done("pass", attempt);
+    // Nothing failed, only what the harness could not observe remains, and
+    // the change behind it already ran -- a retry would just repeat a denied
+    // command for the same inconclusive verdict. Stop now with the best answer.
+    if (unverifiableOnlyAfterChange(lastVerdict, attempts)) return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
     // No progress means the verdict did not move AND the round tried nothing
     // new; a retry that tried a different action is still making progress.
     const triedSomethingNew = attempts.slice(before).some(a => !priorCommands.has(a.command));

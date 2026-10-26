@@ -1,5 +1,26 @@
 # Release notes
 
+## 4.1.2
+
+- Fixed the harness's own read-back (`runReadBack`, `lib/agent-loop.mjs`): the command recorded
+  on an attempt is the executeAux4 tool's own bare argument -- never prefixed with `aux4` (that
+  is also how policy deny patterns match it). Shelling that string out directly, as before,
+  tried to run a program literally named e.g. `google` or `agent` and always failed silently, so
+  `checks.length` was 0 on every round that depended on it -- across the whole dojo suite, every
+  state criterion on a round with a change was downgraded to unverifiable and retried for no
+  reason (26% of all input tokens went to retries; about half were false alarms this explains).
+  `runReadBack` now runs `${AUX4_BIN or "aux4"} <command>`, matching `runAux4`.
+- `requireOwnObservation` no longer downgrades a state criterion that asserts an absence of
+  change ("no changes were made...", "nothing was submitted...", "without modifying...": see
+  the new `isNoChangeCriterion`) when no change-verb command ran in the attempt -- the attempt
+  log already proves it, with no need for a fresh look. A criterion with the same wording after
+  a real change-verb command ran is still downgraded as before.
+- `runLoop` gained a new stop condition, `unverifiableOnlyAfterChange`: when a round's unmet
+  criteria are only unverifiable (nothing actually failed) and a change-verb command already
+  succeeded this run, a retry could only repeat that command -- which is denied on every later
+  round anyway -- for the same inconclusive verdict. The loop now stops there with the best
+  answer it has (`stopped: "unverifiable-only"`) instead of spending a full execute round on it.
+
 ## 4.1.1
 
 - The plan step could drop part of a request that named what a reply or message had to say
