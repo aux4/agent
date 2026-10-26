@@ -1,5 +1,15 @@
 # Release notes
 
+## 4.1.3
+
+- The check-values before-hook now passes the request, history and field values with `value()`
+  instead of raw `"${__request}"`/`'${field}'`. aux4 runs a step as one shell line, so raw
+  interpolation broke on ordinary text (a `(` in the history gave `Syntax error: "(" unexpected`
+  and blocked a legitimate confirmation) and let request or tool-result text reach the shell.
+  `value()` quotes each value, so nothing in it is ever interpreted.
+- The harness read-back runs aux4 directly with no shell, splitting the command the same way
+  executeAux4 does.
+
 ## 4.1.2
 
 - Fixed the harness's own read-back (`runReadBack`, `lib/agent-loop.mjs`): the command recorded

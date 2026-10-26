@@ -793,7 +793,7 @@ export function checkValuesHooksFile(packageDir) {
         command: "agent:browser/run",
         params: { field: "confirm=yes" },
         before: [
-          `node ${packageDir}/lib/check-values.mjs --request "\${__request}" --history "\${__history}" --fieldsJson '\${field}'`
+          `node ${packageDir}/lib/check-values.mjs --request value(__request) --history value(__history) --fieldsJson value(field)`
         ]
       }
     ]

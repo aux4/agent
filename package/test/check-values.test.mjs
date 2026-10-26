@@ -160,3 +160,9 @@ test("checkValues: a sourced value passes in one round", () => {
   assert.deepEqual(unsourced, []);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("the check-values hook passes the request and history with value(), never raw ${...} in a shell line", () => {
+  const step = checkValuesHooksFile("/pkg").hooks[0].before[0];
+  assert.match(step, /--request value\(__request\) --history value\(__history\) --fieldsJson value\(field\)/);
+  assert.doesNotMatch(step, /\$\{/);
+});
