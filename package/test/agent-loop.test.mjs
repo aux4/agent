@@ -755,7 +755,7 @@ test("working rules forbid making up a value and submitting without it", () => {
 
 test("enteredValues reads --field values and skips the confirmation and placeholders", () => {
   const cmd = `agent browser run --session 'a0' --goal 'g' --field 'Full name=Jamie Fox' --field "Email=jamie@example.com" --field 'Employee id=<value>' --field 'confirm=yes'`;
-  assert.deepEqual(enteredValues(cmd), [{ label: "Full name", value: "Jamie Fox" }, { label: "Email", value: "jamie@example.com" }]);
+  assert.deepEqual(enteredValues(cmd), [{ label: "Full name", value: "Jamie Fox" }, { label: "Email", value: "jamie@example.com" }, { label: "Employee id", value: "<value>" }]);
 });
 
 test("a value that appears in no tool result and not in the request is flagged as made up", () => {
@@ -831,4 +831,13 @@ test("a held confirmation with a made-up value is never released", async () => {
     assert.match(seen[1].question, /"Employee id" = "12345"/);
     assert.ok(seen.every(s => s.gate.includes("*confirm=yes*")), "the gate never opens");
   });
+});
+
+test("a placeholder copied verbatim is never a sourced value, even when its word appears in the output that offered it", () => {
+  const request = "Fill out the contact form for Priya Shah.";
+  const attempts = [
+    { command: "agent browser run --url http://x/contact --goal 'g'", source: 'needs-input: pass --field "Full name=<value>" --field "Message=<value>"' },
+    { command: "agent browser run --session 's' --goal 'g' --field 'Full name=<value>' --field 'Message=<value>' --field 'confirm=yes'", source: "" }
+  ];
+  assert.deepEqual(unsourcedValues(attempts, request).map(u => `${u.label}=${u.value}`), ["Full name=<value>", "Message=<value>"]);
 });

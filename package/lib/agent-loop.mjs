@@ -568,7 +568,7 @@ export function readVerdict(text) {
 // --- Provenance -----------------------------------------------------------
 
 // A raw "Label=value" string becomes an entered value unless it's the
-// confirmation decision itself or an unfilled placeholder -- shared by
+// confirmation decision itself -- shared by
 // enteredValues (parsed from a full command string) and unsourcedFieldValues
 // (parsed from the pending call's own --field values, before it has run).
 function parseFieldEntry(raw) {
@@ -577,8 +577,15 @@ function parseFieldEntry(raw) {
   if (i <= 0) return null;
   const label = text.slice(0, i).trim();
   const value = text.slice(i + 1).trim();
-  if (!value || /^confirm$/i.test(label) || /^<.*>$/.test(value)) return null;
+  if (!value || /^confirm$/i.test(label)) return null;
   return { label, value };
+}
+
+// A template placeholder copied verbatim ("<value>", "<Label>") is never a real
+// value. It is rejected by its shape: its words ("value") usually appear in the
+// very output that offered the template, so a word check alone would pass it.
+export function isPlaceholder(value) {
+  return /^<[^<>]*>$/.test(String(value || "").trim());
 }
 
 // Values the agent put into a form or a message: every `--field "Label=value"`
@@ -609,7 +616,7 @@ export function unsourcedValues(attempts, request = "") {
   for (const attempt of attempts) {
     for (const { label, value } of enteredValues(attempt.command)) {
       const missing = tokens(value).filter(t => !seen.has(t));
-      if (missing.length) found.push({ label, value, command: attempt.command });
+      if (isPlaceholder(value) || missing.length) found.push({ label, value, command: attempt.command });
     }
     for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
   }
@@ -630,7 +637,7 @@ export function unsourcedFieldValues(fields, attempts, request = "") {
     const entry = parseFieldEntry(raw);
     if (!entry) continue;
     const missing = tokens(entry.value).filter(t => !seen.has(t));
-    if (missing.length) found.push(entry);
+    if (isPlaceholder(entry.value) || missing.length) found.push(entry);
   }
   return found;
 }

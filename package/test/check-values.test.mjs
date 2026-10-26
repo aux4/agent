@@ -37,9 +37,9 @@ test("unsourcedFieldValues passes a value sourced from an earlier tool result", 
   assert.deepEqual(found, []);
 });
 
-test("unsourcedFieldValues skips the confirmation flag and placeholders", () => {
+test("unsourcedFieldValues skips the confirmation flag but flags a placeholder copied verbatim", () => {
   const found = unsourcedFieldValues(["confirm=yes", "note=<optional>"], [], "");
-  assert.deepEqual(found, []);
+  assert.deepEqual(found, [{ label: "note", value: "<optional>" }]);
 });
 
 // --- checkValuesHooksFile / writeCheckValuesHooksFile ----------------------
