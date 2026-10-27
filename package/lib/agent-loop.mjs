@@ -234,6 +234,18 @@ function describeCall(name, args) {
 // the next command) are never pushed out by one long field ahead of them.
 // Long strings are shortened, short lists kept, nested data summarized.
 // Non-JSON results are just cut.
+// A list of objects keeps each item's own short identifying text (a row's text,
+// a name, a title...), so a list of results never collapses to just a count.
+const ITEM_TEXT_KEYS = ["text", "name", "title", "label", "summary", "subject", "snippet", "id"];
+function summarizeItems(items, short) {
+  const texts = items.slice(0, 12).map(item => {
+    if (!item || typeof item !== "object") return short(item, 120);
+    const key = ITEM_TEXT_KEYS.find(k => typeof item[k] === "string" || typeof item[k] === "number");
+    return key ? short(String(item[key]), 160) : `{${Object.keys(item).length} fields}`;
+  });
+  return texts.concat(items.length > 12 ? [`… ${items.length - 12} more`] : []);
+}
+
 export function compactResult(text, limit = RESULT_LIMIT) {
   const raw = String(text ?? "");
   if (raw.length <= limit) return raw;
@@ -247,7 +259,7 @@ export function compactResult(text, limit = RESULT_LIMIT) {
     else if (Array.isArray(v)) {
       out[key] = v.every(x => x === null || typeof x !== "object")
         ? v.slice(0, 12).map(x => short(x, 120)).concat(v.length > 12 ? [`… ${v.length - 12} more`] : [])
-        : `[${v.length} items]`;
+        : summarizeItems(v, short);
     } else {
       const keys = Object.keys(v);
       out[key] = keys.length <= 8 && keys.every(k => v[k] === null || typeof v[k] !== "object")
@@ -1421,6 +1433,9 @@ export async function runLoop(options, history, execute, recovery = "") {
   let deniedCommands = [];
   let priorVerdict = null;
   let lastContent = "";
+  // The last non-empty answer: a round that ends in an empty reply must not
+  // erase an earlier round's answer from the final output.
+  let lastAnswer = "";
   let lastVerdict = null;
   let pushedPastBlocked = false;
   let lookFirst = false;
@@ -1434,7 +1449,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       .reduce((acc, s) => addStats(acc, s), {});
     saveMetrics(history, metrics);
     return {
-      content: appendStatusNote(stripFailureClass(lastContent), note),
+      content: appendStatusNote(stripFailureClass(String(lastContent || "").trim() ? lastContent : lastAnswer), note),
       plan,
       verdict: lastVerdict,
       stopped,
@@ -1466,6 +1481,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     confirmOpen = false;
     options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN];
     lastContent = execute(question, history, deniedCommands, attempt > 1);
+    if (String(lastContent || "").trim()) lastAnswer = lastContent;
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
     // One push per round, straight away (cheaper than verifying a round that
@@ -1477,6 +1493,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       if (push) {
         if (push === DO_IT_NOW) dropTrailingTextCall(history);
         lastContent = execute(push, history, deniedCommands);
+        if (String(lastContent || "").trim()) lastAnswer = lastContent;
         round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: push === DO_IT_NOW ? "do-it-now" : "look-first" };
       }
     }
@@ -1486,6 +1503,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       if (!offered) return done("blocked", attempt);
       pushedPastBlocked = true;
       lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands);
+      if (String(lastContent || "").trim()) lastAnswer = lastContent;
       round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart };
       if (isBlocked(lastContent)) return done("blocked", attempt);
     }
@@ -1525,6 +1543,7 @@ export async function runLoop(options, history, execute, recovery = "") {
         const priorGate = options.gateDeny;
         options.gateDeny = [];
         lastContent = execute(composeRunNextQuestion(pending), history, deniedCommands);
+        if (String(lastContent || "").trim()) lastAnswer = lastContent;
         options.gateDeny = priorGate;
         round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "confirm-requested" };
         round.confirmation = { command: pending.command, next: pending.next, requested: true };

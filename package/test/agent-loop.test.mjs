@@ -1170,7 +1170,17 @@ test("compactResult keeps a JSON result's short fields when one long field comes
   const c = compactResult(big, 800);
   assert.ok(c.length <= 800);
   assert.match(c, /"stepsText":\["select \\"Plan\\" = Pro","fill \\"Comments\\" = Hi"\]/);
-  assert.match(c, /"steps":"\[2 items\]"/);
+  assert.match(c, /"steps":\["{1 fields}","{1 fields}"\]/);
   assert.match(c, /confirm=yes/);
   assert.equal(compactResult("plain text " + "y".repeat(900), 800).length, 800);
+});
+
+test("compactResult keeps each result row's text from a list of objects", () => {
+  const big = JSON.stringify({ question: "q", answered: false, reason: "r".repeat(1500), matches: [
+    { text: "EchoBuds Lite | headphones | yes | 39.99", score: 0.95, location: { selector: "#a" } },
+    { text: "BassWave X | headphones | yes | 27.75", score: 0.95, location: { selector: "#b" } }
+  ] });
+  const c = compactResult(big, 800);
+  assert.match(c, /BassWave X \| headphones \| yes \| 27\.75/);
+  assert.match(c, /EchoBuds Lite/);
 });

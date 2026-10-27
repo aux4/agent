@@ -1,5 +1,13 @@
 # Release notes
 
+## 4.1.8
+
+- Compacting a JSON tool result keeps each item's own short text (text, name, title, id...)
+  from a list of objects instead of collapsing the list to "[n items]". 4.1.5 hid a page
+  search's matching rows from the verifier, which then failed a correct answer and talked the
+  agent out of it.
+- The final output falls back to the last non-empty answer when the last round's reply is empty.
+
 ## 4.1.7
 
 - A yes/no answer (yes, no, true, false, on, off, checked) for a choice the request itself names
