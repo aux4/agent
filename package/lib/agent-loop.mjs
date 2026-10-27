@@ -991,8 +991,11 @@ export function requestSelectsItem(request) {
   const text = String(request || "").replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, " ");
   if (/\d/.test(text)) return true;
   if (/"[^"]+"|'[^']{2,}'/.test(text)) return true;
-  const words = text.split(/(?<=[.!?])\s+|\s+/).filter(Boolean);
-  return words.some((w, i) => i > 0 && /^[A-Z][a-z]+/.test(w) && !/[.!?]$/.test(words[i - 1]));
+  // A capitalised word counts as a name unless it starts a line or a sentence.
+  return text.split(/\n+/).some(line => {
+    const words = line.replace(/^[\s\-*\d.)]+/, "").split(/\s+/).filter(Boolean);
+    return words.some((w, i) => i > 0 && /^[A-Z][a-z]+/.test(w) && !/[.!?:]$/.test(words[i - 1]));
+  });
 }
 
 export function composeRunNextQuestion(pending) {
@@ -1039,14 +1042,14 @@ export function resetHooksSupportCacheForTests() {
   hooksSupportCache = null;
 }
 
-export function checkValuesHooksFile(packageDir) {
+export function checkValuesHooksFile(packageDir, requestFile = "") {
   return {
     hooks: [
       {
         tool: "executeAux4",
         command: "agent:browser/run",
         before: [
-          `node ${packageDir}/lib/check-values.mjs --request value(__request) --history value(__history) --fieldsJson value(field) --dataJson value(data)`
+          `node ${packageDir}/lib/check-values.mjs --request value(__request) --history value(__history) --fieldsJson value(field) --dataJson value(data)${requestFile ? ` --requestFile ${requestFile}` : ""}`
         ]
       }
     ]
@@ -1055,9 +1058,13 @@ export function checkValuesHooksFile(packageDir) {
 
 // Written once per run next to the history file so a hook hitting the same
 // agent:browser/run call always reads the live history -- never a stale copy.
-export function writeCheckValuesHooksFile(packageDir, history) {
+// The hook judges against the person's ORIGINAL request (written next to the history),
+// not the round's composed question, which also carries the harness's own criteria text.
+export function writeCheckValuesHooksFile(packageDir, history, request = "") {
   const file = `${history}.hooks.json`;
-  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir), null, 2));
+  const requestFile = `${history}.request.txt`;
+  fs.writeFileSync(requestFile, String(request || ""));
+  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile), null, 2));
   return file;
 }
 

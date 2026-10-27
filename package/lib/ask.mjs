@@ -61,7 +61,7 @@ export async function main(argv) {
   // instead of the two-round confirmation gate -- same check, one round.
   options.hooksSupported = detectAiAgentHooksSupport();
   if (options.hooksSupported) {
-    options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history);
+    options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, options.request);
   }
   const execute = (question, h, deniedCommands, retry = false) =>
     runAux4(buildAskArgs(options, h, question, deniedCommands, retry)).stdout.trim();

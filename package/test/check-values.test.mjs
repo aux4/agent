@@ -235,3 +235,12 @@ test("a confirmation for a specific item the request does not pick out is blocke
   assert.deepEqual(checkValues({ request: "Please cancel order A-17", history, fieldsJson: "confirm=yes" }), []);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("the hook reads the person's original request from the file next to the history", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
+  const history = path.join(tmp, "h.json");
+  const hooksFile = writeCheckValuesHooksFile("/pkg", history, "Please cancel my order");
+  assert.equal(fs.readFileSync(`${history}.request.txt`, "utf8"), "Please cancel my order");
+  assert.match(JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[0].before[0], /--requestFile .*h\.json\.request\.txt$/);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 // `aux4 agent check-values` -- a `before` hook target for aux4/ai-agent's
 // tool-call hooks (HARN-030). Wired in agent-loop.mjs's checkValuesHooksFile
 // as a `before` hook on every `agent:browser/run` call: a made-up value is
@@ -90,6 +91,10 @@ export function confirmationWasAsked(attempts) {
 
 async function main(argv) {
   const options = parseArgs(argv);
+  // The person's original request, when the harness wrote it next to the history.
+  if (options.requestFile) {
+    try { options.request = fs.readFileSync(options.requestFile, "utf8"); } catch {}
+  }
   const unsourced = checkValues(options);
   const unclear = unsourced.find(u => u.unclear);
   if (unclear) {

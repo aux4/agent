@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.17
+
+- The value-check hook judges against the person's original request (written next to the history and passed as `--requestFile`), not the round's composed question, whose added criteria text ("- The order is cancelled") made an unspecific request look specific. A capitalised word at the start of a line no longer counts as a name.
+
 ## 4.1.16
 
 - The value-check hook applies the "which item" rule to every confirmation, not only the harness's own same-round one: a confirm for an action that names one specific item the request does not pick out ("Cancel order ord-0001" for "please cancel my order") is blocked with a message to ask the person. Before, the agent itself confirmed it and an arbitrary order was cancelled.
