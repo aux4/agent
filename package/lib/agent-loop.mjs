@@ -812,10 +812,28 @@ export function pendingConfirmation(attempts) {
 // Anything short of that -- the request says nothing about it, or only an
 // unrelated action -- is NOT clearly requested: an ambiguous case must ask,
 // exactly like one that is clearly beyond the request, never run on a guess.
+// A rough English stem so "book"/"booking"/"booked", "confirm"/"confirming",
+// "save"/"saving", "cancel"/"cancelled" compare equal.
+export function wordStem(word) {
+  let w = String(word || "").toLowerCase();
+  for (const suffix of ["ing", "ed", "es", "s"]) {
+    if (w.length - suffix.length >= 3 && w.endsWith(suffix)) { w = w.slice(0, -suffix.length); break; }
+  }
+  if (w.length > 3 && w[w.length - 1] === w[w.length - 2]) w = w.slice(0, -1);
+  if (w.length > 3 && w.endsWith("e")) w = w.slice(0, -1);
+  return w;
+}
+
+// Strict: the action's own verb -- the label's first word, or any change verb in
+// it -- must appear (in any form) in the request itself. A shared noun ("order")
+// never counts, so "Delete order" is not requested by "find the order".
 export function isClearlyRequestedAction(label, request) {
-  const verb = (String(label || "").match(CHANGE_VERB) || [])[0];
-  if (!verb) return false;
-  return new RegExp(`\\b${verb}\\b`, "i").test(String(request || ""));
+  const labelWords = String(label || "").match(/[A-Za-z]+/g) || [];
+  if (labelWords.length === 0) return false;
+  const verbs = new Set([wordStem(labelWords[0])]);
+  for (const w of labelWords) if (CHANGE_VERB.test(w)) verbs.add(wordStem(w));
+  const requestStems = new Set((String(request || "").match(/[A-Za-z]+/g) || []).map(wordStem));
+  return [...verbs].some(v => v.length >= 3 && requestStems.has(v));
 }
 
 export function composeRunNextQuestion(pending) {

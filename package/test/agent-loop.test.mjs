@@ -1146,3 +1146,12 @@ test("commandWords splits like executeAux4, with no shell expansion", () => {
   assert.deepEqual(commandWords(`a "say \\"hi\\"" b\\ c`), ["a", 'say "hi"', "b c"]);
   assert.equal(commandWords(`a "open`), null);
 });
+
+test("isClearlyRequestedAction matches the action's verb in any form, never a shared noun", () => {
+  assert.equal(isClearlyRequestedAction("Confirm booking", "Book a trip to Tokyo. Review your choices before confirming."), true);
+  assert.equal(isClearlyRequestedAction("Register", "Register for membership at the site"), true);
+  assert.equal(isClearlyRequestedAction("Cancel order ord-0023", "Find the order from Elena and cancel it."), true);
+  assert.equal(isClearlyRequestedAction("Delete order", "Find the order from Elena"), false);
+  assert.equal(isClearlyRequestedAction("Send", "Draft a reply to Devon"), false);
+  assert.equal(isClearlyRequestedAction("Submit", "Fill out the contact form"), false);
+});
