@@ -762,7 +762,7 @@ test("command lookup searches the plan's short lookFor phrases, else the request
 test("a capability with a goal-level agent is delegated: its low-level commands are denied to the calling agent", () => {
   const delegations = activeDelegations(new Set(["main", "agent", "agent:browser", "browser"]));
   assert.equal(delegations.length, 1);
-  assert.match(delegations[0].note, /aux4 agent browser run/);
+  assert.match(delegations[0].note, /executeAux4 with command "agent browser run --url/);
   assert.deepEqual(delegatedDenyPatterns(delegations), ["browser", "browser *", "aux4 browser", "aux4 browser *"]);
   assert.deepEqual(activeDelegations(new Set(["main", "browser"])), []);
   const policy = JSON.parse(addDenyPatterns('{"budget":{"calls":60},"deny":[{"executeAux4":["x"]}]}', ["browser *"]));
