@@ -221,3 +221,17 @@ test("a URL's host and port are not a source for a value; its path still is", ()
   assert.deepEqual(unsourcedFieldValues(["Employee id=7400"], attempts, request), [{ label: "Employee id", value: "7400" }]);
   assert.deepEqual(unsourcedFieldValues(["Order=ord-0042"], [], "cancel http://shop.example/orders/ord-0042"), []);
 });
+
+test("a confirmation for a specific item the request does not pick out is blocked (ask the person)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
+  const history = path.join(tmp, "history.json");
+  writeHistory(history, [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://shop.test/orders --goal 'Cancel the order.'" } }] } },
+    { role: "tool", tool_call_id: "c0", content: "{\"status\":\"needs-input\",\"reason\":\"\\\"Cancel order A-17\\\" cannot be undone, so the run stopped before it.\",\"next\":\"aux4 agent browser run --session 's1' --goal 'Cancel the order.' --field 'confirm=yes'\"}" }
+  ]);
+  const vague = checkValues({ request: "Please cancel my order", history, fieldsJson: "confirm=yes" });
+  assert.equal(vague.length, 1);
+  assert.equal(vague[0].unclear, true);
+  assert.deepEqual(checkValues({ request: "Please cancel order A-17", history, fieldsJson: "confirm=yes" }), []);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});

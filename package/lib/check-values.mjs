@@ -12,7 +12,7 @@
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, isClearlyRequestedAction } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -59,7 +59,24 @@ export function checkValues({ request = "", history = "", fieldsJson = "", dataJ
         .flatMap(a => enteredValues(a.command).map(e => `${e.label}=${e.value}`))
     : [];
   if (confirming && !confirmationWasAsked(attempts)) return [{ label: "confirm", value: "yes", notAsked: true }];
+  // The action waiting for this confirmation must be one the request clearly asks for:
+  // when it names one specific item the request does not pick out, ask the person.
+  if (confirming) {
+    const pending = lastPendingConfirmation(attempts);
+    if (pending && pending.label && !isClearlyRequestedAction(pending.label, request)) {
+      return [{ label: "confirm", value: "yes", unclear: true, action: pending.label }];
+    }
+  }
   return unsourcedFieldValues([...new Set([...fields, ...earlier])], attempts, request);
+}
+
+// The most recent tool result still waiting for a confirmation, if any.
+function lastPendingConfirmation(attempts) {
+  for (let i = attempts.length; i > 0; i--) {
+    const p = pendingConfirmation(attempts.slice(0, i));
+    if (p) return p;
+  }
+  return null;
 }
 
 // A confirmation only answers a tool that stopped and asked for one this round:
@@ -74,6 +91,11 @@ export function confirmationWasAsked(attempts) {
 async function main(argv) {
   const options = parseArgs(argv);
   const unsourced = checkValues(options);
+  const unclear = unsourced.find(u => u.unclear);
+  if (unclear) {
+    process.stdout.write(`This call was NOT run: the request does not say which item "${unclear.action}" should act on, and it cannot be undone. Do not confirm it. Stop and ask the person to confirm exactly this action (name it), and wait for their answer.\n`);
+    process.exit(1);
+  }
   if (unsourced.some(u => u.notAsked)) {
     process.stdout.write("This call was NOT run: it confirms an action, but nothing has asked for a confirmation yet. Run it without confirm; when the tool stops and asks, confirm exactly what it names, only if the request asks for it.\n");
     process.exit(1);

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.16
+
+- The value-check hook applies the "which item" rule to every confirmation, not only the harness's own same-round one: a confirm for an action that names one specific item the request does not pick out ("Cancel order ord-0001" for "please cancel my order") is blocked with a message to ask the person. Before, the agent itself confirmed it and an arbitrary order was cancelled.
+
 ## 4.1.15
 
 - Same-round confirmation of an action that names one specific item ("Cancel order ord-0001", "Delete #123") now needs the request to say which item: that identifier, or details that pick one out (a number, a quoted value, a name; URLs do not count). "Cancel my order" names none, so the agent asks. Before, the verb and object type alone were enough and an arbitrary order was cancelled.
