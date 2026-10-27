@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.13
+
+- The delegation note (also the reason a blocked `browser ...` command gives) is written as the exact executeAux4 calls to make (`agent browser run --url <page> --goal "..."`, `agent browser find --url <page> --question "..."`). A small model read "use aux4 agent browser find" and dropped the "aux4 agent" part.
+
 ## 4.1.12
 
 - A delegated command's block (e.g. `browser open` when agent/browser is installed) now tells the agent what to use instead (the delegation note, sent as the policy entry's reason; aux4/ai-agent >= 1.3.7). Before, a small model told only "Choose another approach" gave up on the page.

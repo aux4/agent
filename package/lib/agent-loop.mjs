@@ -1326,7 +1326,7 @@ export const DELEGATIONS = [
   {
     via: "agent:browser",
     group: "browser",
-    note: "Web pages: use aux4 agent browser run / aux4 agent browser find -- they open, read, fill and click for you. Direct aux4 browser commands are not available to you."
+    note: "Web pages: call executeAux4 with command \"agent browser run --url <page> --goal \\\"<what to do>\\\"\" to do something, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to find something out -- they open, read, fill and click for you. Commands that start with \"browser\" are not available to you."
   }
 ];
 
