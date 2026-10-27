@@ -1350,13 +1350,15 @@ export function delegatedDenyPatterns(delegations) {
 
 // Adds glob deny patterns to a policy (mergeDenyPolicy only takes literal
 // failed commands, never globs).
-export function addDenyPatterns(policyJSON, patterns) {
+// `reason`, when given, is told to the agent when one of these patterns denies a call
+// (aux4/ai-agent >= 1.3.7), so a blocked command says what to use instead.
+export function addDenyPatterns(policyJSON, patterns, reason = "") {
   const policy = parseJSONLoose(policyJSON, {}) || {};
   if (!patterns.length) return JSON.stringify(policy);
   const deny = Array.isArray(policy.deny) ? [...policy.deny] : [];
   const existing = new Set(deny.flatMap(entry => entry?.executeAux4 || []));
   const fresh = patterns.filter(p => !existing.has(p));
-  if (fresh.length) deny.push({ executeAux4: fresh });
+  if (fresh.length) deny.push(reason ? { executeAux4: fresh, reason } : { executeAux4: fresh });
   return JSON.stringify({ ...policy, deny });
 }
 

@@ -1192,3 +1192,9 @@ test("isClearlyRequestedAction asks when the verb matches but the action's objec
   assert.equal(isClearlyRequestedAction("Submit survey", "fill out the survey and submit it"), true);
   assert.equal(isClearlyRequestedAction("Save", "save the address"), true);
 });
+
+test("addDenyPatterns attaches a reason so a blocked command says what to use instead", () => {
+  const policy = JSON.parse(addDenyPatterns("{}", ["browser", "browser *"], "use agent browser run instead"));
+  assert.deepEqual(policy.deny, [{ executeAux4: ["browser", "browser *"], reason: "use agent browser run instead" }]);
+  assert.deepEqual(JSON.parse(addDenyPatterns("{}", ["x *"])).deny, [{ executeAux4: ["x *"] }]);
+});

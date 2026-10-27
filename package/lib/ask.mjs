@@ -37,11 +37,14 @@ export function buildAskArgs(options, history, question, deniedCommands = [], re
   for (const name of ["bio", "instructions", "skills", "image", "tools", "permissions"]) {
     if (options[name]) args.push(`--${name}`, options[name]);
   }
-  const delegated = [...(options.delegatedDeny || []), ...(options.gateDeny || [])];
-  if (options.policy || retry || deniedCommands.length || delegated.length) {
+  const delegated = options.delegatedDeny || [];
+  const gate = options.gateDeny || [];
+  if (options.policy || retry || deniedCommands.length || delegated.length || gate.length) {
     const base = options.policy || "{}";
     const withDenials = mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands);
-    args.push("--policy", addDenyPatterns(withDenials, delegated));
+    // A delegated command's block says what to use instead.
+    const reason = (options.delegations || []).map(d => d.note).filter(Boolean).join(" ");
+    args.push("--policy", addDenyPatterns(addDenyPatterns(withDenials, delegated, reason), gate));
   }
   if (options.hooksFile) args.push("--hooks", options.hooksFile);
   args.push("--history", history, "--question", question);

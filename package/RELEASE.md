@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.12
+
+- A delegated command's block (e.g. `browser open` when agent/browser is installed) now tells the agent what to use instead (the delegation note, sent as the policy entry's reason; aux4/ai-agent >= 1.3.7). Before, a small model told only "Choose another approach" gave up on the page.
+
 ## 4.1.11
 
 - A URL's scheme, host and port are no longer a source for an entered value: they are an
