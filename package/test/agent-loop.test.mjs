@@ -61,6 +61,7 @@ import {
   pendingConfirmation,
   pendingConfirmationLabel,
   isClearlyRequestedAction,
+  compactResult,
   composeRunNextQuestion,
   composeNeedsConfirmationAnswer
 } from "../lib/agent-loop.mjs";
@@ -1162,4 +1163,14 @@ test("pendingConfirmation finds the confirm command inside a truncated result's 
   assert.ok(p);
   assert.equal(p.label, "Save");
   assert.equal(p.next, "aux4 agent browser run --session '7bb12572' --goal 'Fill out the form.' --field 'confirm=yes'");
+});
+
+test("compactResult keeps a JSON result's short fields when one long field comes first", () => {
+  const big = JSON.stringify({ status: "needs-input", reason: "x".repeat(2000), stepsText: ["select \"Plan\" = Pro", "fill \"Comments\" = Hi"], steps: [{ a: 1 }, { b: 2 }], next: "aux4 agent browser run --field 'confirm=yes'" });
+  const c = compactResult(big, 800);
+  assert.ok(c.length <= 800);
+  assert.match(c, /"stepsText":\["select \\"Plan\\" = Pro","fill \\"Comments\\" = Hi"\]/);
+  assert.match(c, /"steps":"\[2 items\]"/);
+  assert.match(c, /confirm=yes/);
+  assert.equal(compactResult("plain text " + "y".repeat(900), 800).length, 800);
 });

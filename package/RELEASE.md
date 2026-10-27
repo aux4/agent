@@ -1,5 +1,14 @@
 # Release notes
 
+## 4.1.5
+
+- A tool's JSON result is compacted field by field (long strings shortened, short lists kept,
+  nested data summarized) before it is cut to the 800-character size the attempt log and the
+  verifier see. Before, one long field near the top (a confirmation message) pushed out the
+  fields that mattered, such as the steps a browser run took, so the verifier could not see
+  them, called the work unverifiable and retried, which resubmitted a form.
+- The pending-confirmation check reads the attempt's full stored result, not the compacted one.
+
 ## 4.1.4
 
 - Same-round confirmation for a clearly requested irreversible action (HARN-035). When a tool

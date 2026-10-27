@@ -229,6 +229,35 @@ function describeCall(name, args) {
 // model actually took: which tool, with what parameters, and whether it
 // errored. Defensive against any shape it does not recognize -- a message it
 // cannot parse is simply skipped rather than crashing the loop.
+// A tool's JSON result is compacted field by field before it is cut to size,
+// so its short, telling fields (status, the steps it took, what it changed,
+// the next command) are never pushed out by one long field ahead of them.
+// Long strings are shortened, short lists kept, nested data summarized.
+// Non-JSON results are just cut.
+export function compactResult(text, limit = RESULT_LIMIT) {
+  const raw = String(text ?? "");
+  if (raw.length <= limit) return raw;
+  let value;
+  try { value = JSON.parse(raw); } catch { return raw.slice(0, limit); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return raw.slice(0, limit);
+  const short = (v, n) => (typeof v === "string" && v.length > n ? `${v.slice(0, n)}…` : v);
+  const out = {};
+  for (const [key, v] of Object.entries(value)) {
+    if (v === null || typeof v !== "object") out[key] = short(v, 240);
+    else if (Array.isArray(v)) {
+      out[key] = v.every(x => x === null || typeof x !== "object")
+        ? v.slice(0, 12).map(x => short(x, 120)).concat(v.length > 12 ? [`… ${v.length - 12} more`] : [])
+        : `[${v.length} items]`;
+    } else {
+      const keys = Object.keys(v);
+      out[key] = keys.length <= 8 && keys.every(k => v[k] === null || typeof v[k] !== "object")
+        ? Object.fromEntries(keys.map(k => [k, short(v[k], 120)]))
+        : `{${keys.length} fields}`;
+    }
+  }
+  return JSON.stringify(out).slice(0, limit);
+}
+
 export function extractAttemptLog(historyFile) {
   if (!historyFile || !fs.existsSync(historyFile)) return [];
   let data;
@@ -259,7 +288,7 @@ export function extractAttemptLog(historyFile) {
         command: describeCall(call.name, call.args),
         failed,
         declined: result ? isDeclinedResult(resultContent) : false,
-        result: resultText.slice(0, RESULT_LIMIT),
+        result: compactResult(resultText, RESULT_LIMIT),
         source: resultText.slice(0, SOURCE_LIMIT),
         resultSummary: resultText.slice(0, 300)
       });
@@ -796,7 +825,7 @@ export function pendingConfirmation(attempts) {
   if (!last || last.failed) return null;
   // The attempt itself already IS the confirmation call -- nothing pending.
   if (/confirm=yes/i.test(last.command || "")) return null;
-  const text = String(last.result ?? last.resultSummary ?? "");
+  const text = String(last.source ?? last.result ?? last.resultSummary ?? "");
   if (!/needs-input/i.test(text) || !/confirm=yes/i.test(text)) return null;
   const parsed = parseJSONLoose(text, null);
   const rawNext = parsed && typeof parsed === "object" && typeof parsed.next === "string" ? parsed.next : jsonFieldLoose(text, "next");
