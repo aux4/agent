@@ -1,5 +1,12 @@
 # Release notes
 
+## 4.1.11
+
+- A URL's scheme, host and port are no longer a source for an entered value: they are an
+  address, not data the person gave. Before, an employee id "7400" was accepted because the
+  page address was `http://127.0.0.1:7400/...`, and a registration was submitted with it. A
+  URL's path and query still count (an id in a link is real data).
+
 ## 4.1.10
 
 - A confirmation only answers a tool that stopped and asked for one: a call that confirms

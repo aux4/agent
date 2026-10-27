@@ -755,19 +755,30 @@ function tokens(text) {
   return String(text || "").toLowerCase().match(/[a-z0-9]+/g) || [];
 }
 
+// Words a value may be sourced from. A URL's scheme, host and port ("http",
+// "127", "0", "1", "7400" in http://127.0.0.1:7400/x) are an address, never data
+// the person gave, so they are left out; its path and query stay (an id in a link
+// is real data).
+export function sourceTokens(text) {
+  const withoutAuthorities = String(text || "")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\/\s"'<>)\]]+/gi, " ")
+    .replace(/\b(?:localhost|\d{1,3}(?:\.\d{1,3}){3}):\d{2,5}\b/gi, " ");
+  return tokens(withoutAuthorities);
+}
+
 // A value is sourced when every word and number in it appears in the request or
 // in a result the agent had already received -- "1990-03-14" from "14/03/1990"
 // is; a "12345" that appears nowhere is not. Made-up values are the one thing
 // the verifier cannot judge from the answer, so the harness checks them itself.
 export function unsourcedValues(attempts, request = "") {
-  const seen = new Set(tokens(request));
+  const seen = new Set(sourceTokens(request));
   const found = [];
   for (const attempt of attempts) {
     for (const { label, value } of enteredValues(attempt.command)) {
       const missing = tokens(value).filter(t => !seen.has(t));
       if (isPlaceholder(value) || missing.length) found.push({ label, value, command: attempt.command });
     }
-    for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
+    for (const t of sourceTokens(attempt.source ?? attempt.result)) seen.add(t);
   }
   return found;
 }
@@ -777,7 +788,7 @@ export function unsourcedValues(attempts, request = "") {
 // confirmation's own --field values against everything that happened before
 // it, instead of re-parsing it out of a finished attempt log.
 export function unsourcedFieldValues(fields, attempts, request = "") {
-  const requestTokens = new Set(tokens(request));
+  const requestTokens = new Set(sourceTokens(request));
   const found = [];
   for (const raw of fields || []) {
     const entry = parseFieldEntry(raw);
@@ -787,7 +798,7 @@ export function unsourcedFieldValues(fields, attempts, request = "") {
     const seen = new Set(requestTokens);
     for (const attempt of attempts) {
       if (enteredValues(attempt.command).some(e => e.value === entry.value)) continue;
-      for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
+      for (const t of sourceTokens(attempt.source ?? attempt.result)) seen.add(t);
     }
     // A yes/no answer for a choice the request itself names ("subscribe to
     // product updates" -> Subscribe=yes) states the request's intent, not data.

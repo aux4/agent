@@ -213,3 +213,11 @@ test("a confirmation is only valid after a tool asked for one", () => {
   const pre = checkValues({ request: "cancel the order", history: "/nonexistent", fieldsJson: "", dataJson: '{"confirm":"yes"}' });
   assert.deepEqual(pre, [{ label: "confirm", value: "yes", notAsked: true }]);
 });
+
+test("a URL's host and port are not a source for a value; its path still is", () => {
+  const request = "Register for membership at http://127.0.0.1:7400/membership for Jamie Fox. Use the employee id on file.";
+  assert.deepEqual(unsourcedFieldValues(["Employee id=7400"], [], request), [{ label: "Employee id", value: "7400" }]);
+  const attempts = [{ command: "agent browser find --url x", source: '{"finalUrl":"http://127.0.0.1:7400/membership"}' }];
+  assert.deepEqual(unsourcedFieldValues(["Employee id=7400"], attempts, request), [{ label: "Employee id", value: "7400" }]);
+  assert.deepEqual(unsourcedFieldValues(["Order=ord-0042"], [], "cancel http://shop.example/orders/ord-0042"), []);
+});
