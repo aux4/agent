@@ -241,6 +241,6 @@ test("the hook reads the person's original request from the file next to the his
   const history = path.join(tmp, "h.json");
   const hooksFile = writeCheckValuesHooksFile("/pkg", history, "Please cancel my order");
   assert.equal(fs.readFileSync(`${history}.request.txt`, "utf8"), "Please cancel my order");
-  assert.match(JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[0].before[0], /--requestFile .*h\.json\.request\.txt$/);
+  assert.match(JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[0].before[0], /--requestFile \/.*h\.json\.request\.txt$/);
   fs.rmSync(tmp, { recursive: true, force: true });
 });

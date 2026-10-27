@@ -1062,7 +1062,8 @@ export function checkValuesHooksFile(packageDir, requestFile = "") {
 // not the round's composed question, which also carries the harness's own criteria text.
 export function writeCheckValuesHooksFile(packageDir, history, request = "") {
   const file = `${history}.hooks.json`;
-  const requestFile = `${history}.request.txt`;
+  // Absolute: hook steps run from a scratch directory, not the agent's own.
+  const requestFile = path.resolve(`${history}.request.txt`);
   fs.writeFileSync(requestFile, String(request || ""));
   fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile), null, 2));
   return file;

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.18
+
+- The original-request file is passed to the hook by absolute path: hook steps run from a scratch directory, so the relative path was never found and the hook fell back to the composed question.
+
 ## 4.1.17
 
 - The value-check hook judges against the person's original request (written next to the history and passed as `--requestFile`), not the round's composed question, whose added criteria text ("- The order is cancelled") made an unspecific request look specific. A capitalised word at the start of a line no longer counts as a name.
