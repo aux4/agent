@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // `aux4 agent check-values` -- a `before` hook target for aux4/ai-agent's
 // tool-call hooks (HARN-030). Wired in agent-loop.mjs's checkValuesHooksFile
-// as a `before` hook on `agent:browser/run` gated on `field` containing
-// "confirm=yes", so it only ever runs against the confirmation call.
+// as a `before` hook on every `agent:browser/run` call: a made-up value is
+// stopped where it is typed, and a confirmation re-checks everything typed before it.
 //
 // Checks the PENDING call's own --field values (passed as --fieldsJson, the
 // hook's ${field} context var -- a JSON array when the call repeated --field,
@@ -12,7 +12,7 @@
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -43,7 +43,14 @@ export function parseFields(raw) {
 export function checkValues({ request = "", history = "", fieldsJson = "" } = {}) {
   const fields = parseFields(fieldsJson);
   const attempts = extractAttemptLog(history);
-  return unsourcedFieldValues(fields, attempts, request);
+  // Confirming commits everything entered so far, not just this call's own
+  // values: check every value an earlier browser call typed in, too.
+  const confirming = fields.some(f => /^\s*confirm\s*=\s*yes\s*$/i.test(String(f)));
+  const earlier = confirming
+    ? attempts.filter(a => !a.failed && /\bagent browser run\b/.test(a.command || ""))
+        .flatMap(a => enteredValues(a.command).map(e => `${e.label}=${e.value}`))
+    : [];
+  return unsourcedFieldValues([...new Set([...fields, ...earlier])], attempts, request);
 }
 
 async function main(argv) {

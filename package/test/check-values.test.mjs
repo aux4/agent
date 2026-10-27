@@ -44,13 +44,13 @@ test("unsourcedFieldValues skips the confirmation flag but flags a placeholder c
 
 // --- checkValuesHooksFile / writeCheckValuesHooksFile ----------------------
 
-test("checkValuesHooksFile targets executeAux4 on agent:browser/run gated on confirm=yes", () => {
+test("checkValuesHooksFile targets executeAux4 on every agent:browser/run call", () => {
   const file = checkValuesHooksFile("/pkg/dir");
   assert.equal(file.hooks.length, 1);
   const hook = file.hooks[0];
   assert.equal(hook.tool, "executeAux4");
   assert.equal(hook.command, "agent:browser/run");
-  assert.deepEqual(hook.params, { field: "confirm=yes" });
+  assert.equal(hook.params, undefined);
   assert.equal(hook.before.length, 1);
   assert.match(hook.before[0], /check-values\.mjs/);
   assert.match(hook.before[0], /\/pkg\/dir/);
@@ -165,4 +165,14 @@ test("the check-values hook passes the request and history with value(), never r
   const step = checkValuesHooksFile("/pkg").hooks[0].before[0];
   assert.match(step, /--request value\(__request\) --history value\(__history\) --fieldsJson value\(field\)/);
   assert.doesNotMatch(step, /\$\{/);
+});
+
+test("unsourcedFieldValues: a value echoed back by the call that typed it is not a source", () => {
+  const attempts = [{
+    command: "agent browser run --session 's1' --goal 'Register' --field 'Employee id=12345'",
+    result: '{"status":"needs-input","stepsText":["fill \\"Employee id\\" = 12345"]}',
+    source: '{"status":"needs-input","stepsText":["fill \\"Employee id\\" = 12345"]}'
+  }];
+  const found = unsourcedFieldValues(["Employee id=12345"], attempts, "Register Jamie Fox");
+  assert.deepEqual(found, [{ label: "Employee id", value: "12345" }]);
 });

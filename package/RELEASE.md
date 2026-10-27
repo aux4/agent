@@ -1,5 +1,14 @@
 # Release notes
 
+## 4.1.6
+
+- The made-up-value check now runs on EVERY agent browser call that types values, not only on
+  the confirmation call. Before, a value typed in one call and confirmed in a separate call
+  (`--field 'confirm=yes'` alone) was never checked, and a made-up employee id was submitted.
+- Confirming re-checks every value typed by earlier browser calls.
+- A call that typed a value echoes it back in its own result; that echo no longer counts as the
+  value's source (it made any made-up value look sourced once it had been typed).
+
 ## 4.1.5
 
 - A tool's JSON result is compacted field by field (long strings shortened, short lists kept,

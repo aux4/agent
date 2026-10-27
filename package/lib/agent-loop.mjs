@@ -721,14 +721,18 @@ export function unsourcedValues(attempts, request = "") {
 // confirmation's own --field values against everything that happened before
 // it, instead of re-parsing it out of a finished attempt log.
 export function unsourcedFieldValues(fields, attempts, request = "") {
-  const seen = new Set(tokens(request));
-  for (const attempt of attempts) {
-    for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
-  }
+  const requestTokens = new Set(tokens(request));
   const found = [];
   for (const raw of fields || []) {
     const entry = parseFieldEntry(raw);
     if (!entry) continue;
+    // A call that entered this value echoes it back in its own result; that
+    // echo is not a source (it would make any made-up value look sourced).
+    const seen = new Set(requestTokens);
+    for (const attempt of attempts) {
+      if (enteredValues(attempt.command).some(e => e.value === entry.value)) continue;
+      for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
+    }
     const missing = tokens(entry.value).filter(t => !seen.has(t));
     if (isPlaceholder(entry.value) || missing.length) found.push(entry);
   }
@@ -930,7 +934,6 @@ export function checkValuesHooksFile(packageDir) {
       {
         tool: "executeAux4",
         command: "agent:browser/run",
-        params: { field: "confirm=yes" },
         before: [
           `node ${packageDir}/lib/check-values.mjs --request value(__request) --history value(__history) --fieldsJson value(field)`
         ]
