@@ -973,7 +973,26 @@ export function isClearlyRequestedAction(label, request) {
   if (![...verbs].some(v => v.length >= 3 && requestStems.has(v))) return false;
   const objects = labelWords.map(wordStem)
     .filter(w => w.length >= 3 && !verbs.has(w) && !LABEL_STOPWORDS.has(w));
-  return objects.length === 0 || objects.some(o => requestStems.has(o));
+  if (objects.length > 0 && !objects.some(o => requestStems.has(o))) return false;
+  // The action names one specific item ("Cancel order ord-0001", "Delete #123"): the
+  // request must say which item -- by that identifier, or by details that pick one out
+  // (a number, a quoted value, a name). "Cancel my order" picks none: ask.
+  const ids = (String(label || "").match(/[A-Za-z0-9#][\w#.-]*/g) || []).filter(t => /\d/.test(t));
+  if (ids.length === 0) return true;
+  const reqTokens = new Set((String(request || "").replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, " ").toLowerCase().match(/[a-z0-9#][\w#.-]*/g) || [])
+    .map(t => t.replace(/[.-]+$/, "")));
+  if (ids.some(id => reqTokens.has(id.toLowerCase().replace(/[.-]+$/, "")))) return true;
+  return requestSelectsItem(request);
+}
+
+// Whether a request picks out a specific item by its own details: a number, a quoted
+// value, or a capitalised name -- not counting URLs (a port is not a detail).
+export function requestSelectsItem(request) {
+  const text = String(request || "").replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, " ");
+  if (/\d/.test(text)) return true;
+  if (/"[^"]+"|'[^']{2,}'/.test(text)) return true;
+  const words = text.split(/(?<=[.!?])\s+|\s+/).filter(Boolean);
+  return words.some((w, i) => i > 0 && /^[A-Z][a-z]+/.test(w) && !/[.!?]$/.test(words[i - 1]));
 }
 
 export function composeRunNextQuestion(pending) {

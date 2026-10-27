@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.15
+
+- Same-round confirmation of an action that names one specific item ("Cancel order ord-0001", "Delete #123") now needs the request to say which item: that identifier, or details that pick one out (a number, a quoted value, a name; URLs do not count). "Cancel my order" names none, so the agent asks. Before, the verb and object type alone were enough and an arbitrary order was cancelled.
+
 ## 4.1.14
 
 - A tool call that succeeds but reports its own work unfinished (`"status": "incomplete"`, `needs-input`, `error`, `blocked`, `failed`) no longer counts as finished work, so the retry is not a "only rewrite your answer" round. Before, the agent was told "the work itself is done" after a browser run returned incomplete, and it never retried the work.

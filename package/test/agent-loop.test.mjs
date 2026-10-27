@@ -1188,7 +1188,7 @@ test("compactResult keeps each result row's text from a list of objects", () => 
 test("isClearlyRequestedAction asks when the verb matches but the action's object does not", () => {
   assert.equal(isClearlyRequestedAction("Cancel order #123", "cancel my newsletter subscription"), false);
   assert.equal(isClearlyRequestedAction("Delete account", "delete the draft email"), false);
-  assert.equal(isClearlyRequestedAction("Cancel order ord-1", "find the order from the customer and cancel it"), true);
+  assert.equal(isClearlyRequestedAction("Cancel order ord-1", "find the order from the customer and cancel it"), false);
   assert.equal(isClearlyRequestedAction("Submit survey", "fill out the survey and submit it"), true);
   assert.equal(isClearlyRequestedAction("Save", "save the address"), true);
 });
@@ -1208,4 +1208,12 @@ test("onlyAnswerFailed is false when the tool reported its own work unfinished",
   assert.equal(onlyAnswerFailed(plan, verdict, unfinished), false);
   const finished = [{ command: "agent browser find --url x --question q", failed: false, source: '{"answered": true, "matches": ["A | 9.99"]}' }];
   assert.equal(onlyAnswerFailed(plan, verdict, finished), true);
+});
+
+test("a specific item is only confirmed when the request says which item", () => {
+  assert.equal(isClearlyRequestedAction("Cancel order ord-0001", "Please cancel my order at http://shop.test:7400/orders."), false);
+  assert.equal(isClearlyRequestedAction("Delete address addr-2", "Delete my address at http://shop.test:7400/addresses"), false);
+  assert.equal(isClearlyRequestedAction("Cancel order ord-0023", "Cancel order ord-0023 please"), true);
+  assert.equal(isClearlyRequestedAction("Cancel order ord-0023", "Find the order from Dana Ruiz for $12.40 and cancel it"), true);
+  assert.equal(isClearlyRequestedAction("Delete address addr-2", "Delete the Denver address for Sam Lee"), true);
 });
