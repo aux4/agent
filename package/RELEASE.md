@@ -1,5 +1,14 @@
 # Release notes
 
+## 4.1.10
+
+- A confirmation only answers a tool that stopped and asked for one: a call that confirms
+  (`--field confirm=yes`, or `"confirm": "yes"`/`true` in `--data`) is blocked when no earlier
+  result this round is waiting for a confirmation. Before, a "yes" passed on the first call was
+  used by the browser for every irreversible click in the run (two orders were cancelled).
+- Values passed as `--data` JSON are checked for made-up values exactly like `--field` values,
+  and the no-hooks gate also holds a `--data` confirmation.
+
 ## 4.1.9
 
 - Same-round confirmation is stricter: besides the action's verb, the object the action names

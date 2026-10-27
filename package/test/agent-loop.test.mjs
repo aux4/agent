@@ -837,7 +837,7 @@ test("a held confirmation whose values all have a source is released: the next r
       if (seen.length === 1) fs.writeFileSync(h, heldRound("--field 'Full name=Jamie Fox' --field 'Employee id=E-77'"));
       return seen.length === 1 ? "waiting for the confirmation" : "registered";
     });
-    assert.deepEqual(seen[0].gate, ["*confirm=yes*"]);
+    assert.deepEqual(seen[0].gate, ["*confirm=yes*", "*\"confirm\"*"]);
     assert.match(seen[1].question, /Run the confirmation now, exactly as before: agent browser run --session 's1' --goal 'register' --field 'confirm=yes'/);
     assert.deepEqual(seen[1].gate, []);
     assert.equal(outcome.stopped, "pass");

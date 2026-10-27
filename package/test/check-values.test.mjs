@@ -130,7 +130,10 @@ test("parseFields: JSON array, plain string, and invalid JSON all normalize to a
 test("checkValues: the membership case -- a made-up employee id is blocked", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
   const history = path.join(tmp, "history.json");
-  writeHistory(history, []);
+  writeHistory(history, [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://shop/order --goal 'Submit the order'" } }] } },
+    { role: "tool", tool_call_id: "c0", content: "{\"status\":\"needs-input\",\"next\":\"aux4 agent browser run --session 's1' --goal 'Submit the order' --field 'confirm=yes'\"}" }
+  ]);
 
   const unsourced = checkValues({
     request: "Submit the order",
@@ -147,6 +150,8 @@ test("checkValues: a sourced value passes in one round", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
   const history = path.join(tmp, "history.json");
   writeHistory(history, [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://shop/order --goal 'Submit the order'" } }] } },
+    { role: "tool", tool_call_id: "c0", content: "{\"status\":\"needs-input\",\"next\":\"aux4 agent browser run --session 's1' --goal 'Submit the order' --field 'confirm=yes'\"}" },
     { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "agent directory lookup --name Bob" } }] } },
     { role: "tool", tool_call_id: "c1", content: "Employee id: 90210" }
   ]);
@@ -182,4 +187,29 @@ test("unsourcedFieldValues: yes/no for a choice the request names is intent, not
   assert.deepEqual(unsourcedFieldValues(["Subscribe to product updates=yes"], [], request), []);
   assert.deepEqual(unsourcedFieldValues(["Newsletter opt-in=yes"], [], request), [{ label: "Newsletter opt-in", value: "yes" }]);
   assert.deepEqual(unsourcedFieldValues(["Employee id (found on your badge)=12345"], [], "Register using the employee id on file"), [{ label: "Employee id (found on your badge)", value: "12345" }]);
+});
+
+import { dataEntries, confirmsAction, enteredValues } from "../lib/agent-loop.mjs";
+import { confirmationWasAsked } from "../lib/check-values.mjs";
+
+test("--data JSON values are entered values, checked like --field", () => {
+  assert.deepEqual(dataEntries('{"Employee id":"12345","nested":{"Code":"X-1"}}'), [{ label: "Employee id", value: "12345" }, { label: "nested.Code", value: "X-1" }]);
+  assert.deepEqual(enteredValues(`agent browser run --session 's' --data '{"Size":"Large"}'`), [{ label: "Size", value: "Large" }]);
+  const found = unsourcedFieldValues(dataEntries('{"Employee id":"12345"}').map(e => `${e.label}=${e.value}`), [], "Register using the id on file");
+  assert.equal(found.length, 1);
+});
+
+test("a confirm passed as --data counts as a confirmation", () => {
+  assert.equal(confirmsAction(`agent browser run --url x --goal g --data '{"confirm":"yes"}'`), true);
+  assert.equal(confirmsAction(`agent browser run --url x --goal g --data '{"Confirm":true}'`), true);
+  assert.equal(confirmsAction(`agent browser run --url x --goal g --field 'confirm=yes'`), true);
+  assert.equal(confirmsAction(`agent browser run --url x --goal g --data '{"Size":"Large"}'`), false);
+});
+
+test("a confirmation is only valid after a tool asked for one", () => {
+  assert.equal(confirmationWasAsked([]), false);
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", result: '{"status":"done"}' }]), false);
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", result: `{"status":"needs-input","next":"aux4 agent browser run --session 's' --field 'confirm=yes'"}` }]), true);
+  const pre = checkValues({ request: "cancel the order", history: "/nonexistent", fieldsJson: "", dataJson: '{"confirm":"yes"}' });
+  assert.deepEqual(pre, [{ label: "confirm", value: "yes", notAsked: true }]);
 });

@@ -12,7 +12,7 @@
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -40,22 +40,44 @@ export function parseFields(raw) {
   }
 }
 
-export function checkValues({ request = "", history = "", fieldsJson = "" } = {}) {
-  const fields = parseFields(fieldsJson);
+export function checkValues({ request = "", history = "", fieldsJson = "", dataJson = "" } = {}) {
+  // --data JSON values are checked exactly like --field values.
+  const dataFields = dataEntries(dataJson).map(e => `${e.label}=${e.value}`);
+  const dataConfirms = (() => {
+    try {
+      const v = JSON.parse(dataJson || "");
+      return Boolean(v && typeof v === "object" && Object.entries(v).some(([k, x]) => /^confirm$/i.test(k) && (x === true || /^yes$/i.test(String(x)))));
+    } catch { return false; }
+  })();
+  const fields = [...parseFields(fieldsJson), ...dataFields, ...(dataConfirms ? ["confirm=yes"] : [])];
   const attempts = extractAttemptLog(history);
   // Confirming commits everything entered so far, not just this call's own
   // values: check every value an earlier browser call typed in, too.
-  const confirming = fields.some(f => /^\s*confirm\s*=\s*yes\s*$/i.test(String(f)));
+  const confirming = fields.some(f => /^\s*confirm\s*=\s*(yes|true)\s*$/i.test(String(f)));
   const earlier = confirming
     ? attempts.filter(a => !a.failed && /\bagent browser run\b/.test(a.command || ""))
         .flatMap(a => enteredValues(a.command).map(e => `${e.label}=${e.value}`))
     : [];
+  if (confirming && !confirmationWasAsked(attempts)) return [{ label: "confirm", value: "yes", notAsked: true }];
   return unsourcedFieldValues([...new Set([...fields, ...earlier])], attempts, request);
+}
+
+// A confirmation only answers a tool that stopped and asked for one this round:
+// an earlier result that is still waiting (needs-input) and offers confirm=yes.
+export function confirmationWasAsked(attempts) {
+  return attempts.some(a => {
+    const text = String(a.source ?? a.result ?? "");
+    return !a.failed && /needs-input/i.test(text) && /confirm=yes/i.test(text);
+  });
 }
 
 async function main(argv) {
   const options = parseArgs(argv);
   const unsourced = checkValues(options);
+  if (unsourced.some(u => u.notAsked)) {
+    process.stdout.write("This call was NOT run: it confirms an action, but nothing has asked for a confirmation yet. Run it without confirm; when the tool stops and asks, confirm exactly what it names, only if the request asks for it.\n");
+    process.exit(1);
+  }
   if (unsourced.length) {
     process.stdout.write(`${composeNotConfirmedQuestion(unsourced)}\n`);
     process.exit(1);

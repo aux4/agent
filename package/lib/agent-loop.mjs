@@ -704,7 +704,51 @@ export function enteredValues(command) {
     const entry = parseFieldEntry(raw);
     if (entry) out.push(entry);
   }
+  // Values passed as --data JSON are entered values too.
+  const dataRe = /--data\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/g;
+  while ((m = dataRe.exec(String(command || ""))) !== null) {
+    const raw = m[1] ?? (m[2] ? m[2].replace(/\\(["\\])/g, "$1") : "");
+    for (const entry of dataEntries(raw)) out.push(entry);
+  }
   return out;
+}
+
+// The "label=value" form of each scalar in a --data JSON object (nested keys joined
+// with "."). Unparseable data yields nothing; it is the tool's to reject.
+export function dataEntries(raw) {
+  let value;
+  try { value = JSON.parse(String(raw || "")); } catch { return []; }
+  const out = [];
+  const walk = (v, prefix) => {
+    if (v === null || v === undefined) return;
+    if (typeof v === "object") {
+      for (const [k, x] of Object.entries(v)) walk(x, prefix ? `${prefix}.${k}` : k);
+      return;
+    }
+    const entry = parseFieldEntry(`${prefix}=${v}`);
+    if (entry) out.push(entry);
+  };
+  if (value && typeof value === "object") walk(value, "");
+  return out;
+}
+
+// Whether a call confirms something: confirm=yes as a --field, or "confirm": "yes"
+// (any casing, also true) inside --data JSON.
+export function confirmsAction(command) {
+  const text = String(command || "");
+  if (/--field\s+['"]?\s*confirm\s*=\s*yes\b/i.test(text)) return true;
+  const dataRe = /--data\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/g;
+  let m;
+  while ((m = dataRe.exec(text)) !== null) {
+    let value;
+    try { value = JSON.parse(m[1] ?? (m[2] || "").replace(/\\(["\\])/g, "$1")); } catch { continue; }
+    if (value && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) {
+        if (/^confirm$/i.test(k) && (v === true || /^yes$/i.test(String(v)))) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function tokens(text) {
@@ -776,6 +820,8 @@ function labelNamedIn(label, requestTokens) {
 // from, and only then lets the agent run it -- a made-up value never reaches
 // the page.
 export const CONFIRM_PATTERN = "*confirm=yes*";
+// The same confirmation passed as --data JSON ({"confirm":"yes"}).
+export const CONFIRM_DATA_PATTERN = "*\"confirm\"*";
 export const CONFIRM_NOTE = "Anything that cannot be undone is confirmed in two steps: when you run a confirmation (confirm=yes), it is held while the values you entered are checked, and then you are told to run it again. Do not try another way around it.";
 
 export function heldConfirmation(attempts) {
@@ -970,7 +1016,7 @@ export function checkValuesHooksFile(packageDir) {
         tool: "executeAux4",
         command: "agent:browser/run",
         before: [
-          `node ${packageDir}/lib/check-values.mjs --request value(__request) --history value(__history) --fieldsJson value(field)`
+          `node ${packageDir}/lib/check-values.mjs --request value(__request) --history value(__history) --fieldsJson value(field) --dataJson value(data)`
         ]
       }
     ]
@@ -1487,7 +1533,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     // this permission-level gate to do, so it never denies the call.
     const gateOpen = confirmOpen || options.hooksSupported;
     confirmOpen = false;
-    options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN];
+    options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN, CONFIRM_DATA_PATTERN];
     lastContent = execute(question, history, deniedCommands, attempt > 1);
     if (String(lastContent || "").trim()) lastAnswer = lastContent;
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
