@@ -1155,3 +1155,11 @@ test("isClearlyRequestedAction matches the action's verb in any form, never a sh
   assert.equal(isClearlyRequestedAction("Send", "Draft a reply to Devon"), false);
   assert.equal(isClearlyRequestedAction("Submit", "Fill out the contact form"), false);
 });
+
+test("pendingConfirmation finds the confirm command inside a truncated result's reason text", () => {
+  const result = `{\n  "status": "needs-input",\n  "reason": "\\"Save\\" cannot be undone, so the run stopped before it. You are about to run: Save. Next: aux4 agent browser run --session '7bb12572' --goal 'Fill out the form.' --field 'confirm=yes' Only run this once the person has asked.",\n  "finalUrl": "http://x/shipping", "steps": [`;
+  const p = pendingConfirmation([{ command: "agent browser run --url http://x/shipping", result }]);
+  assert.ok(p);
+  assert.equal(p.label, "Save");
+  assert.equal(p.next, "aux4 agent browser run --session '7bb12572' --goal 'Fill out the form.' --field 'confirm=yes'");
+});

@@ -800,7 +800,22 @@ export function pendingConfirmation(attempts) {
   if (!/needs-input/i.test(text) || !/confirm=yes/i.test(text)) return null;
   const parsed = parseJSONLoose(text, null);
   const rawNext = parsed && typeof parsed === "object" && typeof parsed.next === "string" ? parsed.next : jsonFieldLoose(text, "next");
-  const next = rawNext && /confirm=yes/i.test(rawNext) ? rawNext : (text.match(/(aux4\s[^"'\n]*confirm=yes[^"'\n]*)/i) || [])[1] || "";
+  // The attempt log keeps only the head of a result, so the whole JSON often
+  // doesn't parse; read the "next" string itself (its value has quotes in it).
+  const quotedNext = (text.match(/"next"\s*:\s*"((?:[^"\\]|\\.)*)"/) || [])[1];
+  const unquoted = quotedNext ? (() => { try { return JSON.parse(`"${quotedNext}"`); } catch { return quotedNext; } })() : "";
+  // Otherwise take the command from wherever it appears (often only inside the
+  // reason text): from the nearest "aux4 " before confirm=yes to the end of that word.
+  const inText = (() => {
+    const plain = text.replace(/\\"/g, '"');
+    const at = plain.search(/confirm=yes/i);
+    if (at < 0) return "";
+    const start = plain.lastIndexOf("aux4 ", at);
+    if (start < 0) return "";
+    const end = plain.slice(at).search(/[\s,}\]]|$/);
+    return plain.slice(start, at + (end < 0 ? plain.length : end)).trim();
+  })();
+  const next = rawNext && /confirm=yes/i.test(rawNext) ? rawNext : (/confirm=yes/i.test(unquoted) ? unquoted : inText);
   if (!next) return null;
   const reason = (parsed && typeof parsed === "object" && typeof parsed.reason === "string" ? parsed.reason : "") || jsonFieldLoose(text, "reason") || text;
   return { command: last.command, next: String(next).trim(), reason: String(reason).trim(), label: pendingConfirmationLabel(reason) };
