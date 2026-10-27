@@ -759,11 +759,13 @@ function isChoiceAnswer(value) {
   return CHOICE_ANSWER.test(String(value || "").trim());
 }
 // Most of the label's own words (ignoring hints in brackets) appear in the request.
+// English word matching; this share is the only gate on accepting a yes/no answer.
+const LABEL_NAMED_SHARE = 0.6;
 function labelNamedIn(label, requestTokens) {
   const words = tokens(String(label || "").replace(/\([^)]*\)/g, " ")).filter(w => w.length > 2);
   if (words.length === 0) return false;
   const hits = words.filter(w => requestTokens.has(w)).length;
-  return hits / words.length >= 0.6;
+  return hits / words.length >= LABEL_NAMED_SHARE;
 }
 
 // --- Confirmation gate ---------------------------------------------------
@@ -900,15 +902,21 @@ export function wordStem(word) {
 }
 
 // Strict: the action's own verb -- the label's first word, or any change verb in
-// it -- must appear (in any form) in the request itself. A shared noun ("order")
-// never counts, so "Delete order" is not requested by "find the order".
+// it -- must appear (in any form) in the request itself, AND when the label names
+// what it acts on ("Cancel order", "Delete account"), that object must appear in
+// the request too. A shared verb with a different object ("cancel my newsletter"
+// vs "Cancel order #123") is not a request for this action: ask instead.
+const LABEL_STOPWORDS = new Set(["the", "this", "that", "your", "my", "and", "for", "now", "all", "form", "page", "item"]);
 export function isClearlyRequestedAction(label, request) {
   const labelWords = String(label || "").match(/[A-Za-z]+/g) || [];
   if (labelWords.length === 0) return false;
   const verbs = new Set([wordStem(labelWords[0])]);
   for (const w of labelWords) if (CHANGE_VERB.test(w)) verbs.add(wordStem(w));
   const requestStems = new Set((String(request || "").match(/[A-Za-z]+/g) || []).map(wordStem));
-  return [...verbs].some(v => v.length >= 3 && requestStems.has(v));
+  if (![...verbs].some(v => v.length >= 3 && requestStems.has(v))) return false;
+  const objects = labelWords.map(wordStem)
+    .filter(w => w.length >= 3 && !verbs.has(w) && !LABEL_STOPWORDS.has(w));
+  return objects.length === 0 || objects.some(o => requestStems.has(o));
 }
 
 export function composeRunNextQuestion(pending) {
@@ -930,8 +938,8 @@ export function composeNeedsConfirmationAnswer(pending) {
 // aux4/ai-agent >=1.3.0 can check a tool call BEFORE it runs, inside the round
 // (its own `--hooks`, following aux4 core's hook standard). When it's
 // available, the provenance check becomes a `before` hook on
-// agent:browser/run (gated on `field` containing `confirm=yes`, so only the
-// confirmation call is ever checked) instead of the two-round gate above:
+// every agent:browser/run call (a made-up value is stopped where it is typed,
+// and a confirmation re-checks everything typed before it) instead of the two-round gate above:
 // one round, not two, and the model sees the SAME check either way (this
 // hook calls `aux4 agent check-values`, which shares unsourcedFieldValues
 // with the gate's own unsourcedValues). Capability is detected, never

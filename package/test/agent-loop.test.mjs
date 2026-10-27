@@ -1184,3 +1184,11 @@ test("compactResult keeps each result row's text from a list of objects", () => 
   assert.match(c, /BassWave X \| headphones \| yes \| 27\.75/);
   assert.match(c, /EchoBuds Lite/);
 });
+
+test("isClearlyRequestedAction asks when the verb matches but the action's object does not", () => {
+  assert.equal(isClearlyRequestedAction("Cancel order #123", "cancel my newsletter subscription"), false);
+  assert.equal(isClearlyRequestedAction("Delete account", "delete the draft email"), false);
+  assert.equal(isClearlyRequestedAction("Cancel order ord-1", "find the order from the customer and cancel it"), true);
+  assert.equal(isClearlyRequestedAction("Submit survey", "fill out the survey and submit it"), true);
+  assert.equal(isClearlyRequestedAction("Save", "save the address"), true);
+});

@@ -1,5 +1,13 @@
 # Release notes
 
+## 4.1.9
+
+- Same-round confirmation is stricter: besides the action's verb, the object the action names
+  ("Cancel order", "Delete account") must appear in the request. A shared verb with a different
+  object ("cancel my newsletter" vs a page's "Cancel order #123") now asks instead of confirming.
+- The yes/no-answer gate's share is a named constant (`LABEL_NAMED_SHARE`, 0.6, English word
+  matching); stale hook comment corrected.
+
 ## 4.1.8
 
 - Compacting a JSON tool result keeps each item's own short text (text, name, title, id...)
