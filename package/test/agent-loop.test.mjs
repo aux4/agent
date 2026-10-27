@@ -57,7 +57,12 @@ import {
   runReadBack,
   isNoChangeCriterion,
   unverifiableOnlyAfterChange,
-  commandWords
+  commandWords,
+  pendingConfirmation,
+  pendingConfirmationLabel,
+  isClearlyRequestedAction,
+  composeRunNextQuestion,
+  composeNeedsConfirmationAnswer
 } from "../lib/agent-loop.mjs";
 
 function tmpFile(name, content) {
@@ -991,6 +996,149 @@ if (command.includes("loop-plan.md")) {
 function spawnSyncBare(command) {
   return spawnSync("sh", ["-c", command], { encoding: "utf8" });
 }
+
+// --- HARN-035: same-round confirmation for a clearly requested action -------
+
+function pendingConfirmFixture(label, nextCmd, firstCommand = "agent browser run --session 's1' --goal 'g' --field 'Full name=Jamie Fox'") {
+  return JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: firstCommand } }] } },
+    { role: "tool", tool_call_id: "c1", content: JSON.stringify({ status: "needs-input", reason: `"${label}" cannot be undone, so the run stopped before it.`, next: nextCmd }) }
+  ] });
+}
+
+test("pendingConfirmationLabel reads the quoted or bare action name before 'cannot be undone'", () => {
+  assert.equal(pendingConfirmationLabel('"Save" cannot be undone, so the run stopped before it.'), "Save");
+  assert.equal(pendingConfirmationLabel("Register cannot be undone"), "Register");
+  assert.equal(pendingConfirmationLabel("something else entirely"), "");
+});
+
+test("pendingConfirmation detects a tool's own pending next-command confirmation, generically from the convention alone", () => {
+  const next = "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'";
+  const attempts = [{
+    command: "agent browser run --session 's1' --goal 'g'",
+    failed: false,
+    result: JSON.stringify({ status: "needs-input", reason: '"Save" cannot be undone, so the run stopped before it.', next })
+  }];
+  const pending = pendingConfirmation(attempts);
+  assert.equal(pending.label, "Save");
+  assert.equal(pending.next, next);
+  // the attempt IS the confirmation call itself -- nothing is pending
+  assert.equal(pendingConfirmation([{ command: `x --field 'confirm=yes'`, failed: false, result: "ok" }]), null);
+  // needs-input for an unrelated reason (no confirm=yes anywhere) is not a pending confirmation
+  assert.equal(pendingConfirmation([{ command: "x", failed: false, result: '{"status":"needs-input","reason":"missing a field"}' }]), null);
+  assert.equal(pendingConfirmation([]), null);
+});
+
+test("isClearlyRequestedAction is strict: the request's own words must contain the SAME change verb as the pending action", () => {
+  assert.equal(isClearlyRequestedAction("Save", "Save the shipping details for Jamie Fox."), true);
+  // not requested at all -- no change verb in the request
+  assert.equal(isClearlyRequestedAction("Save", "Look up the shipping details for Jamie Fox."), false);
+  // ambiguous: the request DOES ask for a change, but a different one than the pending action --
+  // this must ask too, never be treated as "requested" on a guess
+  assert.equal(isClearlyRequestedAction("Save", "Send the shipping details to Jamie Fox."), false);
+  assert.equal(isClearlyRequestedAction("", "Save it."), false);
+});
+
+test("composeRunNextQuestion tells the executor to run the pending next command now", () => {
+  const q = composeRunNextQuestion({ next: "agent browser run --session 's1' --field 'confirm=yes'" });
+  assert.match(q, /Run the next command now/);
+  assert.match(q, /agent browser run --session 's1' --field 'confirm=yes'/);
+});
+
+test("composeNeedsConfirmationAnswer names the exact pending action and its reason", () => {
+  const a = composeNeedsConfirmationAnswer({ label: "Save", reason: '"Save" cannot be undone, so the run stopped before it.' });
+  assert.match(a, /Save/);
+  assert.match(a, /confirmation/);
+});
+
+test("a clearly requested irreversible action is confirmed in the SAME round -- no retry (HARN-035)", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions(), request: "Save the shipping details for Jamie Fox." };
+    const next = "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'";
+    const seen = [];
+    const outcome = await runLoop(options, history, (question, h) => {
+      seen.push({ question, gate: [...(options.gateDeny || [])] });
+      if (seen.length === 1) {
+        fs.writeFileSync(h, pendingConfirmFixture("Save", next));
+        return "It needs confirmation before saving.";
+      }
+      const prior = JSON.parse(fs.readFileSync(h, "utf8")).messages;
+      prior.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: "c2", name: "executeAux4", args: { command: next } }] } });
+      prior.push({ role: "tool", tool_call_id: "c2", content: '{"status":"done"}' });
+      fs.writeFileSync(h, JSON.stringify({ messages: prior }));
+      return "Saved the shipping details.";
+    });
+    assert.equal(seen.length, 2);
+    assert.match(seen[1].question, /Run the next command now/);
+    assert.match(seen[1].question, new RegExp(next.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.deepEqual(seen[1].gate, []);
+    assert.equal(outcome.stopped, "pass");
+    // one round, not a retry: the loop never looped back for a second attempt.
+    assert.equal(outcome.attempts, 1);
+  });
+});
+
+test("an irreversible action beyond the request stops and asks -- no retry (HARN-035)", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions(), request: "Look up the shipping details for Jamie Fox." };
+    let calls = 0;
+    const outcome = await runLoop(options, history, (question, h) => {
+      calls++;
+      fs.writeFileSync(h, pendingConfirmFixture("Save", "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'"));
+      return "It needs confirmation before saving.";
+    });
+    assert.equal(calls, 1);
+    assert.equal(outcome.stopped, "needs-confirmation");
+    assert.match(outcome.content, /Save/);
+  });
+});
+
+test("an ambiguous case -- the request asks for a different change than the pending action -- also stops and asks, never confirms on a guess (HARN-035)", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions(), request: "Send the shipping details to Jamie Fox." };
+    let calls = 0;
+    const outcome = await runLoop(options, history, (question, h) => {
+      calls++;
+      fs.writeFileSync(h, pendingConfirmFixture("Save", "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'"));
+      return "It needs confirmation before saving.";
+    });
+    assert.equal(calls, 1);
+    assert.equal(outcome.stopped, "needs-confirmation");
+  });
+});
+
+test("the check-values hook keeps applying to the same-round confirm follow-up (HARN-035 does not bypass HARN-030)", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions(), request: "Save the shipping details for Jamie Fox.", hooksSupported: true, hooksFile: "fixed-hooks.json" };
+    const next = "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'";
+    const seen = [];
+    await runLoop(options, history, (question, h) => {
+      seen.push({ hooksFile: options.hooksFile, gate: [...(options.gateDeny || [])] });
+      if (seen.length === 1) {
+        fs.writeFileSync(h, pendingConfirmFixture("Save", next));
+        return "needs confirmation";
+      }
+      const prior = JSON.parse(fs.readFileSync(h, "utf8")).messages;
+      prior.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: "c2", name: "executeAux4", args: { command: next } }] } });
+      prior.push({ role: "tool", tool_call_id: "c2", content: '{"status":"done"}' });
+      fs.writeFileSync(h, JSON.stringify({ messages: prior }));
+      return "saved";
+    });
+    // hooksFile (how the check-values before-hook is wired) is never touched by
+    // this feature -- only gateDeny is opened for the one follow-up call.
+    assert.equal(seen[0].hooksFile, "fixed-hooks.json");
+    assert.equal(seen[1].hooksFile, "fixed-hooks.json");
+    assert.deepEqual(seen[1].gate, []);
+  });
+});
 
 test("commandWords splits like executeAux4, with no shell expansion", () => {
   assert.deepEqual(commandWords(`google calendar events list --query "Budget review" --x '$HOME;rm'`),

@@ -501,7 +501,7 @@ export function readBackCandidates(attempts, limit = 5) {
 // ran successfully in this run (so permissions allowed it) and that carries no
 // change verb is ever re-run.
 
-const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update|patch|put|post|create|insert|add|set|write|move|cancel|modify|edit|rename|upload|publish|deploy|pay|approve|install|uninstall)\b/i;
+const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update|patch|put|post|create|insert|add|set|write|move|cancel|modify|edit|rename|upload|publish|deploy|pay|approve|install|uninstall|save|submit|book|confirm)\b/i;
 
 // An allowlist, not a denylist: a command is re-run only when one of its
 // command words (before the first flag) is a read verb and none is a change
@@ -754,6 +754,83 @@ export function applyProvenance(verdict, attempts, request = "") {
     overall: "fail",
     criteria: [...verdict.criteria, { criterion: PROVENANCE_CRITERION, status: "fail", evidence: `${evidence}. A value that cannot be found must not be made up: say it is missing.` }]
   };
+}
+
+// --- Same-round confirmation (HARN-035) ------------------------------------
+// A tool can stop itself before an irreversible step and hand back a pending
+// confirmation instead of running it (agent/browser's needs-input/confirm:
+// a `next` command of its own, ready to run, carrying `--field 'confirm=yes'`,
+// plus a `reason` naming what cannot be undone -- see the kb entry on
+// runOutcome.Next). A small model regularly ends its turn reporting that a
+// confirmation is needed instead of running `next` itself, so verify fails
+// ("not saved yet") and a whole retry round is spent only to run the same
+// `next` moments later. Detected generically, from the convention alone
+// (a pending `next` call carrying confirm=yes), never from a hard-coded tool
+// name, so any tool following the same convention is covered.
+
+// "<Name>" cannot be undone -- the exact wording agent/browser uses for its
+// own reason text (quoted or not; see the "tool replies are written for the
+// calling agent" kb entry), read generically off of whichever tool wrote it.
+const PENDING_LABEL = /^\s*"?([^".]{1,60}?)"?\s+cannot be undone\b/i;
+
+export function pendingConfirmationLabel(reason) {
+  const m = String(reason || "").match(PENDING_LABEL);
+  return m ? m[1].trim() : "";
+}
+
+function jsonFieldLoose(text, field) {
+  const m = String(text || "").match(new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+  if (!m) return "";
+  try {
+    return JSON.parse(`"${m[1]}"`);
+  } catch {
+    return m[1];
+  }
+}
+
+// True only for the LAST attempt this round, so a pending confirmation from an
+// earlier round that was already asked about (and is still sitting, unacted
+// on, in the history) is never re-detected round after round.
+export function pendingConfirmation(attempts) {
+  const last = attempts[attempts.length - 1];
+  if (!last || last.failed) return null;
+  // The attempt itself already IS the confirmation call -- nothing pending.
+  if (/confirm=yes/i.test(last.command || "")) return null;
+  const text = String(last.result ?? last.resultSummary ?? "");
+  if (!/needs-input/i.test(text) || !/confirm=yes/i.test(text)) return null;
+  const parsed = parseJSONLoose(text, null);
+  const rawNext = parsed && typeof parsed === "object" && typeof parsed.next === "string" ? parsed.next : jsonFieldLoose(text, "next");
+  const next = rawNext && /confirm=yes/i.test(rawNext) ? rawNext : (text.match(/(aux4\s[^"'\n]*confirm=yes[^"'\n]*)/i) || [])[1] || "";
+  if (!next) return null;
+  const reason = (parsed && typeof parsed === "object" && typeof parsed.reason === "string" ? parsed.reason : "") || jsonFieldLoose(text, "reason") || text;
+  return { command: last.command, next: String(next).trim(), reason: String(reason).trim(), label: pendingConfirmationLabel(reason) };
+}
+
+// "Clearly requested" is kept strict on purpose: the request's OWN words must
+// contain the same change verb as the pending action's label (reusing
+// CHANGE_VERB, the same classifier the rest of the loop uses for a change).
+// Anything short of that -- the request says nothing about it, or only an
+// unrelated action -- is NOT clearly requested: an ambiguous case must ask,
+// exactly like one that is clearly beyond the request, never run on a guess.
+export function isClearlyRequestedAction(label, request) {
+  const verb = (String(label || "").match(CHANGE_VERB) || [])[0];
+  if (!verb) return false;
+  return new RegExp(`\\b${verb}\\b`, "i").test(String(request || ""));
+}
+
+export function composeRunNextQuestion(pending) {
+  const call = String(pending.next || "").replace(/^executeAux4\s*/, "");
+  return [
+    "The request asks for this action. Run the next command now, exactly as given:",
+    call,
+    "Then report what it did."
+  ].join("\n");
+}
+
+export function composeNeedsConfirmationAnswer(pending) {
+  const label = pending.label || "this action";
+  const reason = pending.reason ? ` ${pending.reason}` : "";
+  return `This needs your confirmation before it runs: ${label}.${reason} Reply to confirm it, and it will be run.`;
 }
 
 // --- Hooks integration (HARN-030) -----------------------------------------
@@ -1333,7 +1410,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       if (isBlocked(lastContent)) return done("blocked", attempt);
     }
 
-    const attempts = extractAttemptLog(history);
+    let attempts = extractAttemptLog(history);
     // The requester declined to confirm an action in this attempt: asking
     // again would only repeat the question, so report and stop.
     if (attempts.slice(before).some(a => a.declined)) return done("declined", attempt);
@@ -1354,6 +1431,29 @@ export async function runLoop(options, history, execute, recovery = "") {
       nextQuestion = composeNotConfirmedQuestion(unsourced);
       if (attempt > RETRY_BUDGET) { lastVerdict = applyProvenance({ overall: "fail", criteria: [] }, attempts, options.request); return done("budget", attempt, incompleteNote(lastVerdict)); }
       continue;
+    }
+
+    // A tool stopped itself before an irreversible step this round and handed
+    // back a pending confirmation (HARN-035) instead of a denial -- nothing
+    // was held by policy, so the gate above never saw it. Decide once,
+    // deterministically: run it now, in the SAME round, only when the request
+    // itself clearly asks for it; otherwise stop and ask -- an ambiguous case
+    // is treated exactly like one that is clearly not requested.
+    const pending = attempts.length > before ? pendingConfirmation(attempts) : null;
+    if (pending) {
+      if (isClearlyRequestedAction(pending.label, options.request)) {
+        const priorGate = options.gateDeny;
+        options.gateDeny = [];
+        lastContent = execute(composeRunNextQuestion(pending), history, deniedCommands);
+        options.gateDeny = priorGate;
+        round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "confirm-requested" };
+        round.confirmation = { command: pending.command, next: pending.next, requested: true };
+        attempts = extractAttemptLog(history);
+      } else {
+        round.confirmation = { command: pending.command, next: pending.next, requested: false };
+        lastContent = composeNeedsConfirmationAnswer(pending);
+        return done("needs-confirmation", attempt);
+      }
     }
 
     const verifyStart = Date.now();

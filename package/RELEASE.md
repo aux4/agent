@@ -1,5 +1,23 @@
 # Release notes
 
+## 4.1.4
+
+- Same-round confirmation for a clearly requested irreversible action (HARN-035). When a tool
+  stops itself before an irreversible step and hands back a pending confirmation -- generically,
+  a `next` command of its own carrying `--field 'confirm=yes'` (agent/browser's needs-input/
+  confirm convention) -- the harness used to let the model end the round reporting that a
+  confirmation was needed, fail verify ("not saved yet"), and only run `next` a whole retry
+  round later. `runLoop` now decides, at the end of the execute round: if the request's own
+  words contain the same change verb (`save`/`submit`/`book`/`confirm`/... -- the existing
+  `CHANGE_VERB` classifier, now covering those verbs too) as the pending action's label, it is
+  clearly requested -- the same round gets one short follow-up turn telling the executor to run
+  `next` now, with the confirmation gate opened only for that one call, then verifies once.
+  Anything short of that strict match -- the request says nothing about it, asks for a
+  different change, or is genuinely ambiguous -- is never confirmed on a guess: the loop stops
+  immediately with `stopped: "needs-confirmation"`, naming the exact pending action, and does
+  not retry. The check-values before-hook (HARN-030) is untouched by this and keeps validating
+  the follow-up confirm call exactly as any other.
+
 ## 4.1.3
 
 - The check-values before-hook now passes the request, history and field values with `value()`
