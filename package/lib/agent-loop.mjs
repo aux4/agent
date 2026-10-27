@@ -1149,8 +1149,17 @@ export function missingParameterHints(attempts) {
 // A rewrite-only retry ("do not run any more actions") is for an answer that
 // misstates results it already has. With no successful tool result there is
 // nothing to restate: the work was never done, so the retry must act.
+// A tool can succeed as a call and still report that its own work is unfinished
+// ({"status": "incomplete"}, "needs-input", "error"...). That is not finished work.
+const INCONCLUSIVE_STATUS = /"status"\s*:\s*"(incomplete|needs-input|error|blocked|failed|no-progress)"/i;
+export function isConclusiveAttempt(attempt) {
+  return !attempt.failed && !INCONCLUSIVE_STATUS.test(String(attempt.source ?? attempt.result ?? ""));
+}
+
 export function onlyAnswerFailed(plan, verdict, attempts = null) {
-  if (Array.isArray(attempts) && !attempts.some(a => !a.failed)) return false;
+  // Only a rewrite when some action actually finished; a round whose tools all
+  // failed or reported unfinished work needs another try at the work itself.
+  if (Array.isArray(attempts) && !attempts.some(isConclusiveAttempt)) return false;
   const state = new Set(plan.stateCriteria || plan.doneCriteria);
   const unmet = verdict.criteria.filter(c => c.status !== "pass");
   return unmet.length > 0 && unmet.every(c => !state.has(c.criterion)) &&

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.14
+
+- A tool call that succeeds but reports its own work unfinished (`"status": "incomplete"`, `needs-input`, `error`, `blocked`, `failed`) no longer counts as finished work, so the retry is not a "only rewrite your answer" round. Before, the agent was told "the work itself is done" after a browser run returned incomplete, and it never retried the work.
+
 ## 4.1.13
 
 - The delegation note (also the reason a blocked `browser ...` command gives) is written as the exact executeAux4 calls to make (`agent browser run --url <page> --goal "..."`, `agent browser find --url <page> --question "..."`). A small model read "use aux4 agent browser find" and dropped the "aux4 agent" part.

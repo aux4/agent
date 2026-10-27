@@ -1198,3 +1198,14 @@ test("addDenyPatterns attaches a reason so a blocked command says what to use in
   assert.deepEqual(policy.deny, [{ executeAux4: ["browser", "browser *"], reason: "use agent browser run instead" }]);
   assert.deepEqual(JSON.parse(addDenyPatterns("{}", ["x *"])).deny, [{ executeAux4: ["x *"] }]);
 });
+
+test("onlyAnswerFailed is false when the tool reported its own work unfinished", async () => {
+  const { isConclusiveAttempt } = await import("../lib/agent-loop.mjs");
+  const plan = { doneCriteria: ["the reply gives the name"], stateCriteria: [] };
+  const verdict = { overall: "fail", criteria: [{ criterion: "the reply gives the name", status: "fail", evidence: "not given" }] };
+  const unfinished = [{ command: "agent browser run --url x --goal g", failed: false, source: '{"status": "incomplete", "reason": "nothing chosen"}' }];
+  assert.equal(isConclusiveAttempt(unfinished[0]), false);
+  assert.equal(onlyAnswerFailed(plan, verdict, unfinished), false);
+  const finished = [{ command: "agent browser find --url x --question q", failed: false, source: '{"answered": true, "matches": ["A | 9.99"]}' }];
+  assert.equal(onlyAnswerFailed(plan, verdict, finished), true);
+});
