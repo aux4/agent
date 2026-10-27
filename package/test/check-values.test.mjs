@@ -176,3 +176,10 @@ test("unsourcedFieldValues: a value echoed back by the call that typed it is not
   const found = unsourcedFieldValues(["Employee id=12345"], attempts, "Register Jamie Fox");
   assert.deepEqual(found, [{ label: "Employee id", value: "12345" }]);
 });
+
+test("unsourcedFieldValues: yes/no for a choice the request names is intent, not a made-up value", () => {
+  const request = "Fill out the survey: plan Pro, subscribe to product updates, start date 2026-04-01.";
+  assert.deepEqual(unsourcedFieldValues(["Subscribe to product updates=yes"], [], request), []);
+  assert.deepEqual(unsourcedFieldValues(["Newsletter opt-in=yes"], [], request), [{ label: "Newsletter opt-in", value: "yes" }]);
+  assert.deepEqual(unsourcedFieldValues(["Employee id (found on your badge)=12345"], [], "Register using the employee id on file"), [{ label: "Employee id (found on your badge)", value: "12345" }]);
+});

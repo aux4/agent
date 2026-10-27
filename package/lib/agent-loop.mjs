@@ -733,10 +733,25 @@ export function unsourcedFieldValues(fields, attempts, request = "") {
       if (enteredValues(attempt.command).some(e => e.value === entry.value)) continue;
       for (const t of tokens(attempt.source ?? attempt.result)) seen.add(t);
     }
+    // A yes/no answer for a choice the request itself names ("subscribe to
+    // product updates" -> Subscribe=yes) states the request's intent, not data.
+    if (isChoiceAnswer(entry.value) && labelNamedIn(entry.label, requestTokens)) continue;
     const missing = tokens(entry.value).filter(t => !seen.has(t));
     if (isPlaceholder(entry.value) || missing.length) found.push(entry);
   }
   return found;
+}
+
+const CHOICE_ANSWER = /^(yes|no|true|false|on|off|checked|unchecked|y|n)$/i;
+function isChoiceAnswer(value) {
+  return CHOICE_ANSWER.test(String(value || "").trim());
+}
+// Most of the label's own words (ignoring hints in brackets) appear in the request.
+function labelNamedIn(label, requestTokens) {
+  const words = tokens(String(label || "").replace(/\([^)]*\)/g, " ")).filter(w => w.length > 2);
+  if (words.length === 0) return false;
+  const hits = words.filter(w => requestTokens.has(w)).length;
+  return hits / words.length >= 0.6;
 }
 
 // --- Confirmation gate ---------------------------------------------------
@@ -769,10 +784,10 @@ export function composeConfirmQuestion(command) {
 export function composeNotConfirmedQuestion(unsourced) {
   const lines = unsourced.map(u => `- "${u.label}" = "${u.value}" appears neither in the request nor in any tool result`);
   return [
-    "The confirmation was NOT run, because these values did not come from anywhere:",
+    "This call was NOT run, because these values did not come from anywhere:",
     ...lines,
     "",
-    "Never make up a value. If you can find the real value with the tools, use it. Otherwise do not submit: reply saying exactly which value is missing."
+    "Never make up a value. If you can find the real value with the tools, use it. Otherwise do not type or submit it: reply saying exactly which value is missing, and stop."
   ].join("\n");
 }
 

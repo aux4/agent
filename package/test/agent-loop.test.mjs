@@ -855,7 +855,7 @@ test("a held confirmation with a made-up value is never released", async () => {
       if (seen.length === 1) fs.writeFileSync(h, heldRound("--field 'Full name=Jamie Fox' --field 'Employee id=12345'"));
       return "done";
     });
-    assert.match(seen[1].question, /The confirmation was NOT run/);
+    assert.match(seen[1].question, /This call was NOT run/);
     assert.match(seen[1].question, /"Employee id" = "12345"/);
     assert.ok(seen.every(s => s.gate.includes("*confirm=yes*")), "the gate never opens");
   });

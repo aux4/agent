@@ -1,5 +1,13 @@
 # Release notes
 
+## 4.1.7
+
+- A yes/no answer (yes, no, true, false, on, off, checked) for a choice the request itself names
+  ("subscribe to product updates" -> `Subscribe to product updates=yes`) is the request's intent,
+  not a made-up value, and is no longer blocked.
+- The block message says "This call was NOT run" (it now fires on any browser call, not only a
+  confirmation) and tells the agent to stop when the value cannot be found.
+
 ## 4.1.6
 
 - The made-up-value check now runs on EVERY agent browser call that types values, not only on
