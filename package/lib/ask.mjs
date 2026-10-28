@@ -30,7 +30,7 @@ export function parseArgs(argv) {
 
 // The same `aux4 ai agent ask` call the command made before the loop, with the
 // caller's policy layered with the loop's denials (and a small budget on retries).
-export function buildAskArgs(options, history, question, deniedCommands = [], retry = false) {
+export function buildAskArgs(options, history, question, deniedCommands = [], retry = false, targetPatterns = []) {
   const args = ["ai", "agent", "ask", "--configFile", options.configFile || "config.yaml"];
   if (options.config) args.push("--config", options.config);
   args.push("--autoCompact", "true", "--baseInstructions", `${options.packageDir}/instructions/agent.md`);
@@ -39,9 +39,9 @@ export function buildAskArgs(options, history, question, deniedCommands = [], re
   }
   const delegated = options.delegatedDeny || [];
   const gate = options.gateDeny || [];
-  if (options.policy || retry || deniedCommands.length || delegated.length || gate.length) {
+  if (options.policy || retry || deniedCommands.length || targetPatterns.length || delegated.length || gate.length) {
     const base = options.policy || "{}";
-    const withDenials = mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands);
+    const withDenials = mergeDenyPolicy(retry ? capRetryBudget(base) : base, deniedCommands, targetPatterns);
     // A delegated command's block says what to use instead.
     const reason = (options.delegations || []).map(d => d.note).filter(Boolean).join(" ");
     args.push("--policy", addDenyPatterns(addDenyPatterns(withDenials, delegated, reason), gate));
@@ -63,8 +63,8 @@ export async function main(argv) {
   if (options.hooksSupported) {
     options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, options.request);
   }
-  const execute = (question, h, deniedCommands, retry = false) =>
-    runAux4(buildAskArgs(options, h, question, deniedCommands, retry)).stdout.trim();
+  const execute = (question, h, deniedCommands, retry = false, targetPatterns = []) =>
+    runAux4(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns)).stdout.trim();
   const outcome = await runLoop(options, history, execute);
   process.stdout.write(`${outcome.content}\n`);
 }

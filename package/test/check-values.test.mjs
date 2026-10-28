@@ -17,6 +17,15 @@ function writeHistory(file, messages) {
   fs.writeFileSync(file, JSON.stringify({ messages }));
 }
 
+function confirmationResult(action, target = action, emptyFields = [], next = "aux4 agent browser run --session 's1' --goal 'g' --field 'confirm=yes'") {
+  return JSON.stringify({
+    status: "needs-input",
+    reason: "approval required",
+    confirmation: { action, target, emptyFields, next },
+    next
+  });
+}
+
 // --- unsourcedFieldValues --------------------------------------------------
 
 test("unsourcedFieldValues flags a value that appears nowhere (the membership case)", () => {
@@ -130,9 +139,10 @@ test("parseFields: JSON array, plain string, and invalid JSON all normalize to a
 test("checkValues: the membership case -- a made-up employee id is blocked", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
   const history = path.join(tmp, "history.json");
+  const next = "aux4 agent browser run --session 's1' --goal 'Submit the order' --field 'confirm=yes'";
   writeHistory(history, [
     { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://shop/order --goal 'Submit the order'" } }] } },
-    { role: "tool", tool_call_id: "c0", content: "{\"status\":\"needs-input\",\"next\":\"aux4 agent browser run --session 's1' --goal 'Submit the order' --field 'confirm=yes'\"}" }
+    { role: "tool", tool_call_id: "c0", content: confirmationResult("Submit order", "Submit order", [], next) }
   ]);
 
   const unsourced = checkValues({
@@ -149,9 +159,10 @@ test("checkValues: the membership case -- a made-up employee id is blocked", () 
 test("checkValues: a sourced value passes in one round", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
   const history = path.join(tmp, "history.json");
+  const next = "aux4 agent browser run --session 's1' --goal 'Submit the order' --field 'confirm=yes'";
   writeHistory(history, [
     { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://shop/order --goal 'Submit the order'" } }] } },
-    { role: "tool", tool_call_id: "c0", content: "{\"status\":\"needs-input\",\"next\":\"aux4 agent browser run --session 's1' --goal 'Submit the order' --field 'confirm=yes'\"}" },
+    { role: "tool", tool_call_id: "c0", content: confirmationResult("Submit order", "Submit order", [], next) },
     { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: "agent directory lookup --name Bob" } }] } },
     { role: "tool", tool_call_id: "c1", content: "Employee id: 90210" }
   ]);
@@ -206,10 +217,12 @@ test("a confirm passed as --data counts as a confirmation", () => {
   assert.equal(confirmsAction(`agent browser run --url x --goal g --data '{"Size":"Large"}'`), false);
 });
 
-test("a confirmation is only valid after a tool asked for one", () => {
+test("a confirmation is only valid after a tool emitted the structured contract", () => {
   assert.equal(confirmationWasAsked([]), false);
   assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", result: '{"status":"done"}' }]), false);
-  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", result: `{"status":"needs-input","next":"aux4 agent browser run --session 's' --field 'confirm=yes'"}` }]), true);
+  const legacy = JSON.stringify({ status: "needs-input", next: "aux4 agent browser run --field 'confirm=yes'" });
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", result: legacy }]), false);
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", result: confirmationResult("Cancel", "Cancel order A-17") }]), true);
   const pre = checkValues({ request: "cancel the order", history: "/nonexistent", fieldsJson: "", dataJson: '{"confirm":"yes"}' });
   assert.deepEqual(pre, [{ label: "confirm", value: "yes", notAsked: true }]);
 });
@@ -225,9 +238,10 @@ test("a URL's host and port are not a source for a value; its path still is", ()
 test("a confirmation for a specific item the request does not pick out is blocked (ask the person)", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
   const history = path.join(tmp, "history.json");
+  const next = "aux4 agent browser run --session 's1' --goal 'Cancel the order.' --field 'confirm=yes'";
   writeHistory(history, [
     { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://shop.test/orders --goal 'Cancel the order.'" } }] } },
-    { role: "tool", tool_call_id: "c0", content: "{\"status\":\"needs-input\",\"reason\":\"\\\"Cancel order A-17\\\" cannot be undone, so the run stopped before it.\",\"next\":\"aux4 agent browser run --session 's1' --goal 'Cancel the order.' --field 'confirm=yes'\"}" }
+    { role: "tool", tool_call_id: "c0", content: confirmationResult("Cancel order", "Cancel order A-17", [], next) }
   ]);
   const vague = checkValues({ request: "Please cancel my order", history, fieldsJson: "confirm=yes" });
   assert.equal(vague.length, 1);
@@ -245,17 +259,17 @@ test("the hook reads the person's original request from the file next to the his
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test("a confirmation is blocked while the tool reports empty fields in the form", () => {
+test("a confirmation is blocked while the structured contract reports empty fields", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
   const history = path.join(tmp, "history.json");
   const pending = (empty) => [
     { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://x/form --goal 'Send the form'" } }] } },
-    { role: "tool", tool_call_id: "c0", content: JSON.stringify({ status: "needs-input", reason: "\"Send\" cannot be undone, so the run stopped before it.", next: "aux4 agent browser run --session 's1' --goal 'Send the form' --field 'confirm=yes'", ...(empty ? { emptyFields: empty } : {}) }) }
+    { role: "tool", tool_call_id: "c0", content: confirmationResult("Send", "Send", empty || [], "aux4 agent browser run --session 's1' --goal 'Send the form' --field 'confirm=yes'") }
   ];
   writeHistory(history, pending(["Full name", "Priority"]));
   const blocked = checkValues({ request: "Send the form for me", history, fieldsJson: "confirm=yes" });
   assert.deepEqual(blocked[0].emptyFields, ["Full name", "Priority"]);
-  writeHistory(history, pending(null));
+  writeHistory(history, pending([]));
   assert.deepEqual(checkValues({ request: "Send the form for me", history, fieldsJson: "confirm=yes" }), []);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -267,7 +281,7 @@ test("the which-item rule never blocks a form's own submit", async () => {
   assert.equal(namesUnselectedItem("Cancel order ord-0001", "Please cancel my order"), true);
 });
 
-test("a tool whose own next step offers the confirmation counts as asking", () => {
-  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: `{"status":"done","next":"aux4 agent browser run --session 's' --field 'confirm=yes'"}` }]), true);
-  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: `{"status":"done","reason":"filled"}` }]), false);
+test("a tool confirmation contract counts as asking", () => {
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: confirmationResult("Submit", "Submit") }]), true);
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: '{"status":"needs-input","reason":"filled"}' }]), false);
 });

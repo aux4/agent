@@ -256,6 +256,14 @@ export function compactResult(text, limit = RESULT_LIMIT) {
   const out = {};
   for (const [key, v] of Object.entries(value)) {
     if (v === null || typeof v !== "object") out[key] = short(v, 240);
+    else if (key === "confirmation" && v && !Array.isArray(v)) {
+      out[key] = {
+        action: short(v.action, 120),
+        target: short(v.target, 200),
+        emptyFields: Array.isArray(v.emptyFields) ? v.emptyFields.slice(0, 12).map(x => short(x, 120)) : [],
+        next: v.next
+      };
+    }
     else if (Array.isArray(v)) {
       out[key] = v.every(x => x === null || typeof x !== "object")
         ? v.slice(0, 12).map(x => short(x, 120)).concat(v.length > 12 ? [`… ${v.length - 12} more`] : [])
@@ -543,6 +551,68 @@ export function readBackCandidates(attempts, limit = 5) {
 // change verb is ever re-run.
 
 const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update|patch|put|post|create|insert|add|set|write|move|cancel|modify|edit|rename|upload|publish|deploy|pay|approve|install|uninstall|save|submit|book|confirm)\b/i;
+const ENTITY_TARGET_FLAG = /^(?:id|[a-z0-9_-]*id|key|[a-z0-9_-]*key)$/i;
+const CONTEXT_TARGET_FLAGS = new Set(["accountid", "calendarid", "folderid", "orgid", "organizationid", "parentid", "projectid", "teamid", "tenantid", "userid", "workspaceid"]);
+const NATURAL_TARGET_FLAGS = new Set(["date", "email", "name", "number", "phone", "slug", "start", "startdate", "starttime", "subject", "summary", "title", "to", "url", "username"]);
+
+function permutations(values) {
+  if (values.length < 2) return [values];
+  return values.flatMap((value, index) => permutations(values.filter((_, i) => i !== index))
+    .map(rest => [value, ...rest]));
+}
+
+// Generate narrow command globs for an already-successful change. The ai-agent
+// policy is applied to each new retry call, so its exact-command denial also
+// covers the same target when cosmetic fields or flag order have changed.
+export function changeDenyPatterns(command) {
+  let argv = commandWords(command);
+  if (!argv) return [];
+  if (argv[0] === "aux4") argv = argv.slice(1);
+  const firstFlag = argv.findIndex(arg => arg.startsWith("--"));
+  const commandPath = (firstFlag < 0 ? argv : argv.slice(0, firstFlag)).join(" ").trim();
+  if (!commandPath || !CHANGE_VERB.test(commandPath)) return [];
+
+  const flags = new Map();
+  for (let i = Math.max(0, firstFlag); i < argv.length; i++) {
+    const token = argv[i];
+    if (!token.startsWith("--")) continue;
+    const equals = token.indexOf("=");
+    const key = (equals < 0 ? token.slice(2) : token.slice(2, equals)).toLowerCase();
+    let value = equals < 0 ? "true" : token.slice(equals + 1);
+    if (equals < 0 && i + 1 < argv.length && !argv[i + 1].startsWith("--")) value = argv[++i];
+    const values = flags.get(key) || [];
+    values.push(value);
+    flags.set(key, values);
+  }
+
+  const entityIds = [...flags].filter(([key]) => ENTITY_TARGET_FLAG.test(key) && !CONTEXT_TARGET_FLAGS.has(key));
+  const naturalKeys = [...flags].filter(([key]) => NATURAL_TARGET_FLAGS.has(key));
+  const targetFields = entityIds.length ? entityIds : naturalKeys;
+  if (!targetFields.length || targetFields.length > 3 || targetFields.some(([, values]) => values.length !== 1)) return [];
+
+  const optionsByField = targetFields.map(([key, values]) => {
+    const value = values[0];
+    // These values are inserted into a glob. A value containing glob or regex
+    // metacharacters could broaden the deny beyond this one target.
+    if (!value || /[*?\[\]\\'"\n\r]/.test(value)) return [];
+    const forms = /\s/.test(value) ? [`"${value}"`, `'${value}'`] : [value, `"${value}"`, `'${value}'`];
+    return forms.map(form => `--${key}*${form}*`);
+  });
+  if (optionsByField.some(forms => !forms.length)) return [];
+
+  const combine = (fields, index = 0, prefix = "") => {
+    if (index === fields.length) return [prefix];
+    return fields[index].flatMap(fieldPattern => combine(fields, index + 1, prefix + fieldPattern));
+  };
+  const patterns = [];
+  for (const order of permutations(optionsByField)) {
+    for (const middle of combine(order)) {
+      const base = `${commandPath} *${middle}*`;
+      patterns.push(base, `aux4 ${base}`);
+    }
+  }
+  return [...new Set(patterns)];
+}
 
 // An allowlist, not a denylist: a command is re-run only when one of its
 // command words (before the first flag) is a read verb and none is a change
@@ -875,75 +945,72 @@ export function applyProvenance(verdict, attempts, request = "") {
   };
 }
 
-// --- Same-round confirmation (HARN-035) ------------------------------------
-// A tool can stop itself before an irreversible step and hand back a pending
-// confirmation instead of running it (agent/browser's needs-input/confirm:
-// a `next` command of its own, ready to run, carrying `--field 'confirm=yes'`,
-// plus a `reason` naming what cannot be undone -- see the kb entry on
-// runOutcome.Next). A small model regularly ends its turn reporting that a
-// confirmation is needed instead of running `next` itself, so verify fails
-// ("not saved yet") and a whole retry round is spent only to run the same
-// `next` moments later. Detected generically, from the convention alone
-// (a pending `next` call carrying confirm=yes), never from a hard-coded tool
-// name, so any tool following the same convention is covered.
-
-// "<Name>" cannot be undone -- the exact wording agent/browser uses for its
-// own reason text (quoted or not; see the "tool replies are written for the
-// calling agent" kb entry), read generically off of whichever tool wrote it.
-const PENDING_LABEL = /^\s*"?([^".]{1,60}?)"?\s+cannot be undone\b/i;
-
-export function pendingConfirmationLabel(reason) {
-  const m = String(reason || "").match(PENDING_LABEL);
-  return m ? m[1].trim() : "";
+// --- Same-round confirmation (HARN-035 / HARN-038) -------------------------
+// The browser tool emits a structured confirmation contract. Parse that
+// object directly; reason prose and top-level next text are display fields,
+// not a protocol between packages.
+function jsonObjectField(text, field) {
+  const match = String(text || "").match(new RegExp('"' + field + '"\\s*:\\s*\\{'));
+  if (!match) return null;
+  const open = match.index + match[0].lastIndexOf("{");
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = open; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) {
+      try { return JSON.parse(text.slice(open, i + 1)); } catch { return null; }
+    }
+  }
+  return null;
 }
 
-function jsonFieldLoose(text, field) {
-  const m = String(text || "").match(new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
-  if (!m) return "";
-  try {
-    return JSON.parse(`"${m[1]}"`);
-  } catch {
-    return m[1];
-  }
+function readConfirmationContract(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
+  const parsed = parseJSONLoose(text, null);
+  const contract = parsed?.confirmation && typeof parsed.confirmation === "object"
+    ? parsed.confirmation
+    : jsonObjectField(text, "confirmation");
+  if (!contract || typeof contract !== "object" || Array.isArray(contract)) return null;
+  const action = typeof contract.action === "string" ? contract.action.trim() : "";
+  const target = typeof contract.target === "string" ? contract.target.trim() : "";
+  const next = typeof contract.next === "string" ? contract.next.trim() : "";
+  if (!action || !target || !next || !confirmsAction(next) || !Array.isArray(contract.emptyFields)) return null;
+  return { action, target, next, emptyFields: contract.emptyFields.map(String) };
+}
+
+export function hasConfirmationContract(value) {
+  return readConfirmationContract(value) !== null;
 }
 
 // True only for the LAST attempt this round, so a pending confirmation from an
-// earlier round that was already asked about (and is still sitting, unacted
-// on, in the history) is never re-detected round after round.
+// earlier round that was already asked about is never re-detected.
 export function pendingConfirmation(attempts) {
   const last = attempts[attempts.length - 1];
-  if (!last || last.failed) return null;
-  // The attempt itself already IS the confirmation call -- nothing pending.
-  if (/confirm=yes/i.test(last.command || "")) return null;
+  if (!last || last.failed || confirmsAction(last.command || "")) return null;
   const text = String(last.source ?? last.result ?? last.resultSummary ?? "");
-  if (!/needs-input/i.test(text) || !/confirm=yes/i.test(text)) return null;
+  const contract = readConfirmationContract(text);
+  if (!contract) return null;
   const parsed = parseJSONLoose(text, null);
-  const rawNext = parsed && typeof parsed === "object" && typeof parsed.next === "string" ? parsed.next : jsonFieldLoose(text, "next");
-  // The attempt log keeps only the head of a result, so the whole JSON often
-  // doesn't parse; read the "next" string itself (its value has quotes in it).
-  const quotedNext = (text.match(/"next"\s*:\s*"((?:[^"\\]|\\.)*)"/) || [])[1];
-  const unquoted = quotedNext ? (() => { try { return JSON.parse(`"${quotedNext}"`); } catch { return quotedNext; } })() : "";
-  // Otherwise take the command from wherever it appears (often only inside the
-  // reason text): from the nearest "aux4 " before confirm=yes to the end of that word.
-  const inText = (() => {
-    const plain = text.replace(/\\"/g, '"');
-    const at = plain.search(/confirm=yes/i);
-    if (at < 0) return "";
-    const start = plain.lastIndexOf("aux4 ", at);
-    if (start < 0) return "";
-    const end = plain.slice(at).search(/[\s,}\]]|$/);
-    return plain.slice(start, at + (end < 0 ? plain.length : end)).trim();
-  })();
-  const next = rawNext && /confirm=yes/i.test(rawNext) ? rawNext : (/confirm=yes/i.test(unquoted) ? unquoted : inText);
-  if (!next) return null;
-  const reason = (parsed && typeof parsed === "object" && typeof parsed.reason === "string" ? parsed.reason : "") || jsonFieldLoose(text, "reason") || text;
-  // The tool may list fields of the form that are still empty ("emptyFields": [...]).
-  let emptyFields = parsed && typeof parsed === "object" && Array.isArray(parsed.emptyFields) ? parsed.emptyFields.map(String) : [];
-  if (!emptyFields.length) {
-    const m = text.match(/"emptyFields"\s*:\s*\[([^\]]*)\]/);
-    if (m) emptyFields = (m[1].match(/"((?:[^"\\]|\\.)*)"/g) || []).map(q => { try { return JSON.parse(q); } catch { return q.slice(1, -1); } });
-  }
-  return { command: last.command, next: String(next).trim(), reason: String(reason).trim(), label: pendingConfirmationLabel(reason), emptyFields };
+  const reason = typeof parsed?.reason === "string"
+    ? parsed.reason
+    : 'The action "' + contract.action + '" for "' + contract.target + '" needs confirmation.';
+  return {
+    command: last.command,
+    next: contract.next,
+    reason,
+    label: contract.action,
+    target: contract.target,
+    emptyFields: contract.emptyFields
+  };
 }
 
 // "Clearly requested" is kept strict on purpose: the request's OWN words must
@@ -1403,7 +1470,8 @@ export function delegatedDenyPatterns(delegations) {
 }
 
 // Adds glob deny patterns to a policy (mergeDenyPolicy only takes literal
-// failed commands, never globs).
+// failed commands, never globs. `targetPatterns` are generated internally from
+// a successful change's stable target flags, so they may safely use wildcards.
 // `reason`, when given, is told to the agent when one of these patterns denies a call
 // (aux4/ai-agent >= 1.3.7), so a blocked command says what to use instead.
 export function addDenyPatterns(policyJSON, patterns, reason = "") {
@@ -1416,15 +1484,17 @@ export function addDenyPatterns(policyJSON, patterns, reason = "") {
   return JSON.stringify({ ...policy, deny });
 }
 
-export function mergeDenyPolicy(policyJSON, failedCommands) {
+export function mergeDenyPolicy(policyJSON, failedCommands, targetPatterns = []) {
   const policy = parseJSONLoose(policyJSON, {}) || {};
-  if (!failedCommands.length) return JSON.stringify(policy);
+  if (!failedCommands.length && !targetPatterns.length) return JSON.stringify(policy);
   const deny = Array.isArray(policy.deny) ? [...policy.deny] : [];
   const existing = new Set();
   for (const entry of deny) {
     for (const pattern of entry?.executeAux4 || []) existing.add(pattern);
   }
-  const fresh = [...new Set(failedCommands)].filter(cmd => cmd && !cmd.includes("*") && !existing.has(cmd));
+  const exact = [...new Set(failedCommands)].filter(cmd => cmd && !cmd.includes("*") && !existing.has(cmd));
+  const targeted = [...new Set(targetPatterns)].filter(pattern => pattern && !existing.has(pattern));
+  const fresh = [...exact, ...targeted];
   if (fresh.length) deny.push({ executeAux4: fresh });
   return JSON.stringify({ ...policy, deny });
 }
@@ -1552,6 +1622,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   const metrics = { plan: { ...historyStats(planHistory), ms: Date.now() - planStart }, rounds: [] };
 
   let deniedCommands = [];
+  let deniedPatterns = [];
   let priorVerdict = null;
   let lastContent = "";
   // The last non-empty answer: a round that ends in an empty reply must not
@@ -1601,7 +1672,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     const gateOpen = confirmOpen || options.hooksSupported;
     confirmOpen = false;
     options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN, CONFIRM_DATA_PATTERN];
-    lastContent = execute(question, history, deniedCommands, attempt > 1);
+    lastContent = execute(question, history, deniedCommands, attempt > 1, deniedPatterns);
     if (String(lastContent || "").trim()) lastAnswer = lastContent;
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
@@ -1613,7 +1684,7 @@ export async function runLoop(options, history, execute, recovery = "") {
         : describedWithoutDoing(lastContent, round.execute.toolCalls) ? DO_IT_NOW : "";
       if (push) {
         if (push === DO_IT_NOW) dropTrailingTextCall(history);
-        lastContent = execute(push, history, deniedCommands);
+        lastContent = execute(push, history, deniedCommands, false, deniedPatterns);
         if (String(lastContent || "").trim()) lastAnswer = lastContent;
         round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: push === DO_IT_NOW ? "do-it-now" : "look-first" };
       }
@@ -1623,7 +1694,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       const offered = !pushedPastBlocked && allowedCommandsOffered(extractAttemptLog(history));
       if (!offered) return done("blocked", attempt);
       pushedPastBlocked = true;
-      lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands);
+      lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands, false, deniedPatterns);
       if (String(lastContent || "").trim()) lastAnswer = lastContent;
       round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart };
       if (isBlocked(lastContent)) return done("blocked", attempt);
@@ -1663,7 +1734,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       if (isClearlyRequestedAction(pending.label, options.request)) {
         const priorGate = options.gateDeny;
         options.gateDeny = [];
-        lastContent = execute(composeRunNextQuestion(pending), history, deniedCommands);
+        lastContent = execute(composeRunNextQuestion(pending), history, deniedCommands, false, deniedPatterns);
         if (String(lastContent || "").trim()) lastAnswer = lastContent;
         options.gateDeny = priorGate;
         round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "confirm-requested" };
@@ -1697,8 +1768,10 @@ export async function runLoop(options, history, execute, recovery = "") {
     lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
     // A change that already went through must not be repeated by a retry.
-    const doneChanges = attempts.filter(a => !a.failed && CHANGE_VERB.test(a.command)).map(a => a.command);
+    const completed = attempts.filter(a => !a.failed && CHANGE_VERB.test(a.command));
+    const doneChanges = completed.map(a => a.command);
     deniedCommands = [...new Set([...deniedCommands, ...newlyFailed, ...doneChanges])];
+    deniedPatterns = [...new Set([...deniedPatterns, ...completed.flatMap(a => changeDenyPatterns(a.command))])];
   }
 
   // Unreachable in practice (the loop above always returns), but keep a safe

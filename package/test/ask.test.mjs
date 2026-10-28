@@ -20,6 +20,13 @@ test("buildAskArgs layers denials and a retry budget onto the caller's policy", 
   assert.deepEqual(policy.deny, [{ executeAux4: ["x delete 1"] }]);
 });
 
+test("buildAskArgs carries generated same-target patterns into the retry policy", () => {
+  const pattern = 'google calendar events create *--summary*"Vendor sync meeting"*';
+  const args = buildAskArgs({ packageDir: "/pkg" }, "h.json", "retry", [], true, [pattern]);
+  const policy = JSON.parse(args[args.indexOf("--policy") + 1]);
+  assert.deepEqual(policy.deny, [{ executeAux4: [pattern] }]);
+});
+
 test("buildAskArgs adds the delegated deny patterns to the policy", () => {
   const args = buildAskArgs({ packageDir: "/p", delegatedDeny: ["browser", "browser *"] }, "h.json", "q");
   const policy = JSON.parse(args[args.indexOf("--policy") + 1]);

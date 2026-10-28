@@ -13,7 +13,7 @@ import fs from "node:fs";
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, namesUnselectedItem } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -64,7 +64,7 @@ export function checkValues({ request = "", history = "", fieldsJson = "", dataJ
   // does not pick out, ask the person which one (a form's own submit is not blocked).
   if (confirming) {
     const pending = lastPendingConfirmation(attempts);
-    if (pending && pending.label && namesUnselectedItem(pending.label, request)) {
+    if (pending && pending.label && namesUnselectedItem(pending.target || pending.label, request)) {
       return [{ label: "confirm", value: "yes", unclear: true, action: pending.label }];
     }
     // The form still has empty fields: fill them from the request, or ask -- never
@@ -85,14 +85,12 @@ function lastPendingConfirmation(attempts) {
   return null;
 }
 
-// A confirmation only answers a tool that stopped and asked for one this round:
-// an earlier result that is still waiting (needs-input) and offers confirm=yes.
+// A confirmation only answers a tool that emitted the structured contract
+// this round; display text is not used to infer whether one was asked.
 export function confirmationWasAsked(attempts) {
   return attempts.some(a => {
-    const text = String(a.source ?? a.result ?? "");
-    if (a.failed || !/confirm=yes/i.test(text)) return false;
-    // Waiting for a confirmation, or the tool's own next step offers the confirmation.
-    return /needs-input/i.test(text) || /"next"\s*:\s*"[^"]*confirm=yes/i.test(text);
+    if (a.failed) return false;
+    return hasConfirmationContract(a.source ?? a.result ?? "");
   });
 }
 

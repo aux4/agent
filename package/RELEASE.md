@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.21
+
+- Retry rounds refuse a successful mutation against the same stable target, even when only cosmetic fields differ.
+
 ## 4.1.20
 
 - A tool result whose own `next` step offers `confirm=yes` counts as the tool asking for the confirmation, whatever its status (agent/browser offered one with status "done").

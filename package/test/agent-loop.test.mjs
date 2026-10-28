@@ -18,6 +18,7 @@ import {
   addDenyPatterns,
   describeFoundCommands,
   extractAttemptLog,
+  changeDenyPatterns,
   summarizeAttemptLog,
   mergeDenyPolicy,
   sameFailureShape,
@@ -59,7 +60,6 @@ import {
   unverifiableOnlyAfterChange,
   commandWords,
   pendingConfirmation,
-  pendingConfirmationLabel,
   isClearlyRequestedAction,
   compactResult,
   composeRunNextQuestion,
@@ -316,6 +316,26 @@ test("runLoop exhausts the retry budget and reports what remained unmet", async 
   });
 });
 
+test("runLoop sends target-aware denials for a successful change into the next execution round", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const command = 'google calendar events create --summary "Vendor sync meeting" --start "2026-03-20T10:00:00Z" --end "2026-03-20T10:30:00Z"';
+  const history = tmpFile("history.json", JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "change-1", name: "executeAux4", args: { command } }] } },
+    { role: "tool", tool_call_id: "change-1", name: "executeAux4", content: '{"kind":"calendar#event","status":"confirmed"}' }
+  ], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const received = [];
+    await runLoop(baseOptions(), history, (_question, _history, _denied, _retry, patterns) => {
+      received.push(patterns || []);
+      return "attempt did not finish the remaining criterion";
+    });
+    assert.equal(received.length, 2);
+    assert.deepEqual(received[0], []);
+    assert.ok(received[1].length > 0);
+    assert.ok(received[1].some(pattern => pattern.includes("Vendor sync meeting")));
+  });
+});
+
 test("runLoop stops immediately when a retry classifies itself as blocked", async () => {
   const fake = planVerifyFake({ verifyStatus: "fail" });
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
@@ -368,6 +388,28 @@ test("stripFailureClass removes the harness label from the answer", () => {
 test("mergeDenyPolicy never adds a failed command that contains a glob", () => {
   const out = JSON.parse(mergeDenyPolicy('{"budget":{"calls":5}}', ["list *", "get --id 1"]));
   assert.deepEqual(out.deny, [{ executeAux4: ["get --id 1"] }]);
+});
+
+test("changeDenyPatterns covers the same target when cosmetic fields and flag order change", () => {
+  const original = 'google calendar events create --summary "Vendor sync meeting" --start "2026-03-20T10:00:00Z" --end "2026-03-20T10:30:00Z"';
+  const repeated = 'google calendar events create --calendarId primary --description "Unique description 123" --end "2026-03-20T10:45:00Z" --start "2026-03-20T10:00:00Z" --summary "Vendor sync meeting"';
+  const differentTarget = repeated.replace("Vendor sync meeting", "Another meeting");
+  const patterns = changeDenyPatterns(original);
+  const matches = command => patterns.some(pattern => {
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp(`^${escaped}$`).test(command);
+  });
+
+  assert.ok(patterns.length > 0);
+  assert.equal(matches(repeated), true);
+  assert.equal(matches(differentTarget), false);
+});
+
+test("target patterns are admitted only through the dedicated generated-pattern argument", () => {
+  const raw = '{"budget":{"calls":5}}';
+  const generated = 'google calendar events create *--summary*"Vendor sync meeting"*';
+  assert.deepEqual(JSON.parse(mergeDenyPolicy(raw, ["list *"])), { budget: { calls: 5 }, deny: [] });
+  assert.deepEqual(JSON.parse(mergeDenyPolicy(raw, [], [generated])).deny, [{ executeAux4: [generated] }]);
 });
 
 test("requireOwnObservation downgrades unobserved passes on state criteria only", () => {
@@ -1001,32 +1043,32 @@ function spawnSyncBare(command) {
 // --- HARN-035: same-round confirmation for a clearly requested action -------
 
 function pendingConfirmFixture(label, nextCmd, firstCommand = "agent browser run --session 's1' --goal 'g' --field 'Full name=Jamie Fox'") {
+  const confirmation = { action: label, target: label, emptyFields: [], next: nextCmd };
   return JSON.stringify({ messages: [
     { role: "assistant_with_tool", content: { tool_calls: [{ id: "c1", name: "executeAux4", args: { command: firstCommand } }] } },
-    { role: "tool", tool_call_id: "c1", content: JSON.stringify({ status: "needs-input", reason: `"${label}" cannot be undone, so the run stopped before it.`, next: nextCmd }) }
+    { role: "tool", tool_call_id: "c1", content: JSON.stringify({ status: "needs-input", reason: "approval required", confirmation, next: nextCmd }) }
   ] });
 }
 
-test("pendingConfirmationLabel reads the quoted or bare action name before 'cannot be undone'", () => {
-  assert.equal(pendingConfirmationLabel('"Save" cannot be undone, so the run stopped before it.'), "Save");
-  assert.equal(pendingConfirmationLabel("Register cannot be undone"), "Register");
-  assert.equal(pendingConfirmationLabel("something else entirely"), "");
-});
-
-test("pendingConfirmation detects a tool's own pending next-command confirmation, generically from the convention alone", () => {
+test("pendingConfirmation reads the structured confirmation contract", () => {
   const next = "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'";
   const attempts = [{
     command: "agent browser run --session 's1' --goal 'g'",
     failed: false,
-    result: JSON.stringify({ status: "needs-input", reason: '"Save" cannot be undone, so the run stopped before it.', next })
+    result: JSON.stringify({
+      status: "needs-input",
+      reason: "approval needed",
+      confirmation: { action: "Save", target: "Save — shipping details", emptyFields: ["Comment"], next }
+    })
   }];
   const pending = pendingConfirmation(attempts);
   assert.equal(pending.label, "Save");
+  assert.equal(pending.target, "Save — shipping details");
+  assert.deepEqual(pending.emptyFields, ["Comment"]);
   assert.equal(pending.next, next);
-  // the attempt IS the confirmation call itself -- nothing is pending
-  assert.equal(pendingConfirmation([{ command: `x --field 'confirm=yes'`, failed: false, result: "ok" }]), null);
-  // needs-input for an unrelated reason (no confirm=yes anywhere) is not a pending confirmation
-  assert.equal(pendingConfirmation([{ command: "x", failed: false, result: '{"status":"needs-input","reason":"missing a field"}' }]), null);
+  assert.equal(pendingConfirmation([{ command: "x --field 'confirm=yes'", failed: false, result: "ok" }]), null);
+  // Legacy prose and a top-level next command do not form the structured contract.
+  assert.equal(pendingConfirmation([{ command: "x", failed: false, result: JSON.stringify({ status: "needs-input", reason: '"Save" cannot be undone', next }) }]), null);
   assert.equal(pendingConfirmation([]), null);
 });
 
@@ -1157,21 +1199,34 @@ test("isClearlyRequestedAction matches the action's verb in any form, never a sh
   assert.equal(isClearlyRequestedAction("Submit", "Fill out the contact form"), false);
 });
 
-test("pendingConfirmation finds the confirm command inside a truncated result's reason text", () => {
-  const result = `{\n  "status": "needs-input",\n  "reason": "\\"Save\\" cannot be undone, so the run stopped before it. You are about to run: Save. Next: aux4 agent browser run --session '7bb12572' --goal 'Fill out the form.' --field 'confirm=yes' Only run this once the person has asked.",\n  "finalUrl": "http://x/shipping", "steps": [`;
+test("pendingConfirmation reads a complete structured contract from a truncated result", () => {
+  const next = "aux4 agent browser run --session '7bb12572' --goal 'Fill out the form.' --field 'confirm=yes'";
+  const result = JSON.stringify({
+    status: "needs-input",
+    confirmation: { action: "Save", target: "Save — shipping form", emptyFields: [], next },
+    reason: "x".repeat(2000)
+  }).slice(0, -2);
   const p = pendingConfirmation([{ command: "agent browser run --url http://x/shipping", result }]);
   assert.ok(p);
   assert.equal(p.label, "Save");
-  assert.equal(p.next, "aux4 agent browser run --session '7bb12572' --goal 'Fill out the form.' --field 'confirm=yes'");
+  assert.equal(p.next, next);
 });
 
-test("compactResult keeps a JSON result's short fields when one long field comes first", () => {
-  const big = JSON.stringify({ status: "needs-input", reason: "x".repeat(2000), stepsText: ["select \"Plan\" = Pro", "fill \"Comments\" = Hi"], steps: [{ a: 1 }, { b: 2 }], next: "aux4 agent browser run --field 'confirm=yes'" });
+test("compactResult keeps the structured confirmation contract when a long field comes first", () => {
+  const next = "aux4 agent browser run --field 'confirm=yes'";
+  const big = JSON.stringify({
+    status: "needs-input",
+    confirmation: { action: "Save", target: "Save form", emptyFields: [], next },
+    reason: "x".repeat(2000),
+    stepsText: ["select \"Plan\" = Pro", "fill \"Comments\" = Hi"],
+    steps: [{ a: 1 }, { b: 2 }]
+  });
   const c = compactResult(big, 800);
   assert.ok(c.length <= 800);
-  assert.match(c, /"stepsText":\["select \\"Plan\\" = Pro","fill \\"Comments\\" = Hi"\]/);
-  assert.match(c, /"steps":\["{1 fields}","{1 fields}"\]/);
-  assert.match(c, /confirm=yes/);
+  const parsed = JSON.parse(c);
+  assert.deepEqual(parsed.confirmation, { action: "Save", target: "Save form", emptyFields: [], next });
+  assert.deepEqual(parsed.stepsText, ['select "Plan" = Pro', 'fill "Comments" = Hi']);
+  assert.deepEqual(parsed.steps, ["{1 fields}", "{1 fields}"]);
   assert.equal(compactResult("plain text " + "y".repeat(900), 800).length, 800);
 });
 
