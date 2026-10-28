@@ -90,7 +90,9 @@ function lastPendingConfirmation(attempts) {
 export function confirmationWasAsked(attempts) {
   return attempts.some(a => {
     const text = String(a.source ?? a.result ?? "");
-    return !a.failed && /needs-input/i.test(text) && /confirm=yes/i.test(text);
+    if (a.failed || !/confirm=yes/i.test(text)) return false;
+    // Waiting for a confirmation, or the tool's own next step offers the confirmation.
+    return /needs-input/i.test(text) || /"next"\s*:\s*"[^"]*confirm=yes/i.test(text);
   });
 }
 

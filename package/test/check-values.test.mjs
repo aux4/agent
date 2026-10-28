@@ -266,3 +266,8 @@ test("the which-item rule never blocks a form's own submit", async () => {
   assert.equal(namesUnselectedItem("Submit survey", "Fill out the survey: plan Pro"), false);
   assert.equal(namesUnselectedItem("Cancel order ord-0001", "Please cancel my order"), true);
 });
+
+test("a tool whose own next step offers the confirmation counts as asking", () => {
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: `{"status":"done","next":"aux4 agent browser run --session 's' --field 'confirm=yes'"}` }]), true);
+  assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: `{"status":"done","reason":"filled"}` }]), false);
+});

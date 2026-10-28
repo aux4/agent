@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.20
+
+- A tool result whose own `next` step offers `confirm=yes` counts as the tool asking for the confirmation, whatever its status (agent/browser offered one with status "done").
+
 ## 4.1.19
 
 - The "which item" check on confirmations only blocks an action that names one specific item
