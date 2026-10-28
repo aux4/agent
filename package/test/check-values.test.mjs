@@ -244,3 +244,25 @@ test("the hook reads the person's original request from the file next to the his
   assert.match(JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[0].before[0], /--requestFile \/.*h\.json\.request\.txt$/);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test("a confirmation is blocked while the tool reports empty fields in the form", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "check-values-test-"));
+  const history = path.join(tmp, "history.json");
+  const pending = (empty) => [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "c0", name: "executeAux4", args: { command: "agent browser run --url http://x/form --goal 'Send the form'" } }] } },
+    { role: "tool", tool_call_id: "c0", content: JSON.stringify({ status: "needs-input", reason: "\"Send\" cannot be undone, so the run stopped before it.", next: "aux4 agent browser run --session 's1' --goal 'Send the form' --field 'confirm=yes'", ...(empty ? { emptyFields: empty } : {}) }) }
+  ];
+  writeHistory(history, pending(["Full name", "Priority"]));
+  const blocked = checkValues({ request: "Send the form for me", history, fieldsJson: "confirm=yes" });
+  assert.deepEqual(blocked[0].emptyFields, ["Full name", "Priority"]);
+  writeHistory(history, pending(null));
+  assert.deepEqual(checkValues({ request: "Send the form for me", history, fieldsJson: "confirm=yes" }), []);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("the which-item rule never blocks a form's own submit", async () => {
+  const { namesUnselectedItem } = await import("../lib/agent-loop.mjs");
+  assert.equal(namesUnselectedItem("Submit", "Fill out the contact form for Priya Shah"), false);
+  assert.equal(namesUnselectedItem("Submit survey", "Fill out the survey: plan Pro"), false);
+  assert.equal(namesUnselectedItem("Cancel order ord-0001", "Please cancel my order"), true);
+});

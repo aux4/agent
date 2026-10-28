@@ -937,7 +937,13 @@ export function pendingConfirmation(attempts) {
   const next = rawNext && /confirm=yes/i.test(rawNext) ? rawNext : (/confirm=yes/i.test(unquoted) ? unquoted : inText);
   if (!next) return null;
   const reason = (parsed && typeof parsed === "object" && typeof parsed.reason === "string" ? parsed.reason : "") || jsonFieldLoose(text, "reason") || text;
-  return { command: last.command, next: String(next).trim(), reason: String(reason).trim(), label: pendingConfirmationLabel(reason) };
+  // The tool may list fields of the form that are still empty ("emptyFields": [...]).
+  let emptyFields = parsed && typeof parsed === "object" && Array.isArray(parsed.emptyFields) ? parsed.emptyFields.map(String) : [];
+  if (!emptyFields.length) {
+    const m = text.match(/"emptyFields"\s*:\s*\[([^\]]*)\]/);
+    if (m) emptyFields = (m[1].match(/"((?:[^"\\]|\\.)*)"/g) || []).map(q => { try { return JSON.parse(q); } catch { return q.slice(1, -1); } });
+  }
+  return { command: last.command, next: String(next).trim(), reason: String(reason).trim(), label: pendingConfirmationLabel(reason), emptyFields };
 }
 
 // "Clearly requested" is kept strict on purpose: the request's OWN words must
@@ -983,6 +989,18 @@ export function isClearlyRequestedAction(label, request) {
     .map(t => t.replace(/[.-]+$/, "")));
   if (ids.some(id => reqTokens.has(id.toLowerCase().replace(/[.-]+$/, "")))) return true;
   return requestSelectsItem(request);
+}
+
+// Whether an action names one specific item ("Cancel order ord-0001", "Delete #123")
+// that the request does not pick out -- by that identifier or by details. Such an
+// action must never be confirmed without asking the person which item they mean.
+export function namesUnselectedItem(label, request) {
+  const ids = (String(label || "").match(/[A-Za-z0-9#][\w#.-]*/g) || []).filter(t => /\d/.test(t));
+  if (ids.length === 0) return false;
+  const reqTokens = new Set((String(request || "").replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, " ").toLowerCase().match(/[a-z0-9#][\w#.-]*/g) || [])
+    .map(t => t.replace(/[.-]+$/, "")));
+  if (ids.some(id => reqTokens.has(id.toLowerCase().replace(/[.-]+$/, "")))) return false;
+  return !requestSelectsItem(request);
 }
 
 // Whether a request picks out a specific item by its own details: a number, a quoted

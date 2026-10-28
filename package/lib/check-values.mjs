@@ -13,7 +13,7 @@ import fs from "node:fs";
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, isClearlyRequestedAction } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, namesUnselectedItem } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -60,12 +60,17 @@ export function checkValues({ request = "", history = "", fieldsJson = "", dataJ
         .flatMap(a => enteredValues(a.command).map(e => `${e.label}=${e.value}`))
     : [];
   if (confirming && !confirmationWasAsked(attempts)) return [{ label: "confirm", value: "yes", notAsked: true }];
-  // The action waiting for this confirmation must be one the request clearly asks for:
-  // when it names one specific item the request does not pick out, ask the person.
+  // When the action waiting for this confirmation names one specific item the request
+  // does not pick out, ask the person which one (a form's own submit is not blocked).
   if (confirming) {
     const pending = lastPendingConfirmation(attempts);
-    if (pending && pending.label && !isClearlyRequestedAction(pending.label, request)) {
+    if (pending && pending.label && namesUnselectedItem(pending.label, request)) {
       return [{ label: "confirm", value: "yes", unclear: true, action: pending.label }];
+    }
+    // The form still has empty fields: fill them from the request, or ask -- never
+    // confirm an incomplete submission.
+    if (pending && pending.emptyFields && pending.emptyFields.length) {
+      return [{ label: "confirm", value: "yes", emptyFields: pending.emptyFields, action: pending.label }];
     }
   }
   return unsourcedFieldValues([...new Set([...fields, ...earlier])], attempts, request);
@@ -96,6 +101,11 @@ async function main(argv) {
     try { options.request = fs.readFileSync(options.requestFile, "utf8"); } catch {}
   }
   const unsourced = checkValues(options);
+  const incomplete = unsourced.find(u => u.emptyFields);
+  if (incomplete) {
+    process.stdout.write(`This call was NOT run: "${incomplete.action}" cannot be undone and the form still has empty fields: ${incomplete.emptyFields.join(", ")}. Fill each one with a value from the request or a tool result (run again without confirm), or, if a value cannot be found, stop and ask the person for it.\n`);
+    process.exit(1);
+  }
   const unclear = unsourced.find(u => u.unclear);
   if (unclear) {
     process.stdout.write(`This call was NOT run: the request does not say which item "${unclear.action}" should act on, and it cannot be undone. Do not confirm it. Stop and ask the person to confirm exactly this action (name it), and wait for their answer.\n`);

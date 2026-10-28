@@ -1,5 +1,14 @@
 # Release notes
 
+## 4.1.19
+
+- The "which item" check on confirmations only blocks an action that names one specific item
+  the request does not pick out (4.1.16 applied the full same-round rule, including its strict
+  verb match, to every confirmation and blocked legitimate form submits like "Submit" for "fill
+  out the contact form").
+- A confirmation is blocked while the tool reports empty fields in the form (`emptyFields`, from
+  agent/browser >= 0.1.45): fill them from the request or a tool result, or ask the person.
+
 ## 4.1.18
 
 - The original-request file is passed to the hook by absolute path: hook steps run from a scratch directory, so the relative path was never found and the hook fell back to the composed question.
