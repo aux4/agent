@@ -1,5 +1,11 @@
 # Release notes
 
+## 4.1.22
+
+- Recover an unresolved structured confirmation when later `confirm=yes` calls were blocked, limited to the current execution round.
+- Require direct action or read-back evidence for requested state changes; an answer-only retry cannot hide an unsupported write.
+- Planning and browser delegation now cover separate read/write operations, one scoped save, and evidence-based routes and identifiers.
+
 ## 4.1.21
 
 - Retry rounds refuse a successful mutation against the same stable target, even when only cosmetic fields differ.

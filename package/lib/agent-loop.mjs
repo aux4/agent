@@ -1127,26 +1127,41 @@ export function hasConfirmationContract(value) {
   return readConfirmationContract(value) !== null;
 }
 
-// True only for the LAST attempt this round, so a pending confirmation from an
-// earlier round that was already asked about is never re-detected.
+// Return an unresolved structured confirmation from this round. A later blocked
+// confirm=yes call does not make the earlier pending confirmation disappear.
 export function pendingConfirmation(attempts) {
   const last = attempts[attempts.length - 1];
-  if (!last || last.failed || confirmsAction(last.command || "")) return null;
-  const text = String(last.source ?? last.result ?? last.resultSummary ?? "");
-  const contract = readConfirmationContract(text);
-  if (!contract) return null;
-  const parsed = parseJSONLoose(text, null);
-  const reason = typeof parsed?.reason === "string"
-    ? parsed.reason
-    : 'The action "' + contract.action + '" for "' + contract.target + '" needs confirmation.';
-  return {
-    command: last.command,
-    next: contract.next,
-    reason,
-    label: contract.action,
-    target: contract.target,
-    emptyFields: contract.emptyFields
+  if (!last) return null;
+  const readPending = attempt => {
+    if (!attempt || attempt.failed) return null;
+    const text = String(attempt.source ?? attempt.result ?? attempt.resultSummary ?? "");
+    const contract = readConfirmationContract(text);
+    if (!contract) return null;
+    const parsed = parseJSONLoose(text, null);
+    const reason = typeof parsed?.reason === "string"
+      ? parsed.reason
+      : 'The action "' + contract.action + '" for "' + contract.target + '" needs confirmation.';
+    return {
+      command: attempt.command,
+      next: contract.next,
+      reason,
+      label: contract.action,
+      target: contract.target,
+      emptyFields: contract.emptyFields
+    };
   };
+  const current = readPending(last);
+  if (current) return current;
+  // A short model may retry confirm=yes after the browser tool already returned
+  // a structured pending contract. If each later confirmation call was blocked,
+  // recover that still-pending contract instead of letting the retry hide it.
+  if (!last.failed || !confirmsAction(last.command || "")) return null;
+  for (let i = attempts.length - 2; i >= 0; i--) {
+    const prior = attempts[i];
+    if (prior.failed && confirmsAction(prior.command || "")) continue;
+    return readPending(prior);
+  }
+  return null;
 }
 
 // "Clearly requested" is kept strict on purpose: the request's OWN words must
@@ -1413,12 +1428,21 @@ export function isConclusiveAttempt(attempt) {
   return !attempt.failed && !INCONCLUSIVE_STATUS.test(String(attempt.source ?? attempt.result ?? ""));
 }
 
+const CHANGE_RESULT_WORD = /\b(sent|saved|submitted|booked|confirmed|cancelled|canceled|deleted|removed|archived|updated|patched|posted|created|inserted|added|written|moved|modified|edited|renamed|uploaded|published|deployed|paid|approved|installed|uninstalled|forwarded|replied)\b/i;
+
 export function onlyAnswerFailed(plan, verdict, attempts = null) {
   // Only a rewrite when some action actually finished; a round whose tools all
   // failed or reported unfinished work needs another try at the work itself.
   if (Array.isArray(attempts) && !attempts.some(isConclusiveAttempt)) return false;
   const state = new Set(plan.stateCriteria || plan.doneCriteria);
   const unmet = verdict.criteria.filter(c => c.status !== "pass");
+  // If a requested state-changing outcome is marked complete but the verifier
+  // found that the answer's account of the actions is unsupported, don't let a
+  // rewrite-only round hide a missing write behind that incorrect state pass.
+  const changeExpected = (plan.stateCriteria || []).some(c => CHANGE_VERB.test(c) || CHANGE_RESULT_WORD.test(c));
+  const actionAccuracyFailed = unmet.some(c => c.criterion === HONESTY_CRITERION);
+  if (Array.isArray(attempts) && changeExpected && actionAccuracyFailed &&
+      !attempts.some(a => !a.failed && isConclusiveAttempt(a) && isChangeCommand(a.command))) return false;
   return unmet.length > 0 && unmet.every(c => !state.has(c.criterion)) &&
     verdict.criteria.filter(c => state.has(c.criterion)).every(c => c.status === "pass");
 }
@@ -1697,7 +1721,7 @@ export const DELEGATIONS = [
   {
     via: "agent:browser",
     group: "browser",
-    note: "Web pages: call executeAux4 with command \"agent browser run --url <page> --goal \\\"<what to do>\\\"\" to do something, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to find something out -- they open, read, fill and click for you. Reuse the returned session id for follow-up calls; do not open a new session to reword the same search. Commands that start with \"browser\" are not available to you."
+    note: "Web pages: call executeAux4 with command \"agent browser run --url <page> --goal \\\"<what to do>\\\"\" to do something, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to find something out -- they open, read, fill and click for you. Reuse the returned session id for follow-up calls; do not open a new session to reword the same search. For a web change, identify the target from observed page data, name only the requested fields, and include the required save or submit step. Stop after one successful save, then use returned evidence to verify it. Use observed links, forms and commands; never guess routes, identifiers or API methods. If a run is incomplete, take a materially different evidence-based step. Commands that start with \"browser\" are not available to you."
   }
 ];
 
@@ -2044,7 +2068,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     // deterministically: run it now, in the SAME round, only when the request
     // itself clearly asks for it; otherwise stop and ask -- an ambiguous case
     // is treated exactly like one that is clearly not requested.
-    const pending = attempts.length > before ? pendingConfirmation(attempts) : null;
+    const pending = attempts.length > before ? pendingConfirmation(attempts.slice(before)) : null;
     if (pending) {
       if (isClearlyRequestedAction(pending.label, options.request)) {
         const priorGate = options.gateDeny;

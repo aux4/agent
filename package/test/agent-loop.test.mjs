@@ -717,6 +717,25 @@ test("onlyAnswerFailed is true when every state criterion holds and only answer 
   assert.equal(onlyAnswerFailed({ doneCriteria: ["honest"], stateCriteria: [] }, answerOnly, []), false);
   assert.equal(onlyAnswerFailed({ doneCriteria: ["honest"], stateCriteria: [] }, answerOnly, [{ command: "x", failed: true }]), false);
   assert.equal(onlyAnswerFailed({ doneCriteria: ["honest"], stateCriteria: [] }, answerOnly, [{ command: "x", failed: false }]), true);
+  const sentState = { doneCriteria: ["the reply is sent"], stateCriteria: ["the reply is sent"] };
+  const unsupportedSend = { criteria: [
+    { criterion: "the reply is sent", status: "pass" },
+    { criterion: HONESTY_CRITERION, status: "unverifiable" }
+  ] };
+  assert.equal(onlyAnswerFailed(sentState, unsupportedSend, [
+    { command: "google calendar freebusy --timeMin 2026-03-19T09:00:00Z", failed: false, result: "busy" }
+  ]), false, "a read-only attempt must not turn an unsupported write into an answer-only retry");
+  assert.equal(onlyAnswerFailed(sentState, unsupportedSend, [
+    { command: "google gmail send --to devon@example.com", failed: false, result: "sent", source: "sent" }
+  ]), true, "after a successful write, an answer-only correction is safe");
+  const bookedState = { doneCriteria: ["the trip is booked"], stateCriteria: ["the trip is booked"] };
+  const unsupportedBooking = { criteria: [
+    { criterion: "the trip is booked", status: "pass" },
+    { criterion: HONESTY_CRITERION, status: "unverifiable" }
+  ] };
+  assert.equal(onlyAnswerFailed(bookedState, unsupportedBooking, [
+    { command: "agent browser find --url https://example.test --question 'find trip'", failed: false, result: "booking page" }
+  ]), false, "an unsupported booking must still require action after a read-only run");
 });
 
 test("capRetryBudget keeps retries on a small tool budget", () => {
@@ -1458,6 +1477,30 @@ test("pendingConfirmation reads the structured confirmation contract", () => {
   // Legacy prose and a top-level next command do not form the structured contract.
   assert.equal(pendingConfirmation([{ command: "x", failed: false, result: JSON.stringify({ status: "needs-input", reason: '"Save" cannot be undone', next }) }]), null);
   assert.equal(pendingConfirmation([]), null);
+});
+
+test("pendingConfirmation survives blocked retries of its exact confirm command", () => {
+  const next = "agent browser run --session 's1' --goal 'Save the contact' --field 'confirm=yes'";
+  const pendingResult = JSON.stringify({
+    status: "needs-input",
+    confirmation: { action: "Save", target: "Save contact", emptyFields: [], next }
+  });
+  const attempts = [
+    { command: "agent browser run --session 's1' --goal 'Save the contact'", failed: false, result: pendingResult },
+    { command: next, failed: true, result: "Blocked by a confirmation hook" },
+    { command: next, failed: true, result: "Repeated hook denial" }
+  ];
+  assert.equal(pendingConfirmation(attempts).next, next);
+  assert.equal(pendingConfirmation([...attempts, {
+    command: "agent browser find --url https://example.test --question 'find contact'",
+    failed: true,
+    result: "network error"
+  }]), null, "an unrelated later failure must not revive an old confirmation");
+  assert.equal(pendingConfirmation([...attempts.slice(0, 1), {
+    command: next,
+    failed: false,
+    result: '{"status":"done"}'
+  }]), null, "a successful confirmation must consume the pending contract");
 });
 
 test("isClearlyRequestedAction is strict: the request's own words must contain the SAME change verb as the pending action", () => {

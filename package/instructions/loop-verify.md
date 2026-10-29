@@ -16,7 +16,11 @@ Judge each criterion by its kind:
   not prove the current state. When `currentState` is given, it was read just
   now, after the work: judge from it. Otherwise judge from the actions' own
   results (a send or change that returned success did happen; one that
-  returned an error did not).
+  returned an error did not). A final answer saying that something was sent,
+  submitted, saved or changed is not evidence that it happened. Require a
+  successful action result or a later read that directly confirms the state.
+  A successful lookup, a promise to act, or a tool call that only prepared a
+  form does not prove a requested write happened.
 
 For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.

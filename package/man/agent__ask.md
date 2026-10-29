@@ -10,14 +10,18 @@ Every real execution turn always runs through a generic plan -> execute -> verif
 retry loop; there is no flag to disable it. A short planning call (no tools) fixes a
 `goal` and at most 3 typed `doneCriteria` -- `answer` (what the reply must say,
 agreeing with its source) or `state` (what must now be true) -- in the request's own
-words, saved as `<history>.plan.json`. The run gets those criteria plus a short block
+words, saved as `<history>.plan.json`. The plan separately lists required reads and
+writes, such as checking availability and sending a reply. The run gets those criteria plus a short block
 of working rules, and a round that asked without looking, narrated a step, or wrote a
 tool call as text is pushed once. To verify `state` criteria the harness re-runs the
 already-successful command that best matches them, and only one whose command words
 include a read verb (get, list, show, ...) and no change verb -- the re-run does not go
 back through ai-agent's ask/deny prompt; one short verifier call, with no tools, judges every criterion, plus coverage
-and honesty checks, from the request, the answer, the raw results and that read. On
-a miss the agent rewrites its answer (when only the answer was off) or retries with
+and honesty checks, from the request, the answer, the raw results and that read. A
+claim in the final answer alone cannot prove that something was sent, submitted,
+saved or changed; require a successful action result or direct read-back evidence.
+On a miss the agent rewrites its answer (when only the answer was off and requested
+state changes have action evidence) or retries with
 the unmet criteria, the attempt log and hints; failed actions and changes that
 already went through are denied, and retries run on a 10-call budget. It stops on a
 pass, 2 spent retries, no progress, a declined confirmation, or a `BLOCKED:` reply,
