@@ -17,6 +17,8 @@ import {
   delegatedDenyPatterns,
   addDenyPatterns,
   describeFoundCommands,
+  preferredDelegation,
+  executionCommandReference,
   extractAttemptLog,
   changeDenyPatterns,
   summarizeAttemptLog,
@@ -54,6 +56,7 @@ import {
   capRetryBudget,
   dropTrailingTextCall,
   onlyAnswerFailed,
+  isConclusiveAttempt,
   historyStats,
   metricsPath,
   readVerdict,
@@ -102,6 +105,29 @@ test("parseJSONLoose parses clean JSON", () => {
   assert.deepEqual(parseJSONLoose('{"a":1}', null), { a: 1 });
 });
 
+test("explicit page tasks get registered capability help before global command search", async () => {
+  const delegate = { via: 'agent:forms', urlTasks: true, requestWords: ['page', 'form'], entrypoints: ['run', 'find'] };
+  const request = 'On the settings page at https://example.test/settings, change the telephone only.';
+  assert.equal(preferredDelegation(request, [delegate]), delegate);
+  assert.equal(preferredDelegation('POST the form payload to the endpoint https://example.test/api', [delegate]), null);
+  assert.equal(preferredDelegation('Update a record using the installed CLI', [delegate]), null);
+  const urlDelegate = { ...delegate, requestWords: [] };
+  assert.equal(preferredDelegation('Change the telephone for the named record at https://example.test/records', [urlDelegate]), urlDelegate);
+  assert.equal(preferredDelegation('Fetch JSON from https://example.test/records', [urlDelegate]), null);
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+if (args.includes('pkger')) process.exit(1);
+if (args.includes('run')) process.stdout.write('run\\n  --url <page>\\n  --goal <outcome>');
+if (args.includes('find')) process.stdout.write('find\\n  --question <question>');
+`);
+  await withAux4Bin(fake, async () => {
+    const reference = executionCommandReference(request, {}, [delegate]);
+    assert.match(reference, /agent forms run/);
+    assert.match(reference, /--goal <outcome>/);
+    assert.match(reference, /agent forms find/);
+  });
+});
+
 test("parseJSONLoose strips a markdown code fence", () => {
   assert.deepEqual(parseJSONLoose('```json\n{"a":1}\n```', null), { a: 1 });
 });
@@ -143,9 +169,24 @@ test("extractAttemptLog pairs tool calls with their results and flags failures",
   assert.equal(attempts.length, 2);
   assert.equal(attempts[0].command, "todo list");
   assert.equal(attempts[0].failed, false);
+  assert.equal(attempts[0].completed, true);
   assert.equal(attempts[1].command, "todo complete --id 9");
   assert.equal(attempts[1].failed, true);
   assert.match(attempts[1].resultSummary, /no such item/);
+});
+
+test("extractAttemptLog distinguishes a pending write from a completed action", () => {
+  const file = tmpFile("pending.json", JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "pending", name: "executeAux4", args: { command: "records delete --id r-1" } }] } }
+  ] }));
+  const [pending] = extractAttemptLog(file);
+  assert.equal(pending.completed, false);
+});
+
+test("an unsubmitted form and a pending call are not completed action evidence", () => {
+  assert.equal(isConclusiveAttempt({ source: '{"status":"done","submitted":false}' }), false);
+  assert.equal(isConclusiveAttempt({ source: '{"status":"done","submitted":true}' }), true);
+  assert.equal(isConclusiveAttempt({ completed: false, source: '' }), false);
 });
 
 test("extractAttemptLog is defensive about a missing or malformed file", () => {
@@ -402,6 +443,29 @@ test("runLoop stops immediately when a retry classifies itself as blocked", asyn
   });
 });
 
+test("a pre-action evidence denial gets one same-round lookup recovery before declaring blocked", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      calls++;
+      if (calls === 1) {
+        fs.writeFileSync(h, JSON.stringify({ messages: [
+          { role: "assistant_with_tool", content: { tool_calls: [{ id: "denied", name: "executeAux4", args: { command: "notifications send --to unknown@work.test" } }] } },
+          { role: "tool", tool_call_id: "denied", content: "Blocked by hook: ACTION_CHECK_EVIDENCE_REQUIRED: obtain the exact destination first" }
+        ] }));
+        return "I cannot send the message. Please provide the destination.";
+      }
+      assert.match(question, /obtain the missing evidence/);
+      return "done";
+    });
+    assert.equal(calls, 2);
+    assert.equal(outcome.stopped, "pass");
+    assert.equal(outcome.attempts, 1);
+  });
+});
+
 // --- verifier must observe for itself -----------------------------------------
 
 test("verifyPayload gives the request verbatim, typed criteria plus coverage, and raw results", () => {
@@ -416,6 +480,21 @@ test("verifyPayload gives the request verbatim, typed criteria plus coverage, an
   assert.equal(payload.criteria[3].criterion, HONESTY_CRITERION);
   assert.equal(payload.criteria[4].criterion, AGREEMENT_CRITERION);
   assert.deepEqual(payload.actions.map(a => a.result), ["1. buy milk", "Error: no such item 9"]);
+});
+
+test("verification retains concrete page observations and control states within its total budget", () => {
+  const source = JSON.stringify({ goal: 'requested outcome '.repeat(500), timing: { total: 99 },
+    observations: { firstObserved: 'Ari | Oslo | 555-0100; Robin | Bern | 555-0200', current: 'Ari | Oslo | 555-0107; Robin | Bern | 555-0200' },
+    lastFormControlStates: { url: 'https://example.test/settings', controls: ['Security (checkbox): checked','Marketing (checkbox): unchecked'] },
+    submitted: true, status: 'done' });
+  const plan = { goal:'update the phone', doneCriteria:['phone changed'], stateCriteria:['phone changed'] };
+  const payload = verifyPayload(plan, 'updated', [{ command:'agent forms run', source, result:'truncated earlier' }]);
+  assert.match(payload.actions[0].result, /555-0100/);
+  assert.match(payload.actions[0].result, /555-0107/);
+  assert.match(payload.actions[0].result, /Marketing \(checkbox\): unchecked/);
+  assert.match(compactResult(source,800), /"submitted":true/);
+  const many = verifyPayload(plan,'updated',Array.from({length:10},()=>({ command:'lookup',source })));
+  assert.ok(many.actions.reduce((total,action)=>total+action.result.length,0)<=4000);
 });
 
 test("verifyCriteria appends coverage, honesty, and agreement after the plan's own criteria", () => {
@@ -1156,8 +1235,10 @@ test("runAux4Monitored stops when an identical action repeats with only transien
       })
     });
   }
-  fs.writeFileSync(history, JSON.stringify({ messages }));
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
   fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("node:fs");
+setTimeout(() => fs.writeFileSync(${JSON.stringify(history)}, ${JSON.stringify(JSON.stringify({ messages }))}), 40);
 setTimeout(() => {}, 10000);
 `, { mode: 0o755 });
   const previous = process.env.AUX4_BIN;
@@ -1184,8 +1265,10 @@ test("runAux4Monitored keeps an identical action when the result shows new evide
     messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
     messages.push({ role: "tool", tool_call_id: id, name: "executeAux4", content: JSON.stringify({ found: i === 2, count: i === 2 ? 1 : 0 }) });
   }
-  fs.writeFileSync(history, JSON.stringify({ messages }));
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
   fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("node:fs");
+setTimeout(() => fs.writeFileSync(${JSON.stringify(history)}, ${JSON.stringify(JSON.stringify({ messages }))}), 40);
 setTimeout(() => process.exit(0), 150);
 `, { mode: 0o755 });
   const previous = process.env.AUX4_BIN;
@@ -1857,4 +1940,40 @@ test("a specific item is only confirmed when the request says which item", () =>
   assert.equal(isClearlyRequestedAction("Cancel order ord-0023", "Cancel order ord-0023 please"), true);
   assert.equal(isClearlyRequestedAction("Cancel order ord-0023", "Find the order from Dana Ruiz for $12.40 and cancel it"), true);
   assert.equal(isClearlyRequestedAction("Delete address addr-2", "Delete the Denver address for Sam Lee"), true);
+});
+
+
+test("runAux4Monitored ignores completed refusals from a previous invocation", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "recovery-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const refusal = "Error executing tool: Aborting: the same action has returned the same result 4 times. The agent is not making progress.";
+  fs.writeFileSync(history, JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "old", name: "executeAux4", args: { command: "records list" } }] } },
+    { role: "tool", tool_call_id: "old", content: refusal }
+  ] }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+setTimeout(() => {
+  const file = ${JSON.stringify(history)};
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  data.messages.push(
+    { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'new', name: 'executeAux4', args: { command: 'records get --help' } }] } },
+    { role: 'tool', tool_call_id: 'new', content: 'Use --recordId' }
+  );
+  fs.writeFileSync(file, JSON.stringify(data));
+  process.stdout.write('recovered');
+}, 180);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored([], history, { pollInterval: 25 });
+    assert.equal(result.ok, true);
+    assert.equal(result.noProgress, false);
+    assert.equal(result.stdout, "recovered");
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -21,6 +21,11 @@ Judge each criterion by its kind:
   successful action result or a later read that directly confirms the state.
   A successful lookup, a promise to act, or a tool call that only prepared a
   form does not prove a requested write happened.
+  Visible checked boxes or filled inputs prove the current form values, not
+  persistence. If the request requires saving, subscribing, submitting, or
+  updating a record, require a successful commit action or persisted result.
+  A tool reporting `submitted: false` did not submit that form even if its
+  overall status says `done`.
 
 For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.

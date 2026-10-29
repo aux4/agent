@@ -1,5 +1,19 @@
 # Release notes
 
+## 4.1.29
+
+- Scope live retry monitoring to newly completed calls, so old refusals do not kill a recovery attempt.
+- Allow help, new sources, and pending commands through repeated-read checks while retaining duplicate-evidence limits.
+
+## 4.1.28
+
+- Require exact outbound addresses from the request or successful reads; help examples and previous write echoes cannot establish a recipient.
+- Check proposed writes against the original request and observed facts before execution, using the caller's configured model and recording each decision.
+- Include the pre-action checks' model calls and tokens in run metrics.
+- Plan prerequisite lookups for missing identifiers and addresses, and give an unresolved guard denial one bounded recovery before final verification.
+- Route explicit page tasks to installed goal-level delegates before adding global command-search results to their context.
+- Prioritize observed results and use the existing verification evidence budget across the actual number of actions, retaining concrete page facts and control states.
+
 ## 4.1.27
 
 - Prioritize the deepest matched command groups and show their complete child paths before broader help consumes the command-reference budget.

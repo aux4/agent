@@ -82,7 +82,11 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    goals identify the target from observed page data, name only requested fields, include the save
    or submit step, and stop after one successful save. A round that asked without using any tool,
    narrated a step, or wrote a tool call as text is pushed once straight away (a text-form call is
-   removed from the history first).
+   removed from the history first). When tool hooks are available, outbound recipient addresses
+   must appear exactly in the original request or a successful lookup. Before a command that
+   changes state, a short check using the caller's configured model compares its target and values
+   with the original request and observed facts, including exclusions. A denied or unparseable
+   verdict prevents that command from running and tells the agent what evidence is missing.
 3. **Verify.** For `state` criteria the harness reads the current state itself: it re-runs the
    already-successful command that shares the most words with the criteria, and only one whose
    command words include a read verb (get, list, show, view, search, ...) and no change verb.
@@ -111,8 +115,10 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
 
 Each run also writes `<history>.metrics.json`: model calls, tokens (input, cached, output), tool
 calls, and the calls that bought nothing (failed, repeated, help lookups, empty replies) for the
-plan, every execute round and every verify, with timings. Helper calls (plan, verdict) are capped
-at 90 seconds.
+plan, every execute round and every verify, with timings. The `actionChecks` entry records
+pre-action model costs, which are included in the totals. Each check also saves its input,
+model history and verdict alongside the conversation as `<history>.action-check-*` files.
+Helper calls (plan, verdict) are capped at 90 seconds; a pre-action check is capped at 45 seconds.
 
 ### `agent new`
 

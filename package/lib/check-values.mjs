@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import { authorizeAction } from "./action-check.mjs";
 // `aux4 agent check-values` -- a `before` hook target for aux4/ai-agent's
 // tool-call hooks (HARN-030). Wired in agent-loop.mjs's checkValuesHooksFile
-// as a `before` hook on every `agent:browser/run` call: a made-up value is
-// stopped where it is typed, and a confirmation re-checks everything typed before it.
+// as command guards and a `before` hook on every `agent:browser/run` call:
+// invented recipients and out-of-scope changes are stopped before execution,
+// and a confirmation re-checks everything typed before it.
 //
 // Checks the PENDING call's own --field values (passed as --fieldsJson, the
 // hook's ${field} context var -- a JSON array when the call repeated --field,
@@ -13,7 +15,7 @@ import fs from "node:fs";
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem, isReadCommand, isChangeCommand, sameReadEvidence } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, unsourcedRecipientValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem, isReadCommand, isChangeCommand, sameReadEvidence, commandWords } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -79,17 +81,21 @@ export function checkValues({ request = "", history = "", fieldsJson = "", dataJ
 // A short-model tool loop can poll or repeat the same lookup many times in a
 // single execution turn, before the outer plan/verify loop gets a chance to
 // stop it. After two successful reads return the same facts, block the next
-// read until a state-changing command succeeds. The agent can then choose a
+// equivalent read until a state-changing command succeeds. The agent can choose a
 // different source, use a real polling interval, or report the remaining gap.
 export function repeatedReadGuardMessage(command, attempts = []) {
   const requested = String(command || "").trim();
   if (!requested || !isReadCommand(requested)) return "";
+  const words = commandWords(requested);
+  if (words.includes("--help") || words.includes("-h")) return "";
   let lastChange = -1;
   attempts.forEach((attempt, index) => {
-    if (!attempt.failed && isChangeCommand(attempt.command || "")) lastChange = index;
+    if (attempt.completed !== false && !attempt.failed && isChangeCommand(attempt.command || "")) lastChange = index;
   });
   const reads = attempts.slice(lastChange + 1).filter(attempt =>
-    attempt.tool === "executeAux4" && !attempt.failed && isReadCommand(attempt.command)
+    attempt.tool === "executeAux4" && attempt.completed !== false && !attempt.failed
+      && isReadCommand(attempt.command)
+      && JSON.stringify(commandWords(attempt.command)) === JSON.stringify(words)
   );
   if (reads.length < 2 || !sameReadEvidence([reads.at(-1)], reads.slice(0, -1))) return "";
   return "Error: recent lookups already returned the same evidence twice. Do not repeat another equivalent search or status check; use a materially different source/scope, wait with a polling interval if this is a running job, or report what remains unknown.";
@@ -120,10 +126,29 @@ async function main(argv) {
     try { options.request = fs.readFileSync(options.requestFile, "utf8"); } catch {}
   }
   if (options.repeatReadGuard) {
-    const message = repeatedReadGuardMessage(options.command, extractAttemptLog(options.history));
+    const attempts = extractAttemptLog(options.history);
+    const recipients = unsourcedRecipientValues(options.command, attempts, options.request);
+    const words = commandWords(options.command) || [];
+    const flagIndex = words.findIndex(word => word.startsWith("--"));
+    const actionPath = (flagIndex < 0 ? words : words.slice(0, flagIndex)).filter((word, i) => i !== 0 || word !== "aux4");
+    const parentHelp = actionPath.length > 1 ? `${actionPath.slice(0, -1).join(" ")} --help` : "--help";
+    const message = recipients.length
+      ? `ACTION_CHECK_EVIDENCE_REQUIRED: This call was NOT run: the recipient address ${recipients.map(r => r.value).join(", ")} is not established by the request or a successful lookup. Run ${parentHelp} to find a command that reads or searches the relevant correspondence, or find a contact lookup from --help. Read the matching record, then use the exact address from that result and continue. Do not infer an address from a name. Ask the requester only if those lookups cannot establish the address.`
+      : repeatedReadGuardMessage(options.command, attempts);
     if (message) {
       process.stdout.write(`${message}\n`);
       process.exit(1);
+    }
+    if (options.guardOptions) {
+      const config = JSON.parse(fs.readFileSync(options.guardOptions, "utf8"));
+      // __history is a temporary live snapshot supplied by ai-agent's hook
+      // runtime. Keep audit histories next to the actual conversation so its
+      // metrics and the caller's artifact collection include every check.
+      const verdict = authorizeAction(config, options.command, attempts, options.request, config.history || options.history);
+      if (!verdict.allow) {
+        process.stdout.write(`ACTION_CHECK_SCOPE_DENIED: This call was NOT run: ${verdict.reason} Check the target and requested scope against the existing facts, obtain missing evidence if needed, and continue with the authorized work.\n`);
+        process.exit(1);
+      }
     }
     process.exit(0);
   }

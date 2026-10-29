@@ -34,6 +34,10 @@ Produce exactly one JSON object:
   Include every required operation, especially the final write: reading a
   calendar and sending a reply are separate outcomes, as are editing a form
   and saving it. These will be revised during the work.
+  Include prerequisite lookups for identifiers, destination addresses, and
+  required record details that the request does not supply. A person's name
+  does not establish their address or record ID. Find those facts from the
+  relevant records before planning to use them in a change.
 
 - `lookFor` (array, 1 to 4 short phrases of 2 to 6 words): the kinds of
   command the work needs, including each distinct read and write operation,
@@ -42,6 +46,8 @@ Produce exactly one JSON object:
   meeting on the calendar". Do not omit sending, submitting or saving just
   because the reply can describe the result. No names, values or addresses
   from the request, and no tool names.
+  Include the lookup needed for any missing identifier or destination, even
+  when the requester did not explicitly say to look it up.
 
 Keep every string short: one plain sentence each.
 

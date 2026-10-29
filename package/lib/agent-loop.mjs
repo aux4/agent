@@ -240,6 +240,9 @@ function repeatsWithoutNewResult(attempts, count = 3) {
 // shell wrapper cannot leave its node child running in the background.
 export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {}) {
   const bin = process.env.AUX4_BIN || "aux4";
+  // Old refusals belong to the previous invocation, not this recovery attempt.
+  const completedBefore = new Set(extractAttemptLog(historyFile)
+    .filter(attempt => attempt.completed).map(attempt => attempt.callId));
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -277,7 +280,8 @@ export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {})
 
     const monitor = setInterval(() => {
       if (stopReason || !historyFile || !fs.existsSync(historyFile)) return;
-      const attempts = extractAttemptLog(historyFile);
+      const attempts = extractAttemptLog(historyFile)
+        .filter(attempt => attempt.completed && !completedBefore.has(attempt.callId));
       if (attempts.some(attempt => isBudgetExceededResult(attempt.source))) {
         stop("budget");
         return;
@@ -370,8 +374,18 @@ export function compactResult(text, limit = RESULT_LIMIT) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return raw.slice(0, limit);
   const short = (v, n) => (typeof v === "string" && v.length > n ? `${v.slice(0, n)}…` : v);
   const out = {};
-  for (const [key, v] of Object.entries(value)) {
+  const priority = ["status", "submitted", "confirmation", "reason", "lastFormControlStates", "observations", "stepsText", "finalUrl", "answer", "summary"];
+  const keys = [...priority.filter(key => Object.hasOwn(value, key)), ...Object.keys(value).filter(key => !priority.includes(key))];
+  for (const key of keys) {
+    const v = value[key];
     if (v === null || typeof v !== "object") out[key] = short(v, 240);
+    else if (key === "lastFormControlStates" && !Array.isArray(v)) {
+      out[key] = { url: short(v.url, 160), controls: Array.isArray(v.controls) ? v.controls.slice(0, 12).map(x => short(x, 160)) : [] };
+    }
+    else if (key === "observations" && !Array.isArray(v)) {
+      const size = Math.min(1600, Math.max(120, Math.floor((limit - 250) / 2)));
+      out[key] = Object.fromEntries(Object.entries(v).filter(([, x]) => typeof x === "string").map(([k, x]) => [k, short(x, size)]));
+    }
     else if (key === "confirmation" && v && !Array.isArray(v)) {
       out[key] = {
         action: short(v.action, 120),
@@ -419,9 +433,11 @@ export function extractAttemptLog(historyFile) {
       const failed = result ? isFailedResult(resultContent) : false;
       const resultText = typeof resultContent === "string" ? resultContent : JSON.stringify(resultContent ?? "");
       attempts.push({
+        callId: call.id,
         tool: call.name,
         args: call.args ?? {},
         command: describeCall(call.name, call.args),
+        completed: result !== undefined,
         failed,
         declined: result ? isDeclinedResult(resultContent) : false,
         result: compactResult(resultText, RESULT_LIMIT),
@@ -513,6 +529,19 @@ export function addStats(a, b) {
   const out = { ...a };
   for (const [k, v] of Object.entries(b)) if (typeof v === "number") out[k] = (out[k] || 0) + v;
   return out;
+}
+
+export function actionCheckFiles(history) {
+  if (!history || !fs.existsSync(path.dirname(history))) return [];
+  const prefix = `${path.basename(history)}.action-check-`;
+  return fs.readdirSync(path.dirname(history))
+    .filter(name => name.startsWith(prefix) && name.endsWith(".history.json"))
+    .map(name => path.join(path.dirname(history), name));
+}
+
+export function actionCheckStats(history, previous = new Set()) {
+  return actionCheckFiles(history).filter(file => !previous.has(file))
+    .reduce((stats, file) => addStats(stats, historyStats(file)), {});
 }
 
 export function metricsPath(historyFile) {
@@ -625,9 +654,11 @@ export function requireOwnObservation(verdict, checks, stateCriteria = null, att
 // state after the work, which state criteria must look at again.
 export function verifyPayload(plan, finalAnswer, attempts, request = "") {
   let budget = RESULTS_TOTAL_LIMIT;
+  const perAction = Math.max(RESULT_LIMIT, Math.floor(RESULTS_TOTAL_LIMIT / Math.max(1, attempts.length)));
   const actions = [];
   for (const a of [...attempts].reverse()) {
-    const result = String(a.result ?? a.resultSummary ?? "").slice(0, Math.max(0, Math.min(RESULT_LIMIT, budget)));
+    const available = Math.max(0, Math.min(perAction, budget));
+    const result = available ? compactResult(a.source ?? a.result ?? a.resultSummary ?? "", available) : "";
     budget -= result.length;
     actions.unshift({ action: a.command, failed: Boolean(a.failed), result });
   }
@@ -978,6 +1009,30 @@ export function sourceTokens(text) {
   return tokens(withoutAuthorities);
 }
 
+function emailAddresses(text) {
+  return String(text || "").match(/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?/gi) || [];
+}
+
+// Routing addresses are identifiers, so combining words from unrelated facts
+// cannot establish one. Require an exact address from the request or a
+// successful read; documentation and earlier write echoes are not sources.
+export function unsourcedRecipientValues(command, attempts = [], request = "") {
+  if (!isChangeCommand(command) || /(?:^|\s)--help(?:\s|$)/.test(command)) return [];
+  const words = commandWords(command) || [];
+  const recipients = [];
+  for (let i = 0; i < words.length; i++) {
+    const match = words[i].match(/^--(to|cc|bcc|recipient|recipients|email)(?:=(.*))?$/i);
+    if (!match) continue;
+    const value = match[2] ?? words[++i] ?? "";
+    for (const address of emailAddresses(value)) recipients.push({ label: match[1], value: address });
+  }
+  const sources = [request, ...attempts.filter(a =>
+    !a.failed && isReadCommand(a.command) && !/(?:^|\s)--help(?:\s|$)/.test(a.command)
+  ).map(a => a.source ?? a.result ?? "")];
+  const known = new Set(sources.flatMap(emailAddresses).map(address => address.toLowerCase()));
+  return recipients.filter(({ value }) => !known.has(value.toLowerCase()));
+}
+
 // A value is sourced when every word and number in it appears in the request or
 // in a result the agent had already received -- "1990-03-14" from "14/03/1990"
 // is; a "12345" that appears nowhere is not. Made-up values are the one thing
@@ -985,12 +1040,15 @@ export function sourceTokens(text) {
 export function unsourcedValues(attempts, request = "") {
   const seen = new Set(sourceTokens(request));
   const found = [];
+  const prior = [];
   for (const attempt of attempts) {
+    if (!attempt.failed) found.push(...unsourcedRecipientValues(attempt.command, prior, request));
     for (const { label, value } of enteredValues(attempt.command)) {
       const missing = tokens(value).filter(t => !seen.has(t));
       if (isPlaceholder(value) || missing.length) found.push({ label, value, command: attempt.command });
     }
     for (const t of sourceTokens(attempt.source ?? attempt.result)) seen.add(t);
+    prior.push(attempt);
   }
   return found;
 }
@@ -1284,11 +1342,12 @@ export function resetHooksSupportCacheForTests() {
   hooksSupportCache = null;
 }
 
-export function checkValuesHooksFile(packageDir, requestFile = "") {
+export function checkValuesHooksFile(packageDir, requestFile = "", guardOptionsFile = "") {
   const repeatedReadHook = pattern => ({
     tool: "executeAux4",
     command: pattern,
-    before: [`node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(__commandLine)`]
+    timeout: 60000,
+    before: [`node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(__commandLine)${requestFile ? ` --requestFile ${requestFile}` : ""}${guardOptionsFile ? ` --guardOptions ${guardOptionsFile}` : ""}`]
   });
   return {
     hooks: [
@@ -1311,12 +1370,18 @@ export function checkValuesHooksFile(packageDir, requestFile = "") {
 // agent:browser/run call always reads the live history -- never a stale copy.
 // The hook judges against the person's ORIGINAL request (written next to the history),
 // not the round's composed question, which also carries the harness's own criteria text.
-export function writeCheckValuesHooksFile(packageDir, history, request = "") {
+export function writeCheckValuesHooksFile(packageDir, history, request = "", options = null) {
   const file = `${history}.hooks.json`;
   // Absolute: hook steps run from a scratch directory, not the agent's own.
   const requestFile = path.resolve(`${history}.request.txt`);
   fs.writeFileSync(requestFile, String(request || ""));
-  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile), null, 2));
+  const guardFile = options?.configFile ? path.resolve(`${history}.guard-options.json`) : "";
+  if (guardFile) fs.writeFileSync(guardFile, JSON.stringify({
+    packageDir: path.resolve(packageDir), configFile: path.resolve(options.configFile), config: options.config || "",
+    history: path.resolve(history),
+    delegatedPrefixes: (options.delegations || []).map(d => d.via.replace(/:/g, " "))
+  }, null, 2));
+  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile, guardFile), null, 2));
   return file;
 }
 
@@ -1439,7 +1504,8 @@ export function missingParameterHints(attempts) {
 // ({"status": "incomplete"}, "needs-input", "error"...). That is not finished work.
 const INCONCLUSIVE_STATUS = /"status"\s*:\s*"(incomplete|needs-input|error|blocked|failed|no-progress)"/i;
 export function isConclusiveAttempt(attempt) {
-  return !attempt.failed && !INCONCLUSIVE_STATUS.test(String(attempt.source ?? attempt.result ?? ""));
+  const result = String(attempt.source ?? attempt.result ?? "");
+  return attempt.completed !== false && !attempt.failed && !INCONCLUSIVE_STATUS.test(result) && !/"submitted"\s*:\s*false\b/i.test(result);
 }
 
 const CHANGE_RESULT_WORD = /\b(sent|saved|submitted|booked|confirmed|cancelled|canceled|deleted|removed|archived|updated|patched|posted|created|inserted|added|written|moved|modified|edited|renamed|uploaded|published|deployed|paid|approved|installed|uninstalled|forwarded|replied)\b/i;
@@ -1526,6 +1592,7 @@ export const WORKING_RULES = [
   "- Never guess a command name. If a call returns \"Command not found\", run --help on its parent group (drop the last word) and use a command listed there, or look for another command that does the same thing.",
   "- executeAux4 adds the aux4 binary: pass only the command path and flags shown below, without an aux4 prefix.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
+  "- Before sending to a person, obtain their exact address from the request or a successful lookup. A person's name does not establish an address; never invent one or copy an example from help.",
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
   "- When changing an existing record, change only requested attributes and preserve the rest from the record you read. For a time-only change, keep the item's observed date; do not substitute today's date.",
   "- When describing a timed item, include the complete start-to-end range if both endpoints are present in the evidence.",
@@ -1746,6 +1813,28 @@ export function describeFoundCommands(found) {
   return lines.join("\n");
 }
 
+export function preferredDelegation(request, delegations = []) {
+  const text = String(request || "");
+  const directApi = /\b(endpoint|REST|GraphQL|curl)\b|\b(?:API|JSON)\s+(?:request|response|payload)\b|\b(?:fetch|get|return)\s+(?:the\s+)?JSON\b|\b(?:GET|POST|PUT|PATCH|DELETE)\s+(?:request|https?:\/\/)/i;
+  if (!/https?:\/\/\S+/i.test(text) || directApi.test(text)) return null;
+  const terms = words(text);
+  return delegations.find(d => d.urlTasks &&
+    (!(d.requestWords || []).length || d.requestWords.some(word => terms.has(word)))) || null;
+}
+
+export function executionCommandReference(request, plan, delegations = []) {
+  const delegate = preferredDelegation(request, delegations);
+  if (!delegate) return describeFoundCommands(findCommands(lookupQueries(request, plan)));
+  const group = delegate.via.replace(/:/g, " ");
+  const lines = ["Registered goal-level capability for this page task. Use it to inspect and complete the requested outcome; discover additional commands if another part of the request needs them:"];
+  for (const child of delegate.entrypoints || []) {
+    const command = `aux4 ${group} ${child}`;
+    const help = commandHelp(command, HELP_OUTPUT_LIMIT);
+    lines.push(`- ${group} ${child}${help ? `\n${help}` : " --help"}`);
+  }
+  return lines.join("\n");
+}
+
 export function composeExecuteQuestion(request, plan, recovery = "", foundCommands = "", delegationNote = "") {
   const criteria = plan.doneCriteria.map(c => `- ${c}`).join("\n");
   const steps = plan.steps.length ? `\n\nPossible starting points (provisional, revise as you learn more):\n${plan.steps.map(s => `- ${s}`).join("\n")}` : "";
@@ -1788,6 +1877,8 @@ export const DELEGATIONS = [
   {
     via: "agent:browser",
     group: "browser",
+    urlTasks: true,
+    entrypoints: ["run", "find"],
     note: "Web pages: the \"agent browser\" command group is available to you; the raw \"browser\" command group is not. For any task performed on a web page, use executeAux4 with command \"agent browser run --url <page> --goal \\\"<requested outcome>\\\"\" to complete the task, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to gather information. The supplied URL is a browser destination for page work, not a request to call its API directly. Pass all provided values as repeated --field \"Label=value\" flags. Let one run inspect, fill, save/submit, and report the result; do not split it into atomic clicks or fills unless it returns a blocker or asks for missing input. Reuse the returned session id for any follow-up. For a web change, identify the target from observed page data and name only requested fields. A click is not proof of a saved or deleted result: verify the resulting state once before claiming success. Use observed links, forms and commands; never guess routes, identifiers or API methods. If a run is incomplete, take a materially different evidence-based step."
   }
 ];
@@ -1999,6 +2090,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   const plan = buildPlan(options, planHistory);
   savePlan(history, { ...plan, ms: Date.now() - planStart });
   const metrics = { plan: { ...historyStats(planHistory), ms: Date.now() - planStart }, rounds: [] };
+  const previousActionChecks = new Set(actionCheckFiles(history));
 
   let deniedCommands = [];
   let deniedPatterns = [];
@@ -2017,7 +2109,8 @@ export async function runLoop(options, history, execute, recovery = "") {
   const priorCommands = new Set();
   const done = (stopped, attempt, note = "") => {
     metrics.stopped = stopped;
-    metrics.total = [metrics.plan, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
+    metrics.actionChecks = actionCheckStats(history, previousActionChecks);
+    metrics.total = [metrics.plan, metrics.actionChecks, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
       .reduce((acc, s) => addStats(acc, s), {});
     saveMetrics(history, metrics);
     return {
@@ -2058,7 +2151,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     // nothing is held, and telling the agent otherwise sends it round in circles.
     const notes = [...(options.delegations || []).map(d => d.note), ...(options.hooksSupported ? [] : [CONFIRM_NOTE])].join("\n");
     const questionBase = nextQuestion ? nextQuestion : attempt === 1
-      ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))), notes)
+      ? composeExecuteQuestion(options.request, plan, recovery, executionCommandReference(options.request, plan, options.delegations), notes)
       : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
@@ -2103,9 +2196,24 @@ export async function runLoop(options, history, execute, recovery = "") {
       }
     }
 
+    // A guard's refusal is a request to correct one proposed action. The model
+    // may phrase that as ordinary prose rather than the BLOCKED marker, so
+    // recover from the unresolved tool result itself before paying for verify.
+    const lastAttempt = extractAttemptLog(history).at(-1);
+    if (!pushedPastBlocked && lastAttempt?.failed &&
+        /ACTION_CHECK_(?:EVIDENCE_REQUIRED|SCOPE_DENIED)/.test(lastAttempt.source ?? lastAttempt.result ?? "")) {
+      pushedPastBlocked = true;
+      lastContent = await runExecution("The last proposed change was stopped before it ran. That does not establish that the request needs user input. Read the guard's reason, obtain the missing evidence with the available lookup tools, and complete the remaining authorized work. Preserve every exclusion. If the requested changes already succeeded, report those results and stop; do not make an additional change.", history, deniedCommands, false, deniedPatterns);
+      if (String(lastContent || "").trim()) lastAnswer = lastContent;
+      round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "action-check-recovery" };
+      const innerStop = stopAfterExecution(attempt);
+      if (innerStop) return innerStop;
+    }
+
     if (isBlocked(lastContent)) {
-      const offered = !pushedPastBlocked && allowedCommandsOffered(extractAttemptLog(history));
-      if (!offered) return done("blocked", attempt);
+      const currentLog = extractAttemptLog(history);
+      const offered = allowedCommandsOffered(currentLog);
+      if (pushedPastBlocked || !offered) return done("blocked", attempt);
       pushedPastBlocked = true;
       lastContent = await runExecution(composeNotBlockedQuestion(offered), history, deniedCommands, false, deniedPatterns);
       if (String(lastContent || "").trim()) lastAnswer = lastContent;

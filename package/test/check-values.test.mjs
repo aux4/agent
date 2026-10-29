@@ -3,15 +3,64 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 import {
   unsourcedFieldValues,
+  unsourcedRecipientValues,
+  unsourcedValues,
   checkValuesHooksFile,
   writeCheckValuesHooksFile,
   detectAiAgentHooksSupport,
   resetHooksSupportCacheForTests
 } from "../lib/agent-loop.mjs";
 import { parseFields, checkValues, repeatedReadGuardMessage } from "../lib/check-values.mjs";
+
+test("outbound addresses require exact identifiers from the request or successful reads", () => {
+  const command = 'notifications send --to="Person <person@work.test>" --cc other@work.test';
+  const read = { command: "contacts search --query Person", source: "Person <person@work.test>", failed: false };
+  assert.deepEqual(unsourcedRecipientValues(command, [read], "Copy other@work.test"), []);
+  assert.deepEqual(unsourcedRecipientValues(command, [], "Person works at work.test; copy other@work.test"),
+    [{ label: "to", value: "person@work.test" }]);
+  assert.deepEqual(unsourcedRecipientValues("contacts search --email guessed@work.test", [], "Find the address"), []);
+  assert.deepEqual(unsourcedRecipientValues("notes create --body 'Example: fictional@work.test'", [], "Write an example"), []);
+});
+
+test("documentation, failed reads and write echoes cannot source an outbound address", () => {
+  const command = "notifications send --recipient target@work.test";
+  for (const prior of [
+    { command: "contacts list --help", source: "target@work.test" },
+    { command: "contacts get", source: "target@work.test", failed: true },
+    { command, source: "sent to target@work.test" }
+  ]) assert.equal(unsourcedRecipientValues(command, [prior]).length, 1);
+  assert.equal(unsourcedValues([{ command, source: "sent to target@work.test" }]).length, 1);
+  assert.deepEqual(unsourcedValues([
+    { command, source: "blocked target@work.test", failed: true },
+    { command: "contacts get", source: "target@work.test" },
+    { command, source: "sent to target@work.test" }
+  ]), []);
+});
+
+test("the command hook blocks an invented recipient and allows recovery after a lookup", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "recipient-hook-"));
+  try {
+    const requestFile = path.join(dir, "request.txt");
+    const history = path.join(dir, "history.json");
+    fs.writeFileSync(requestFile, "Send the update to Morgan");
+    writeHistory(history, []);
+    const args = [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
+      "--requestFile", requestFile, "--history", history, "--command", "notifications send --to morgan@work.test"];
+    const denied = spawnSync(process.execPath, args, { encoding: "utf8" });
+    assert.equal(denied.status, 1);
+    assert.match(denied.stdout, /NOT run/);
+    writeHistory(history, [
+      { role: "assistant_with_tool", content: { tool_calls: [{ id: "lookup", name: "executeAux4", args: { command: "contacts search --query Morgan" } }] } },
+      { role: "tool", tool_call_id: "lookup", content: "Morgan <morgan@work.test>" }
+    ]);
+    const allowed = spawnSync(process.execPath, args, { encoding: "utf8" });
+    assert.equal(allowed.status, 0, allowed.stdout + allowed.stderr);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 function writeHistory(file, messages) {
   fs.writeFileSync(file, JSON.stringify({ messages }));
@@ -196,6 +245,13 @@ test("repeated-read guard blocks only duplicate evidence without an intervening 
   };
   assert.equal(repeatedReadGuardMessage("jobs status 2", [first]), "");
   assert.match(repeatedReadGuardMessage("jobs status 2", [first, second]), /same evidence twice/);
+  assert.equal(repeatedReadGuardMessage("jobs status 2 --help", [first, second]), "");
+  assert.equal(repeatedReadGuardMessage("jobs status 3", [first, second]), "");
+  assert.equal(repeatedReadGuardMessage("records get --recordId r7", [first, second]), "");
+  assert.equal(repeatedReadGuardMessage("jobs status 2", [first, { ...second, completed: false }]), "");
+  assert.match(repeatedReadGuardMessage("jobs status 2", [first, second, {
+    tool: "executeAux4", command: "records update --id r7", completed: false, failed: false
+  }]), /same evidence twice/);
   assert.equal(repeatedReadGuardMessage("jobs status 2", [first, second, {
     tool: "executeAux4", command: "calendar events update --id 1", failed: false, source: "updated"
   }]), "");
