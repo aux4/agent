@@ -4,7 +4,20 @@ import { randomUUID } from "node:crypto";
 import { isChangeCommand, runAux4, parseJSONLoose, commandWords } from "./agent-loop.mjs";
 export { actionCheckFiles, actionCheckStats } from "./agent-loop.mjs";
 
-export function authorizeAction(options, command, attempts = [], request = "", history = "") {
+// Read the installed command's contract; do not assume every --to is email
+// (other tools can address channels or account IDs).
+export function routingCommandHelp(command) {
+  if (!isChangeCommand(command) || !/(?:^|\s)--(?:to|cc|bcc|recipient|recipients|email)(?:[=\s]|$)/i.test(command)) return "";
+  const words = commandWords(command) || [];
+  if (words[0] === "aux4") words.shift();
+  const flag = words.findIndex(word => word.startsWith("--"));
+  const commandPath = flag < 0 ? words : words.slice(0, flag);
+  if (!commandPath.length) return "";
+  const result = runAux4([...commandPath, "--help"], { allowFailure: true, timeout: 5000 });
+  return result.ok ? result.stdout.replace(/\x1b\[[0-9;]*m/g, "").slice(0, 6000) : "";
+}
+
+export function authorizeAction(options, command, attempts = [], request = "", history = "", commandReference = undefined) {
   if (!isChangeCommand(command) || /(?:^|\s)--help(?:\s|$)/.test(command)) return { allow: true, skipped: true };
   // A registered goal-level delegate owns inspection and its own action
   // guards. Do not require the parent to know the page's target records before
@@ -23,7 +36,8 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     remaining -= result.length;
     return { command: a.command, result };
   });
-  const payload = { request, proposedAction: command, successfulActionsAndResults: evidence };
+  const payload = { request, proposedAction: command, successfulActionsAndResults: evidence,
+    commandReference: commandReference ?? routingCommandHelp(command) };
   let auditBase = "";
   if (history) {
     fs.mkdirSync(path.dirname(history), { recursive: true });

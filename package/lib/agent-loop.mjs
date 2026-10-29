@@ -1016,7 +1016,7 @@ function emailAddresses(text) {
 // Routing addresses are identifiers, so combining words from unrelated facts
 // cannot establish one. Require an exact address from the request or a
 // successful read; documentation and earlier write echoes are not sources.
-export function unsourcedRecipientValues(command, attempts = [], request = "") {
+export function unsourcedRecipientValues(command, attempts = [], request = "", commandHelp = "") {
   if (!isChangeCommand(command) || /(?:^|\s)--help(?:\s|$)/.test(command)) return [];
   const words = commandWords(command) || [];
   const recipients = [];
@@ -1024,13 +1024,22 @@ export function unsourcedRecipientValues(command, attempts = [], request = "") {
     const match = words[i].match(/^--(to|cc|bcc|recipient|recipients|email)(?:=(.*))?$/i);
     if (!match) continue;
     const value = match[2] ?? words[++i] ?? "";
-    for (const address of emailAddresses(value)) recipients.push({ label: match[1], value: address });
+    const addresses = emailAddresses(value);
+    const sections = String(commandHelp).split(/(?=^  --)/m);
+    const parameterHelp = sections.find(section => section.startsWith(`  --${match[1]}`) &&
+      new RegExp(`^  --${match[1]}(?:[ =\\s]|$)`, "i").test(section)) || "";
+    // A person's name can identify the intended contact, but it is not the
+    // email address required by a typed command parameter.
+    if (!addresses.length && /\be-?mail\b/i.test(parameterHelp)) {
+      recipients.push({ label: match[1], value, invalidFormat: true });
+    }
+    for (const address of addresses) recipients.push({ label: match[1], value: address });
   }
   const sources = [request, ...attempts.filter(a =>
-    !a.failed && isReadCommand(a.command) && !/(?:^|\s)--help(?:\s|$)/.test(a.command)
+    a.completed !== false && !a.failed && isReadCommand(a.command) && !/(?:^|\s)--help(?:\s|$)/.test(a.command)
   ).map(a => a.source ?? a.result ?? "")];
   const known = new Set(sources.flatMap(emailAddresses).map(address => address.toLowerCase()));
-  return recipients.filter(({ value }) => !known.has(value.toLowerCase()));
+  return recipients.filter(({ value, invalidFormat }) => invalidFormat || !known.has(value.toLowerCase()));
 }
 
 // A value is sourced when every word and number in it appears in the request or

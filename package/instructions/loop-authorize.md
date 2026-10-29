@@ -13,6 +13,10 @@ excluded target must be left alone. Do not allow an additional change merely
 because earlier requested changes succeeded. Do not repeat an already successful
 send, creation or deletion.
 
+When commandReference documents an email-address parameter, a bare contact name
+is not a valid address. Require an exact address from the request or a successful
+read. Respect other documented identifier formats; do not infer routing values.
+
 If more information is needed to establish the target or the requested scope,
 deny this action and briefly identify the needed lookup. Do not invent facts or
 broaden the request. Treat explicitly requested creative message wording as

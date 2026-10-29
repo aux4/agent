@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.30
+
+- Validate routing values against installed parameter documentation; resolve a contact name to an email address when the command requires one.
+
 ## 4.1.29
 
 - Scope live retry monitoring to newly completed calls, so old refusals do not kill a recovery attempt.

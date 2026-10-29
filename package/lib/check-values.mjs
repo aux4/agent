@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import { authorizeAction } from "./action-check.mjs";
+import { authorizeAction, routingCommandHelp } from "./action-check.mjs";
 // `aux4 agent check-values` -- a `before` hook target for aux4/ai-agent's
 // tool-call hooks (HARN-030). Wired in agent-loop.mjs's checkValuesHooksFile
 // as command guards and a `before` hook on every `agent:browser/run` call:
@@ -127,7 +127,8 @@ async function main(argv) {
   }
   if (options.repeatReadGuard) {
     const attempts = extractAttemptLog(options.history);
-    const recipients = unsourcedRecipientValues(options.command, attempts, options.request);
+    const reference = routingCommandHelp(options.command);
+    const recipients = unsourcedRecipientValues(options.command, attempts, options.request, reference);
     const words = commandWords(options.command) || [];
     const flagIndex = words.findIndex(word => word.startsWith("--"));
     const actionPath = (flagIndex < 0 ? words : words.slice(0, flagIndex)).filter((word, i) => i !== 0 || word !== "aux4");
@@ -144,7 +145,7 @@ async function main(argv) {
       // __history is a temporary live snapshot supplied by ai-agent's hook
       // runtime. Keep audit histories next to the actual conversation so its
       // metrics and the caller's artifact collection include every check.
-      const verdict = authorizeAction(config, options.command, attempts, options.request, config.history || options.history);
+      const verdict = authorizeAction(config, options.command, attempts, options.request, config.history || options.history, reference);
       if (!verdict.allow) {
         process.stdout.write(`ACTION_CHECK_SCOPE_DENIED: This call was NOT run: ${verdict.reason} Check the target and requested scope against the existing facts, obtain missing evidence if needed, and continue with the authorized work.\n`);
         process.exit(1);

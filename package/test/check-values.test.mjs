@@ -363,3 +363,35 @@ test("a tool confirmation contract counts as asking", () => {
   assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: confirmationResult("Submit", "Submit") }]), true);
   assert.equal(confirmationWasAsked([{ command: "agent browser run --url x", source: '{"status":"needs-input","reason":"filled"}' }]), false);
 });
+
+
+test("recipient format follows the installed parameter contract, not a command-name rule", () => {
+  const mailHelp = "send\nSend a notification.\n\n  --to <arg>\n    Recipient email address.\n\n  --body <optional>\n    Message text.";
+  assert.deepEqual(unsourcedRecipientValues("notifications send --to Morgan", [], "Send to Morgan", mailHelp),
+    [{ label: "to", value: "Morgan", invalidFormat: true }]);
+  assert.deepEqual(unsourcedRecipientValues("notifications send --to morgan@work.test", [], "Send to morgan@work.test", mailHelp), []);
+  const channelHelp = "send\n  --to <arg>\n    Channel name or account identifier.\n  --body <arg>\n    Text, including email examples.";
+  assert.deepEqual(unsourcedRecipientValues("notifications send --to team-updates", [], "Post to team-updates", channelHelp), []);
+  const pending = { command: "contacts get Morgan", completed: false, source: "morgan@work.test" };
+  assert.equal(unsourcedRecipientValues("notifications send --to morgan@work.test", [pending], "Send to Morgan", mailHelp).length, 1);
+});
+
+
+test("the live hook reads parameter help and rejects a display name for an email destination", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "typed-recipient-hook-"));
+  try {
+    const bin = path.join(dir, "aux4");
+    fs.writeFileSync(bin, `#!/usr/bin/env node
+if (process.argv.at(-1) !== '--help') process.exit(2);
+console.log('send\\n  --to <arg>\\n    Recipient email address.\\n  --body <arg>\\n    Text.');
+`, { mode: 0o755 });
+    const history = path.join(dir, "history.json");
+    writeHistory(history, []);
+    const args = [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
+      "--request", "Send the update to Morgan", "--history", history, "--command", "notifications send --to Morgan"];
+    const denied = spawnSync(process.execPath, args, { encoding: "utf8", env: { ...process.env, AUX4_BIN: bin } });
+    assert.equal(denied.status, 1, denied.stdout + denied.stderr);
+    assert.match(denied.stdout, /recipient address Morgan is not established/);
+    assert.match(denied.stdout, /successful lookup|matching record/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
