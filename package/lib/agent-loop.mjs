@@ -1821,7 +1821,12 @@ export function describeFoundCommands(found) {
       if (!name) continue;
       const nextLine = (helpLines[i + 1] || "").trim();
       const description = nextLine.startsWith("--") ? "" : nextLine.slice(0, 100);
-      children.push({ name, description });
+      const flags = [];
+      for (let j = i + 1; j < helpLines.length && !/^ {2}[a-zA-Z][a-zA-Z0-9:_-]*\s*$/.test(helpLines[j]); j++) {
+        const flag = helpLines[j].match(/^ {4}(--[a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([^\n]+))?$/);
+        if (flag) flags.push(`${flag[1]}${flag[2] === "<arg>" ? " <arg>" : ""}`);
+      }
+      children.push({ name, description, flags });
     }
     const commandPath = group.replace(/^aux4\s+/, "");
     const paths = [...new Set(children.map(child => `${commandPath} ${child.name}`))];
@@ -1834,12 +1839,27 @@ export function describeFoundCommands(found) {
     lines.push(index);
     remaining -= index.length;
     describedGroups.add(group);
-    references.push({ commandPath, groupHelp });
+    references.push({ commandPath, groupHelp, children });
     helped++;
   }
   // Reserve the command index for EVERY matched group before spending the
   // remaining budget on verbose flags from any single group. A large first
   // service must not hide the follow-up reads in another service.
+  // Compact parameter names precede verbose prose so later child commands
+  // have a usable contract too. Keep every group index reserved first.
+  for (let i = 0; i < references.length; i++) {
+    const { commandPath, children } = references[i];
+    const budget = Math.floor(remaining / (references.length - i));
+    let used = 0;
+    for (const child of children) {
+      if (!child.flags.length) continue;
+      const signature = `  ${commandPath} ${child.name} Parameters: ${child.flags.join(", ")}.`;
+      if (used + signature.length + 1 > budget) continue;
+      lines.push(signature);
+      used += signature.length + 1;
+    }
+    remaining -= used;
+  }
   for (let i = 0; i < references.length; i++) {
     const { commandPath, groupHelp } = references[i];
     const limit = Math.min(HELP_GROUP_OUTPUT_LIMIT, Math.floor(remaining / (references.length - i)));

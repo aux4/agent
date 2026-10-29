@@ -1050,7 +1050,7 @@ const args = process.argv.slice(2);
 if (args.includes("--help")) {
   const command = args.slice(0, args.indexOf("--help")).join(" ");
   if (command === "records") console.log("records\\n  events\\n  Manage records.\\n  search\\n  Search records.");
-  else if (command === "records events") console.log("events\\n  list\\n  List events.\\n  update\\n  Update an event.");
+  else if (command === "records events") console.log("events\\n  list\\n  List events.\\n  update\\n  Update an event.\\n    --recordId <arg>\\n      Existing record.\\n    --begin [optional]\\n      New beginning.\\n    --finish [optional]\\n      New ending.");
   else if (command === "mail") console.log("mail\\n  send\\n  Send a message.\\n    --to <arg>");
   else console.log("help for " + command);
   process.exit(0);
@@ -1067,6 +1067,7 @@ console.log(JSON.stringify([]));
     ]);
     assert.match(text, /records events \(group; complete child paths: records events list, records events update\)/);
     assert.doesNotMatch(text, /- records \(group/);
+    assert.match(text, /records events update Parameters: --recordId <arg>, --begin, --finish\./);
     assert.match(text, /mail \(group; complete child paths: mail send\)/);
   } finally {
     if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;

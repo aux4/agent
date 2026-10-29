@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.37
+
+- Surface installed child-command parameter names before verbose help, retaining command indexes for every discovered service.
+
 ## 4.1.36
 
 - Treat filtered misses as limited evidence and allow one broader lookup before declaring absence; preserve observed zones in machine timestamps.
