@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { authorizeAction, actionCheckFiles, actionCheckStats } from "../lib/action-check.mjs";
+import { authorizeAction, actionCheckFiles, actionCheckStats, unsourcedActionIds } from "../lib/action-check.mjs";
 import { writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 test("pre-action checks inherit the configured model, retain scope evidence, and record their cost", () => {
@@ -63,7 +63,7 @@ test("an unavailable or malformed action verdict blocks the write", () => {
     const options = { configFile: "/local.yaml", packageDir: "/agent" };
     for (const reply of ['not a verdict', '{"allow":"true"}', '{"allow":true}']) {
       fs.writeFileSync(fake, `#!/bin/sh\nprintf '%s' '${reply}'\n`, { mode: 0o755 });
-      assert.equal(authorizeAction(options, "records update --id r-1").allow, reply === '{"allow":true}');
+      assert.equal(authorizeAction(options, "records update --id r-1", [{command:"records list",source:"r-1"}]).allow, reply === '{"allow":true}');
     }
     process.env.AUX4_BIN = path.join(dir, "missing");
     assert.equal(authorizeAction(options, "records delete --id r-1").allow, false);
@@ -71,4 +71,17 @@ test("an unavailable or malformed action verdict blocks the write", () => {
     if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test("existing target IDs require exact observed identifiers, including positional forms", () => {
+  const help = "delete\nDelete a record.\n  --recordId <arg>\n    Record identifier.\n  --workspaceId [primary]\n    Workspace identifier.";
+  const read = [{ command: "records list", source: '{"id":"r-70"}' }];
+  assert.deepEqual(unsourcedActionIds("records delete --recordId r-7", read, "Delete the Winter report", help), [{ parameter: "recordId", value: "r-7" }]);
+  assert.equal(unsourcedActionIds("records delete r-7", read, "Delete the Winter report", help).length, 1);
+  assert.deepEqual(unsourcedActionIds("records delete r-70 --workspaceId primary", read, "Delete the Winter report", help), []);
+  assert.deepEqual(unsourcedActionIds("records delete --recordId r-7", [], "Delete r-7", help), []);
+  assert.equal(unsourcedActionIds("records delete --recordId r-7", [{command:"records list --help",source:"r-7"}], "Delete the Winter report", help).length, 1);
+  assert.deepEqual(unsourcedActionIds("records create --recordId new-7", [], "Create a report", "create\nCreate a new record."), []);
+  assert.deepEqual(unsourcedActionIds("records delete --recordId r-é", [{command:"records list",source:'{"id":"r-\\u00e9"}'}], "Delete the named record", help), []);
 });

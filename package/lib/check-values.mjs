@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import { authorizeAction, routingCommandHelp } from "./action-check.mjs";
+import { authorizeAction, actionCommandHelp } from "./action-check.mjs";
 // `aux4 agent check-values` -- a `before` hook target for aux4/ai-agent's
 // tool-call hooks (HARN-030). Wired in agent-loop.mjs's checkValuesHooksFile
 // as command guards and a `before` hook on every `agent:browser/run` call:
@@ -127,7 +127,7 @@ async function main(argv) {
   }
   if (options.repeatReadGuard) {
     const attempts = extractAttemptLog(options.history);
-    const reference = routingCommandHelp(options.command);
+    const reference = actionCommandHelp(options.command);
     const recipients = unsourcedRecipientValues(options.command, attempts, options.request, reference);
     const words = commandWords(options.command) || [];
     const flagIndex = words.findIndex(word => word.startsWith("--"));

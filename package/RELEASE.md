@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.34
+
+- Require exact target identifiers from the request or prior successful results before existing-resource mutations; retain documented defaults and positional ID syntax.
+
 ## 4.1.33
 
 - Reserve a compact child-command index for every discovered group before distributing detailed-help budget, keeping prerequisite lookups visible across services.
