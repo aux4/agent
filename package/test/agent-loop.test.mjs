@@ -456,6 +456,12 @@ test("changeDenyPatterns covers the same target when cosmetic fields and flag or
   assert.equal(matches(differentTarget), false);
 });
 
+test("changeDenyPatterns preserves mixed-case entity flags for the same target", () => {
+  const original = 'google calendar events update --eventId evt-123 --start "2026-03-20T10:00:00Z"';
+  const patterns = changeDenyPatterns(original);
+  assert.ok(patterns.some(pattern => pattern.includes("--eventId") && pattern.includes("evt-123")));
+});
+
 test("target patterns are admitted only through the dedicated generated-pattern argument", () => {
   const raw = '{"budget":{"calls":5}}';
   const generated = 'google calendar events create *--summary*"Vendor sync meeting"*';
@@ -696,6 +702,17 @@ test("missingParameterHints explains aux4's missing-parameter error", () => {
   assert.deepEqual(missingParameterHints([{ command: "x", failed: false, result: "ok" }]), []);
 });
 
+test("missingParameterHints directs recovery from an unsupported option", () => {
+  const hints = missingParameterHints([{
+    command: "google calendar events list --calendars primary",
+    failed: true,
+    result: "Error executing command: Unknown parameter --calendars"
+  }]);
+  assert.match(hints.join(" "), /exact --help/);
+  assert.match(hints.join(" "), /continue the remaining steps/);
+  assert.match(hints.join(" "), /Do not retry the rejected option/);
+});
+
 
 test("a round that asked without looking is pushed once before it is verified", async () => {
   const fake = planVerifyFake({ verifyStatus: "pass" });
@@ -834,9 +851,15 @@ test("isReadCommand needs a read verb among the command words and no change verb
 test("working rules forbid guessing commands and say how to recover from Command not found", () => {
   assert.match(WORKING_RULES, /Use the installed commands listed above/);
   assert.match(WORKING_RULES, /Never guess a command name/);
+  assert.match(WORKING_RULES, /Help output is documentation, not task evidence/);
+  assert.match(WORKING_RULES, /use a complete child command path/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
   assert.match(WORKING_RULES, /Do not repeat a search with reworded queries/);
   assert.match(WORKING_RULES, /After a successful lookup, reuse its facts/);
+  assert.match(WORKING_RULES, /If group help lists subcommands, choose one and put it before its flags/);
+  assert.match(WORKING_RULES, /same command returns identical evidence after parameter changes/);
+  assert.match(WORKING_RULES, /For a time-only change, keep the item's observed date/);
+  assert.match(WORKING_RULES, /include the complete start-to-end range if both endpoints are present/);
   assert.match(WORKING_RULES, /If a tool reports that a call or token budget is exhausted, stop making tool calls/);
   assert.match(WORKING_RULES, /do not issue back-to-back status checks/);
   assert.match(WORKING_RULES, /executeAux4 adds the aux4 binary/);
@@ -872,7 +895,7 @@ console.log(JSON.stringify(out));
     const text = describeFoundCommands(found);
     assert.match(text, /exact syntax from --help/);
     assert.match(text, /Pass the shown command path and flags to executeAux4; it adds the aux4 binary/);
-    assert.match(text, /- google gmail\n  gmail\n    list\n      --query <optional>\n    archive\n      --id <arg> <multiple>/);
+    assert.match(text, /- google gmail \(group; complete child paths: google gmail list, google gmail archive\)\n  gmail\n    list\n      --query <optional>\n    archive\n      --id <arg> <multiple>/);
     assert.doesNotMatch(text, /- aux4 google gmail list/);
     assert.match(text, /Use these flags directly without another help lookup/);
     const fallback = describeFoundCommands([{ command: "aux4 missing group list", description: "List missing items." }]);
@@ -904,6 +927,89 @@ console.log(JSON.stringify(out));
     assert.ok(found.some(item => item.command === "aux4 acme inbox list"));
   } finally {
     if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findCommands parses pkger find's colored text output", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-text-"));
+  const bin = path.join(dir, "aux4");
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const q = args[args.indexOf("--query") + 1] || "";
+const yellow = "\\x1b[33m", cyan = "\\x1b[36m", reset = "\\x1b[0m";
+if (q.includes("calendar")) {
+  console.log(yellow + "aux4 google calendar events list" + reset + "  " + cyan + "(community/google-calendar)" + reset);
+  console.log("List events on a calendar.");
+} else if (q.includes("email")) {
+  console.log(yellow + "aux4 google gmail send" + reset + "  " + cyan + "(community/google-gmail)" + reset);
+  console.log("Send an email message.");
+} else {
+  console.log("No commands or packages found for " + JSON.stringify(q));
+}
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const found = findCommands(["read calendar meeting", "send an email"]);
+    assert.deepEqual(found.map(item => item.command), ["aux4 google calendar events list", "aux4 google gmail send"]);
+    assert.deepEqual(found.map(item => item.description), ["List events on a calendar.", "Send an email message."]);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("command references prefer a matched nested group and spell out full child paths", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-groups-"));
+  const bin = path.join(dir, "aux4");
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("--help")) {
+  const command = args.slice(0, args.indexOf("--help")).join(" ");
+  if (command === "records") console.log("records\\n  events\\n  Manage records.\\n  search\\n  Search records.");
+  else if (command === "records events") console.log("events\\n  list\\n  List events.\\n  update\\n  Update an event.");
+  else if (command === "mail") console.log("mail\\n  send\\n  Send a message.\\n    --to <arg>");
+  else console.log("help for " + command);
+  process.exit(0);
+}
+console.log(JSON.stringify([]));
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const text = describeFoundCommands([
+      { command: "aux4 records", description: "The records command group." },
+      { command: "aux4 records events", description: "The records events command group." },
+      { command: "aux4 mail", description: "The mail command group." }
+    ]);
+    assert.match(text, /records events \(group; complete child paths: records events list, records events update\)/);
+    assert.doesNotMatch(text, /- records \(group/);
+    assert.match(text, /mail \(group; complete child paths: mail send\)/);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findCommands stops after an unavailable search instead of repeating a cold-index failure", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-failure-"));
+  const bin = path.join(dir, "aux4");
+  const calls = path.join(dir, "calls.txt");
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+require("node:fs").appendFileSync(process.env.FIND_CALL_LOG, "called\\n");
+process.exit(1);
+`, { mode: 0o755 });
+  const previousBin = process.env.AUX4_BIN;
+  const previousLog = process.env.FIND_CALL_LOG;
+  process.env.AUX4_BIN = bin;
+  process.env.FIND_CALL_LOG = calls;
+  try {
+    assert.deepEqual(findCommands(["read calendar", "send email", "update event"]), []);
+    assert.equal(fs.readFileSync(calls, "utf8"), "called\n");
+  } finally {
+    if (previousBin === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previousBin;
+    if (previousLog === undefined) delete process.env.FIND_CALL_LOG; else process.env.FIND_CALL_LOG = previousLog;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -1259,6 +1365,8 @@ test("a capability with a goal-level agent is delegated: its low-level commands 
   assert.equal(delegations.length, 1);
   assert.match(delegations[0].note, /executeAux4 with command "agent browser run --url/);
   assert.match(delegations[0].note, /Reuse the returned session id/);
+  assert.match(delegations[0].note, /the "agent browser" command group is available/);
+  assert.match(delegations[0].note, /For any task performed on a web page, use executeAux4/);
   assert.deepEqual(delegatedDenyPatterns(delegations), ["browser", "browser *", "aux4 browser", "aux4 browser *"]);
   assert.deepEqual(activeDelegations(new Set(["main", "browser"])), []);
   const policy = JSON.parse(addDenyPatterns('{"budget":{"calls":60},"deny":[{"executeAux4":["x"]}]}', ["browser *"]));

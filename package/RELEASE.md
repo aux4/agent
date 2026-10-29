@@ -1,5 +1,27 @@
 # Release notes
 
+## 4.1.27
+
+- Prioritize the deepest matched command groups and show their complete child paths before broader help consumes the command-reference budget.
+- State that help is documentation and group headings must be completed with a child command before flags.
+- Include a complete start-to-end range when reporting a timed item and both endpoints are available.
+
+## 4.1.26
+
+- Parse the installed-command search's colored text results so relevant commands are supplied to the agent before it starts exploring.
+- Stop after a failed command search so a cold index is not rebuilt once per query phrase.
+
+## 4.1.25
+
+- Clarify that the goal-level browser command is available while raw browser commands are not, and direct page tasks to the end-to-end browser agent.
+- Make command-group help, repeated identical lookup results, and preservation of unrequested record fields explicit in the working rules.
+
+## 4.1.24
+
+- Preserve mixed-case entity flags in same-target retry guards and stop retrying rejected options.
+- Give hooks the raw command line so repeated-read checks can compare the actual calls.
+- Delegate browser work as one end-to-end goal and verify the resulting state before reporting completion.
+
 ## 4.1.23
 
 - A repeated-result stop now goes through verification and a bounded recovery round with an alternate-action hint instead of ending the whole task.

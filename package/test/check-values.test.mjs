@@ -64,7 +64,7 @@ test("checkValuesHooksFile targets executeAux4 on every agent:browser/run call",
   assert.match(hook.before[0], /check-values\.mjs/);
   assert.match(hook.before[0], /\/pkg\/dir/);
   assert.deepEqual(file.hooks.slice(0, 2).map(h => h.command), ["*/*", "*/*/*"]);
-  assert.match(file.hooks[0].before[0], /--repeatReadGuard true --history value\(__history\) --command value\(command\)/);
+  assert.match(file.hooks[0].before[0], /--repeatReadGuard true --history value\(__history\) --command value\(__commandLine\)/);
 });
 
 test("writeCheckValuesHooksFile writes the hooks file next to the history file", () => {

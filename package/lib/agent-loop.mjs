@@ -693,26 +693,32 @@ export function changeDenyPatterns(command) {
     const token = argv[i];
     if (!token.startsWith("--")) continue;
     const equals = token.indexOf("=");
-    const key = (equals < 0 ? token.slice(2) : token.slice(2, equals)).toLowerCase();
+    const spelling = equals < 0 ? token.slice(2) : token.slice(2, equals);
+    const key = spelling.toLowerCase();
     let value = equals < 0 ? "true" : token.slice(equals + 1);
     if (equals < 0 && i + 1 < argv.length && !argv[i + 1].startsWith("--")) value = argv[++i];
-    const values = flags.get(key) || [];
-    values.push(value);
-    flags.set(key, values);
+    const entry = flags.get(key) || { values: [], spellings: new Set() };
+    entry.values.push(value);
+    entry.spellings.add(spelling);
+    flags.set(key, entry);
   }
 
   const entityIds = [...flags].filter(([key]) => ENTITY_TARGET_FLAG.test(key) && !CONTEXT_TARGET_FLAGS.has(key));
   const naturalKeys = [...flags].filter(([key]) => NATURAL_TARGET_FLAGS.has(key));
   const targetFields = entityIds.length ? entityIds : naturalKeys;
-  if (!targetFields.length || targetFields.length > 3 || targetFields.some(([, values]) => values.length !== 1)) return [];
+  if (!targetFields.length || targetFields.length > 3 || targetFields.some(([, entry]) => entry.values.length !== 1)) return [];
 
-  const optionsByField = targetFields.map(([key, values]) => {
-    const value = values[0];
+  const optionsByField = targetFields.map(([key, entry]) => {
+    const value = entry.values[0];
     // These values are inserted into a glob. A value containing glob or regex
     // metacharacters could broaden the deny beyond this one target.
     if (!value || /[*?\[\]\\'"\n\r]/.test(value)) return [];
     const forms = /\s/.test(value) ? [`"${value}"`, `'${value}'`] : [value, `"${value}"`, `'${value}'`];
-    return forms.map(form => `--${key}*${form}*`);
+    // Preserve the option spelling the successful call used (for camelCase
+    // flags such as --eventId), and include its lowercase form so cosmetic
+    // case changes cannot evade the target guard.
+    const spellings = [...new Set([...entry.spellings, key])];
+    return spellings.flatMap(spelling => forms.map(form => `--${spelling}*${form}*`));
   });
   if (optionsByField.some(forms => !forms.length)) return [];
 
@@ -1282,7 +1288,7 @@ export function checkValuesHooksFile(packageDir, requestFile = "") {
   const repeatedReadHook = pattern => ({
     tool: "executeAux4",
     command: pattern,
-    before: [`node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(command)`]
+    before: [`node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(__commandLine)`]
   });
   return {
     hooks: [
@@ -1410,8 +1416,16 @@ export function missingParameterHints(attempts) {
   const hints = [];
   for (const a of attempts) {
     if (!a.failed) continue;
-    const m = String(a.result || a.resultSummary || "").match(/Error to enter the value of (\w+)/i);
-    if (m) hints.push(`"${a.command.slice(0, 80)}" was missing the required --${m[1]} parameter: pass --${m[1]} with its value.`);
+    const result = String(a.result || a.resultSummary || "");
+    const missing = result.match(/Error to enter the value of (\w+)/i);
+    if (missing) {
+      hints.push(`"${a.command.slice(0, 80)}" was missing the required --${missing[1]} parameter: pass --${missing[1]} with its value.`);
+      continue;
+    }
+    const unsupported = result.match(/(?:unknown|unsupported|unrecognized|unexpected)\s+(?:parameter|option|flag)\s*:?\s*(?:--)?([\w-]+)/i);
+    if (unsupported) {
+      hints.push(`"${a.command.slice(0, 80)}" rejected --${unsupported[1]} as an unsupported parameter. Read that command's exact --help, remove or replace the rejected option, then continue the remaining steps. Do not retry the rejected option.`);
+    }
   }
   return hints.length ? ["", ...[...new Set(hints)]] : [];
 }
@@ -1507,14 +1521,19 @@ export const MESSAGES_STAND_ALONE = "Anything you send on the requester's behalf
 export const WORKING_RULES = [
   "How to work:",
   "- Find the command: match the request's own words to the help descriptions and to any list of commands you may run; drill down with --help from the most specific group.",
-  "- Use the installed commands listed above when they fit; otherwise find one with --help (aux4 --help lists every group). A package name (scope/name) is not a command.",
+  "- Help output is documentation, not task evidence. A group heading is not an action: use a complete child command path from its help, with the child before any flags. Do not call the group path with flags.",
+  "- Use the installed commands listed above when they fit; otherwise find one with --help (aux4 --help lists every group). If group help lists subcommands, choose one and put it before its flags; repeating the group with different flags does not run a subcommand. A package name (scope/name) is not a command.",
   "- Never guess a command name. If a call returns \"Command not found\", run --help on its parent group (drop the last word) and use a command listed there, or look for another command that does the same thing.",
   "- executeAux4 adds the aux4 binary: pass only the command path and flags shown below, without an aux4 prefix.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
+  "- When changing an existing record, change only requested attributes and preserve the rest from the record you read. For a time-only change, keep the item's observed date; do not substitute today's date.",
+  "- When describing a timed item, include the complete start-to-end range if both endpoints are present in the evidence.",
   "- Before sending or submitting a message, re-read the tool results it depends on and make sure the message agrees with them.",
+  "- When a command rejects an option, use that command's exact --help to remove or replace the unsupported option, then continue the remaining steps; never retry an option the command rejected.",
+  "- A successful click or tool status is not proof that a requested change happened. Verify the resulting state once, and claim completion only when the evidence shows the requested outcome.",
   "- If an action returns \"User aborted\", the requester declined it: stop and say so, do not retry it.",
-  "- After a successful lookup, reuse its facts; rerun it only if a change or new evidence could have changed the result.",
+  "- After a successful lookup, reuse its facts; rerun it only if a change or new evidence could have changed the result. If the same command returns identical evidence after parameter changes, stop varying filters and choose a materially different source or action.",
   "- Read each lookup result before choosing the next step. Do not repeat a search with reworded queries when it returned the same evidence; try one materially different relevant source or scope, then stop if it adds nothing.",
   "- If a tool reports that a call or token budget is exhausted, stop making tool calls and report what remains incomplete.",
   "- For a background job, use a real wait interval or a polling command; do not issue back-to-back status checks when the job is still running.",
@@ -1552,19 +1571,49 @@ function compactFindTerms(queries) {
     .join(" ");
 }
 
+// pkger-finder prints human-readable command rows, not JSON. Keep accepting
+// JSON too for older/local find implementations, but parse the documented
+// text form so the agent can actually receive installed command references.
+function parseFindResults(output) {
+  const parsed = parseJSONLoose(output, null);
+  if (Array.isArray(parsed)) return parsed;
+
+  const lines = String(output || "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .split(/\r?\n/);
+  const results = [];
+  for (let i = 0; i < lines.length; i++) {
+    const row = lines[i].trim().match(/^(aux4(?:\s+\S+)+?)\s{2,}\(([^()]+)\)$/);
+    if (!row) continue;
+    const description = (lines[i + 1] || "").trim();
+    results.push({ command: row[1], description });
+  }
+  return results;
+}
+
 export function findCommands(queries) {
   const lists = [];
+  let searchFailed = false;
   const search = (query, serviceSearch = false) => {
-    if (!query) return;
+    if (!query || searchFailed) return;
     const result = runAux4(["aux4", "pkger", "find", "--query", query, "--limit", String(FIND_LIMIT)], { allowFailure: true, timeout: FIND_TIMEOUT_MS });
-    const list = parseJSONLoose(result.stdout, []);
+    // A cold/stale index can make the first search exceed its bounded wait.
+    // Repeating that rebuild for every phrase only burns time and CPU.
+    if (!result.ok) {
+      searchFailed = true;
+      return;
+    }
+    const list = parseFindResults(result.stdout);
     if (!Array.isArray(list)) return;
     lists.push(list
       .map(item => ({ command: String(item?.command || "").trim(), description: String(item?.description || ""), serviceSearch }))
       .filter(item => item.command && !/^aux4 (ai agent|agent ask|aux4 pkger)(\s|$)/.test(item.command)));
   };
   const cleanQueries = queries.map(findQuery).filter(Boolean);
-  for (const query of cleanQueries) search(query);
+  for (const query of cleanQueries) {
+    search(query);
+    if (searchFailed) break;
+  }
 
   // A matching mock preset names the service it configures (for example,
   // "aux4 mock preset <service>"). Search that service plus the same task
@@ -1633,27 +1682,42 @@ export function describeFoundCommands(found) {
   let helped = 0;
   const describedGroups = new Set();
   const lines = [
-    "Installed aux4 command reference (exact syntax from --help). Pass the shown command path and flags to executeAux4; it adds the aux4 binary. Use these flags directly without another help lookup:"
+    "Installed aux4 command reference (exact syntax from --help). Pass the shown command path and flags to executeAux4; it adds the aux4 binary. Use these flags directly without another help lookup. Group headings are not actions: run a complete listed child path before adding flags:"
   ];
 
-  // Search may return a read subcommand while omitting the related write
-  // subcommand that actually completes the request. Put a relevant parent
-  // group's help first; it lists sibling commands and keeps the model from
-  // getting trapped with only half of a service's capabilities.
+  // Search may return a group rather than the leaf command that completes the
+  // request. Prefer the exact, deepest matched group so its child commands are
+  // visible before broad ancestor help consumes the prompt budget.
   const groupCandidates = [];
   for (const f of found) {
     const parts = String(f.command || "").trim().split(/\s+/);
+    const command = String(f.command || "").trim();
     const group = parts[0] === "aux4"
-      ? (parts.length >= 4 ? parts.slice(0, -1).join(" ") : parts.length === 3 ? f.command : "")
+      ? (/\bcommand group\b/i.test(f.description || "")
+        ? command
+        : parts.length >= 4 ? parts.slice(0, -1).join(" ") : "")
       : "";
     if (group && !groupCandidates.includes(group)) groupCandidates.push(group);
   }
-  for (const group of groupCandidates) {
+
+  const deepestGroups = groupCandidates.filter(group =>
+    !groupCandidates.some(other => other !== group && other.startsWith(`${group} `)));
+  deepestGroups.sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length
+    || groupCandidates.indexOf(a) - groupCandidates.indexOf(b));
+  for (const group of deepestGroups) {
     if (helped >= MAX_HELP_OUTPUTS) break;
     const groupHelp = commandHelp(group, HELP_GROUP_OUTPUT_LIMIT);
     if (!groupHelp || groupHelp.length > remaining) continue;
     describedGroups.add(group);
-    lines.push(`- ${group.replace(/^aux4\s+/, "")}\n${groupHelp.split("\n").map(line => `  ${line}`).join("\n")}`);
+    const subcommands = [...new Set(groupHelp.split(/\r?\n/)
+      .map(line => line.match(/^ {2}([a-zA-Z][a-zA-Z0-9:_-]*)\s*$/)?.[1])
+      .filter(Boolean))];
+    const commandPath = group.replace(/^aux4\s+/, "");
+    const paths = subcommands.map(name => `${commandPath} ${name}`);
+    const heading = paths.length
+      ? `- ${commandPath} (group; complete child paths: ${paths.join(", ")})`
+      : `- ${commandPath}`;
+    lines.push(`${heading}\n${groupHelp.split("\n").map(line => `  ${line}`).join("\n")}`);
     remaining -= groupHelp.length;
     helped++;
   }
@@ -1662,7 +1726,10 @@ export function describeFoundCommands(found) {
     const commandPath = String(f.command || "").replace(/^aux4\s+/, "");
     const parts = String(f.command || "").trim().split(/\s+/);
     const group = parts[0] === "aux4" && parts.length >= 4 ? parts.slice(0, -1).join(" ") : "";
-    if (describedGroups.has(f.command) || (group && describedGroups.has(group))) {
+    if (describedGroups.has(f.command) || (group && describedGroups.has(group))
+      || [...describedGroups].some(parent => f.command.startsWith(`${parent} `))
+      || (/\bcommand group\b/i.test(f.description || "")
+        && [...describedGroups].some(child => child.startsWith(`${f.command} `)))) {
       continue;
     }
     const help = helped < MAX_HELP_OUTPUTS ? commandHelp(f.command) : "";
@@ -1721,7 +1788,7 @@ export const DELEGATIONS = [
   {
     via: "agent:browser",
     group: "browser",
-    note: "Web pages: call executeAux4 with command \"agent browser run --url <page> --goal \\\"<what to do>\\\"\" to do something, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to find something out -- they open, read, fill and click for you. Reuse the returned session id for follow-up calls; do not open a new session to reword the same search. For a web change, identify the target from observed page data, name only the requested fields, and include the required save or submit step. Stop after one successful save, then use returned evidence to verify it. Use observed links, forms and commands; never guess routes, identifiers or API methods. If a run is incomplete, take a materially different evidence-based step. Commands that start with \"browser\" are not available to you."
+    note: "Web pages: the \"agent browser\" command group is available to you; the raw \"browser\" command group is not. For any task performed on a web page, use executeAux4 with command \"agent browser run --url <page> --goal \\\"<requested outcome>\\\"\" to complete the task, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to gather information. The supplied URL is a browser destination for page work, not a request to call its API directly. Pass all provided values as repeated --field \"Label=value\" flags. Let one run inspect, fill, save/submit, and report the result; do not split it into atomic clicks or fills unless it returns a blocker or asks for missing input. Reuse the returned session id for any follow-up. For a web change, identify the target from observed page data and name only requested fields. A click is not proof of a saved or deleted result: verify the resulting state once before claiming success. Use observed links, forms and commands; never guess routes, identifiers or API methods. If a run is incomplete, take a materially different evidence-based step."
   }
 ];
 
