@@ -933,11 +933,12 @@ test("working rules forbid guessing commands and say how to recover from Command
   assert.match(WORKING_RULES, /Help output is documentation, not task evidence/);
   assert.match(WORKING_RULES, /use a complete child command path/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
-  assert.match(WORKING_RULES, /Do not repeat a search with reworded queries/);
+  assert.match(WORKING_RULES, /A filtered miss does not establish absence: try one materially broader scope while preserving explicit user constraints/);
+  assert.match(WORKING_RULES, /Do not repeat equivalent filters or superficial rewordings/);
   assert.match(WORKING_RULES, /After a successful lookup, reuse its facts/);
   assert.match(WORKING_RULES, /If group help lists subcommands, choose one and put it before its flags/);
-  assert.match(WORKING_RULES, /same command returns identical evidence after parameter changes/);
-  assert.match(WORKING_RULES, /For a time-only change, keep the item's observed date/);
+  assert.match(WORKING_RULES, /For a time-only change, keep the item's observed date and time zone/);
+  assert.match(WORKING_RULES, /Carry its UTC offset or explicit named zone into machine timestamps/);
   assert.match(WORKING_RULES, /include the complete start-to-end range if both endpoints are present/);
   assert.match(WORKING_RULES, /If a tool reports that a call or token budget is exhausted, stop making tool calls/);
   assert.match(WORKING_RULES, /do not issue back-to-back status checks/);

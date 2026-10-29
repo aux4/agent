@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.36
+
+- Treat filtered misses as limited evidence and allow one broader lookup before declaring absence; preserve observed zones in machine timestamps.
+
 ## 4.1.35
 
 - Include installed parent lookup documentation when an outbound address is missing, keeping recovery focused on obtaining the prerequisite.

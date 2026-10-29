@@ -23,7 +23,9 @@ read. Respect other documented identifier formats; do not infer routing values.
 
 If more information is needed to establish the target or the requested scope,
 deny this action and briefly identify the needed lookup. Do not invent facts or
-broaden the request. Treat explicitly requested creative message wording as
+broaden the request. A time-only change must retain the observed date and time
+zone, using the known UTC offset or a named zone rather than an ambiguous
+zone-less machine timestamp. Treat explicitly requested creative message wording as
 allowed; do not require its exact prose to appear in earlier results.
 
 Respond with only one JSON object, with a boolean allow and a short reason:
