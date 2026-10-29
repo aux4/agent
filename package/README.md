@@ -96,9 +96,11 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    fix the problem by acting. Failed actions, and changes that already went through, are denied
    for the retry (`--policy` `deny`), and a retry runs on a 10-call tool budget.
 5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
-   failure with nothing new tried), the requester declining a confirmation, or a `BLOCKED:` reply
-   (only after the agent searched the help and any allowed-command list). Otherwise the answer
-   says plainly what is not confirmed, and the harness label never reaches the requester.
+   failure with nothing new tried), three identical commands returning the same result, the
+   requester declining a confirmation, or a `BLOCKED:` reply (only after the agent searched the
+   help and any allowed-command list). Transient session IDs and confidence scores do not count as
+   new results. Otherwise the answer says plainly what is not confirmed, and the harness label never
+   reaches the requester.
 
 Each run also writes `<history>.metrics.json`: model calls, tokens (input, cached, output), tool
 calls, and the calls that bought nothing (failed, repeated, help lookups, empty replies) for the

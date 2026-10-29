@@ -960,6 +960,74 @@ setTimeout(() => {}, 10000);
   }
 });
 
+test("runAux4Monitored stops when an identical action repeats with only transient result changes", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-transient-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const command = 'agent browser find --url http://127.0.0.1:7400/orders --question "Is there an order for Zoe Nolan?"';
+  const messages = [];
+  for (let i = 0; i < 3; i++) {
+    const id = `find-${i}`;
+    messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
+    messages.push({
+      role: "tool",
+      tool_call_id: id,
+      name: "executeAux4",
+      content: JSON.stringify({
+        question: "Is there an order for Zoe Nolan?",
+        answered: false,
+        answerScore: [0.27, 0.29, 0.28][i],
+        session: `session-${i}`,
+        url: "http://127.0.0.1:7400/orders",
+        title: "Dojo bench",
+        granularity: "block"
+      })
+    });
+  }
+  fs.writeFileSync(history, JSON.stringify({ messages }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+setTimeout(() => {}, 10000);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25 });
+    assert.equal(result.noProgress, true);
+    assert.equal(result.budgetExceeded, false);
+    assert.equal(result.ok, false);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runAux4Monitored keeps an identical action when the result shows new evidence", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-new-evidence-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const command = "orders search --customer Zoe";
+  const messages = [];
+  for (let i = 0; i < 3; i++) {
+    const id = `search-${i}`;
+    messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
+    messages.push({ role: "tool", tool_call_id: id, name: "executeAux4", content: JSON.stringify({ found: i === 2, count: i === 2 ? 1 : 0 }) });
+  }
+  fs.writeFileSync(history, JSON.stringify({ messages }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+setTimeout(() => process.exit(0), 150);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25 });
+    assert.equal(result.noProgress, false);
+    assert.equal(result.ok, true);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runAux4Monitored stops on the repeated-action refusal emitted by executeAux4", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-action-watch-"));
   const bin = path.join(dir, "aux4");

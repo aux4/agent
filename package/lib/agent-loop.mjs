@@ -222,6 +222,17 @@ function isNoProgressAbort(content) {
   return /aborting:\s*the same (?:call has been refused|action has returned the same result)\b/i.test(text);
 }
 
+function repeatsWithoutNewResult(attempts, count = 3) {
+  if (attempts.length < count) return false;
+  const recent = attempts.slice(-count);
+  const command = recent[0]?.command;
+  if (!command || recent.some(attempt => attempt.command !== command || !attempt.source)) return false;
+  // Ignore transient request/session metadata so a fresh session ID or score
+  // cannot make an unchanged answer look like new progress.
+  const evidence = recent.map(readEvidenceKey);
+  return Boolean(evidence[0]) && evidence.every(key => key === evidence[0]);
+}
+
 // Run an execution turn while watching its persisted tool history. Once the
 // agent runtime says its call/token budget is exhausted, every later tool call
 // is denied anyway; terminate the inner generation instead of letting it
@@ -274,6 +285,10 @@ export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {})
       const last = attempts.at(-1);
       const previous = attempts.at(-2);
       if (last && isDeterministicToolFailure(last.source) && isNoProgressAbort(last.source)) {
+        stop("no-progress");
+        return;
+      }
+      if (repeatsWithoutNewResult(attempts)) {
         stop("no-progress");
         return;
       }
