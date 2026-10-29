@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.32
+
+- Provide bounded, deduplicated successful read evidence in recovery questions so retries can finish remaining work without rereading facts.
+
 ## 4.1.31
 
 - Count local parameter-reference lookups in help metrics while preserving actual model and tool-call counts.

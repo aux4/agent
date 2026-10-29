@@ -1990,3 +1990,20 @@ test("metrics include local parameter-reference lookups without inventing model 
   assert.equal(stats.modelCalls, 1);
   assert.equal(stats.failed, 1);
 });
+
+
+test("a retry repeats observed facts in context, without failed, pending, or documentation evidence", () => {
+  const fact = '{"id":"r7","owner":"Morgan","status":"inactive"}';
+  const attempts = [
+    { command: "records get --recordId r7", source: fact },
+    { command: "records get --recordId r7 --format full", source: fact },
+    { command: "records get --recordId r8", source: "pending-secret", completed: false },
+    { command: "records list --help", source: "example-secret" },
+    { command: "records find", source: "failed-secret", failed: true }
+  ];
+  const q = composeDiagnoseQuestion({ goal: "archive inactive records" }, { criteria: [] }, attempts);
+  const evidence = q.split("Facts already observed from successful reads")[1].split("What was attempted")[0];
+  assert.equal(evidence.split(fact).length - 1, 1);
+  assert.doesNotMatch(evidence, /pending-secret|example-secret|failed-secret/);
+  assert.match(q, /Reuse facts from successful reads/);
+});

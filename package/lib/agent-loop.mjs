@@ -1547,6 +1547,25 @@ export function composeRewriteQuestion(verdict) {
   ].join("\n");
 }
 
+function retryReadEvidence(attempts) {
+  const unique = new Map();
+  for (const attempt of attempts) {
+    if (attempt.completed === false || attempt.failed || !isReadCommand(attempt.command)
+      || /(?:^|\s)--help(?:\s|$)/.test(attempt.command)) continue;
+    const key = readEvidenceKey(attempt);
+    if (key) unique.set(key, attempt);
+  }
+  let remaining = RESULTS_TOTAL_LIMIT;
+  const facts = [];
+  for (const attempt of [...unique.values()].reverse()) {
+    if (remaining <= 0) break;
+    const source = String(attempt.source ?? attempt.result ?? "").slice(0, Math.min(1400, remaining));
+    remaining -= source.length;
+    facts.push(`${attempt.command}\n${source}`);
+  }
+  return facts.length ? facts.join("\n\n") : "(no successful read evidence yet)";
+}
+
 export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", lookFirst = false) {
   const failed = verdict.criteria.filter(c => c.status !== "pass");
   const lines = failed.map(c => `- ${c.criterion} (${c.status}): ${c.evidence}`).join("\n");
@@ -1561,13 +1580,16 @@ export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", l
     "Outcomes not yet confirmed:",
     lines,
     "",
+    "Facts already observed from successful reads (reuse these; do not re-read without a state change):",
+    retryReadEvidence(attempts),
+    "",
     "What was attempted, in order:",
     summarizeAttemptLog(attempts),
     ...(allowedCommandsOffered(attempts) ? ["", `Commands you may run: ${allowedCommandsOffered(attempts)}`] : []),
     ...missingParameterHints(attempts),
     "",
     "Work out why (wrong command, wrong parameters, a tool error, a step not done, a misread fact) and fix it now by calling the tools. Do not just describe the fix -- do it.",
-    "Actions listed as FAILED are denied for this retry. An action listed as ok may already have taken effect: check the current state before doing it again, and never repeat one that sends, creates, or deletes something.",
+    "Actions listed as FAILED are denied for this retry. Reuse facts from successful reads to complete the unmet outcomes. A successful change may already have taken effect: check its resulting state if needed, and never repeat one that sends, creates, or deletes something.",
     WORKING_RULES,
     "",
     `Only if finishing needs something only the requester can give (and you have already searched the help and any list of commands you may run), reply starting with "${BLOCKED_MARK}" and say exactly what you need.`
