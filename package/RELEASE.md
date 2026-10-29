@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.31
+
+- Count local parameter-reference lookups in help metrics while preserving actual model and tool-call counts.
+
 ## 4.1.30
 
 - Validate routing values against installed parameter documentation; resolve a contact name to an email address when the command requires one.

@@ -1977,3 +1977,16 @@ setTimeout(() => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("metrics include local parameter-reference lookups without inventing model tool calls", () => {
+  const file = tmpFile("parameter-help-history.json", JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "bad-flag", name: "executeAux4", args: { command: "records get --id r7" } }] } },
+    { role: "tool", tool_call_id: "bad-flag", content: "Error executing command: Unknown parameter --id\n\nLocal command parameter reference (--help; no action retried):\n--recordId <arg>" }
+  ] }));
+  const stats = historyStats(file);
+  assert.equal(stats.help, 1);
+  assert.equal(stats.toolCalls, 1);
+  assert.equal(stats.modelCalls, 1);
+  assert.equal(stats.failed, 1);
+});

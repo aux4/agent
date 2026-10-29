@@ -511,7 +511,8 @@ export function historyStats(historyFile, from = 0, usageBefore = null) {
       const command = describeCall(call.name, call.args);
       if (seen.has(command)) stats.repeats++;
       seen.add(command);
-      if (/(^|\s)--help(\s|$)/.test(command)) stats.help++;
+      if (/(^|\s)--help(\s|$)/.test(command)
+        || String(results.get(call.id) || "").includes("Local command parameter reference (--help; no action retried):")) stats.help++;
       if (call.id && isFailedResult(results.get(call.id))) stats.failed++;
     }
   }
