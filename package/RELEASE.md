@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.35
+
+- Include installed parent lookup documentation when an outbound address is missing, keeping recovery focused on obtaining the prerequisite.
+- Count unusable-provider-request repairs explicitly in model-call and protocol-error metrics.
+
 ## 4.1.34
 
 - Require exact target identifiers from the request or prior successful results before existing-resource mutations; retain documented defaults and positional ID syntax.

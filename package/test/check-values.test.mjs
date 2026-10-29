@@ -395,3 +395,28 @@ console.log('send\\n  --to <arg>\\n    Recipient email address.\\n  --body <arg>
     assert.match(denied.stdout, /successful lookup|matching record/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test("a missing routing address returns actual parent lookup documentation", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "recipient-lookup-help-"));
+  try {
+    const bin = path.join(dir, "aux4");
+    fs.writeFileSync(bin, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.at(-1) !== '--help') process.exit(2);
+console.log(args.length === 2
+ ? 'notifications\\n  list\\n  Search messages.\\n    --query <arg>\\n  get\\n  Read a matching message.\\n    --recordId <arg>'
+ : 'send\\n  --to <arg>\\n    Recipient email address.');
+`, {mode:0o755});
+    const history = path.join(dir, 'history.json');
+    writeHistory(history, []);
+    const result = spawnSync(process.execPath, [path.resolve('package/lib/check-values.mjs'),
+      '--repeatReadGuard', 'true', '--history', history, '--request', 'Send the update to Morgan',
+      '--command', 'notifications send --to Morgan'], {encoding:'utf8',env:{...process.env,AUX4_BIN:bin}});
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Installed CLI lookup reference/);
+    assert.match(result.stdout, /--query <arg>/);
+    assert.match(result.stdout, /--recordId <arg>/);
+    assert.match(result.stdout, /documentation only/);
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});

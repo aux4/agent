@@ -452,6 +452,7 @@ export function extractAttemptLog(historyFile) {
 // --- Metrics ----------------------------------------------------------------
 
 const NUDGE = /^you returned nothing\b/i;
+const PROTOCOL_RECOVERY = /^the provider returned an unusable tool request\b/i;
 
 export function readTokenUsage(historyFile) {
   if (!historyFile || !fs.existsSync(historyFile)) return { input: 0, cached: 0, output: 0 };
@@ -499,8 +500,13 @@ export function historyStats(historyFile, from = 0, usageBefore = null) {
       stats.emptyReplies++;
       stats.modelCalls++;
     }
+    if (m?.role === "user" && PROTOCOL_RECOVERY.test(String(m.content || ""))) {
+      stats.protocolErrors = (stats.protocolErrors || 0) + 1;
+      stats.modelCalls++;
+    }
     if (m?.role !== "assistant" && m?.role !== "assistant_with_tool") continue;
     stats.modelCalls++;
+    if (PROTOCOL_RECOVERY.test(String(m.content || ""))) stats.protocolErrors = (stats.protocolErrors || 0) + 1;
     const u = usageOf(m);
     stats.input += u.input;
     stats.cached += u.cached;
@@ -508,6 +514,7 @@ export function historyStats(historyFile, from = 0, usageBefore = null) {
     for (const call of getToolCalls(m)) {
       if (!call?.name) continue;
       stats.toolCalls++;
+      if (call.name === "__tool_protocol_error__") stats.protocolErrors = (stats.protocolErrors || 0) + 1;
       const command = describeCall(call.name, call.args);
       if (seen.has(command)) stats.repeats++;
       seen.add(command);

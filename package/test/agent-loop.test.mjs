@@ -2028,3 +2028,31 @@ else if (group === 'correspondence') console.log('correspondence\\n  list\\n  Li
     assert.ok(text.length < 6500);
   });
 });
+
+
+test("metrics count unusable provider requests as protocol errors and actual model calls", () => {
+  const file = tmpFile('protocol-history.json', JSON.stringify({messages:[
+    {role:'user',content:'The provider returned an unusable tool request. No action was run.'},
+    {role:'user',content:'The provider returned an unusable tool request. Repair the syntax.'},
+    {role:'assistant',content:'The provider returned an unusable tool request three times in a row; the task was not completed.'}
+  ]}));
+  const stats = historyStats(file);
+  assert.equal(stats.modelCalls, 3);
+  assert.equal(stats.protocolErrors, 3);
+  assert.equal(stats.emptyReplies, 0);
+  assert.equal(stats.toolCalls, 0);
+});
+
+
+test("metrics also count explicit backend protocol-error feedback", () => {
+  const file = tmpFile('backend-protocol-history.json', JSON.stringify({messages:[
+    {role:'assistant_with_tool',content:{tool_calls:[{id:'invalid',name:'__tool_protocol_error__',args:{error:'No function provided.'}}]}},
+    {role:'tool',tool_call_id:'invalid',content:'Error: generated tool request could not be parsed. No action was run.'}
+  ]}));
+  const stats = historyStats(file);
+  assert.equal(stats.modelCalls, 1);
+  assert.equal(stats.protocolErrors, 1);
+  assert.equal(stats.failed, 1);
+  assert.equal(stats.toolCalls, 1);
+  assert.equal(stats.emptyReplies, 0);
+});

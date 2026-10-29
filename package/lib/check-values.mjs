@@ -15,7 +15,7 @@ import { authorizeAction, actionCommandHelp } from "./action-check.mjs";
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, unsourcedRecipientValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem, isReadCommand, isChangeCommand, sameReadEvidence, commandWords } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, unsourcedRecipientValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem, isReadCommand, isChangeCommand, sameReadEvidence, commandWords, runAux4 } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -132,9 +132,16 @@ async function main(argv) {
     const words = commandWords(options.command) || [];
     const flagIndex = words.findIndex(word => word.startsWith("--"));
     const actionPath = (flagIndex < 0 ? words : words.slice(0, flagIndex)).filter((word, i) => i !== 0 || word !== "aux4");
-    const parentHelp = actionPath.length > 1 ? `${actionPath.slice(0, -1).join(" ")} --help` : "--help";
+    const leaf = reference.split(/\r?\n/).find(line => line.trim())?.trim();
+    const leafAt = leaf ? actionPath.lastIndexOf(leaf) : -1;
+    const parentPath = leafAt > 0 ? actionPath.slice(0, leafAt) : actionPath.slice(0, -1);
+    const parentHelp = [...parentPath, "--help"].join(" ");
+    const lookupHelp = recipients.length
+      ? runAux4([...parentPath, "--help"], { allowFailure: true, timeout: 5000 }) : null;
+    const lookupReference = lookupHelp?.ok && !/^(?:Command not found|Error executing command)/m.test(lookupHelp.stdout)
+      ? String(lookupHelp.stdout).replace(/\x1b\[[0-9;]*m/g, "").slice(0, 3600) : "";
     const message = recipients.length
-      ? `ACTION_CHECK_EVIDENCE_REQUIRED: This call was NOT run: the recipient address ${recipients.map(r => r.value).join(", ")} is not established by the request or a successful lookup. Run ${parentHelp} to find a command that reads or searches the relevant correspondence, or find a contact lookup from --help. Read the matching record, then use the exact address from that result and continue. Do not infer an address from a name. Ask the requester only if those lookups cannot establish the address.`
+      ? `ACTION_CHECK_EVIDENCE_REQUIRED: This call was NOT run: the recipient address ${recipients.map(r => r.value).join(", ")} is not established by the request or a successful lookup. Run ${parentHelp} to find a command that reads or searches the relevant correspondence, or find a contact lookup from --help. Read the matching record, then use the exact address from that result and continue. Do not infer an address from a name. Ask the requester only if those lookups cannot establish the address.${lookupReference ? `\nInstalled CLI lookup reference (documentation only; pass command paths to executeAux4):\n${lookupReference}` : ""}`
       : repeatedReadGuardMessage(options.command, attempts);
     if (message) {
       process.stdout.write(`${message}\n`);
