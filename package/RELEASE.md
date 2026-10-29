@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.40
+
+- Keep unsubmitted and waiting-input workflows eligible for continuation instead of denying their commands as completed changes.
+
 ## 4.1.39
 
 - Keep pre-action evidence refusals pending across unrelated questions and documentation calls, so a non-interactive question cannot suppress lookup recovery.

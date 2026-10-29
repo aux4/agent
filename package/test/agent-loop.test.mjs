@@ -2164,3 +2164,25 @@ test("a non-interactive question after a guard still gets same-round lookup reco
     assert.equal(calls,2);assert.equal(result.attempts,1);assert.equal(result.stopped,'pass');
   });
 });
+
+test("an unsubmitted workflow is not denied as already completed on retry",async()=>{
+  const fake=planVerifyFake({verifyStatus:'fail'});
+  const history=tmpFile('history.json',JSON.stringify({messages:[],tokenUsage:{}}));
+  const command='agent browser run --url https://example.test/apply --goal apply';
+  await withAux4Bin(fake,async()=>{
+    let calls=0;
+    const result=await runLoop(baseOptions(),history,(_question,h,denied,_lookFirst,patterns)=>{
+      calls++;
+      if(calls===1){
+        fs.writeFileSync(h,JSON.stringify({messages:[
+          {role:'assistant_with_tool',content:{tool_calls:[{id:'one',name:'executeAux4',args:{command}}]}},
+          {role:'tool',tool_call_id:'one',content:'{"status":"needs-input","submitted":false,"needsInput":{"kind":"missing","field":{"label":"Badge number"}}}'}
+        ]}));return 'The workflow is waiting for data.';
+      }
+      assert.ok(!denied.includes(command));
+      assert.deepEqual(patterns,[]);
+      return 'BLOCKED: Badge number is unavailable.';
+    });
+    assert.equal(calls,2);assert.equal(result.stopped,'blocked');
+  });
+});

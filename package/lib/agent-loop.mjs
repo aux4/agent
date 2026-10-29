@@ -374,7 +374,7 @@ export function compactResult(text, limit = RESULT_LIMIT) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return raw.slice(0, limit);
   const short = (v, n) => (typeof v === "string" && v.length > n ? `${v.slice(0, n)}…` : v);
   const out = {};
-  const priority = ["status", "submitted", "confirmation", "reason", "lastFormControlStates", "observations", "stepsText", "finalUrl", "answer", "summary"];
+  const priority = ["status", "submitted", "confirmation", "needsInput", "missing", "reason", "lastFormControlStates", "observations", "stepsText", "finalUrl", "answer", "summary"];
   const keys = [...priority.filter(key => Object.hasOwn(value, key)), ...Object.keys(value).filter(key => !priority.includes(key))];
   for (const key of keys) {
     const v = value[key];
@@ -1519,7 +1519,7 @@ export function missingParameterHints(attempts) {
 // nothing to restate: the work was never done, so the retry must act.
 // A tool can succeed as a call and still report that its own work is unfinished
 // ({"status": "incomplete"}, "needs-input", "error"...). That is not finished work.
-const INCONCLUSIVE_STATUS = /"status"\s*:\s*"(incomplete|needs-input|error|blocked|failed|no-progress)"/i;
+const INCONCLUSIVE_STATUS = /"status"\s*:\s*"(incomplete|needs-input|needs-confirmation|error|blocked|failed|no-progress)"/i;
 export function isConclusiveAttempt(attempt) {
   const result = String(attempt.source ?? attempt.result ?? "");
   return attempt.completed !== false && !attempt.failed && !INCONCLUSIVE_STATUS.test(result) && !/"submitted"\s*:\s*false\b/i.test(result);
@@ -2027,7 +2027,7 @@ export function unverifiableOnlyAfterChange(verdict, attempts) {
   if (!verdict || verdict.overall === "pass") return false;
   if (verdict.criteria.some(c => c.status === "fail")) return false;
   if (!verdict.criteria.some(c => c.status === "unverifiable")) return false;
-  return attempts.some(a => !a.failed && isChangeCommand(a.command));
+  return attempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
 }
 
 export function sameFailureShape(a, b) {
@@ -2089,7 +2089,7 @@ export function unresolvedActionGuard(attempts) {
     if (attempt.declined) return null;
     if (attempt.failed && /ACTION_CHECK_(?:EVIDENCE_REQUIRED|SCOPE_DENIED)/.test(text)) return attempt;
     if (!attempt.failed && !/(?:^|\s)(?:--help|-h)(?:\s|$)/.test(attempt.command || "")
-      && (isReadCommand(attempt.command) || isChangeCommand(attempt.command))) return null;
+      && (isReadCommand(attempt.command) || (isConclusiveAttempt(attempt) && isChangeCommand(attempt.command)))) return null;
   }
   return null;
 }
@@ -2405,7 +2405,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     const currentAttempts = attempts.slice(before);
     const triedSomethingNew = currentAttempts.some(a => !priorCommands.has(a.command));
     const repeatedReadOnly = sameReadEvidence(currentAttempts, previousAttempts);
-    const changedState = currentAttempts.some(a => !a.failed && isChangeCommand(a.command));
+    const changedState = currentAttempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
     if (sameFailureShape(priorVerdict, lastVerdict) && (!triedSomethingNew || (repeatedReadOnly && !changedState))) {
       return done("no-progress", attempt, incompleteNote(lastVerdict));
     }
@@ -2416,7 +2416,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
     // A change that already went through must not be repeated by a retry.
-    const completed = attempts.filter(a => !a.failed && isChangeCommand(a.command));
+    const completed = attempts.filter(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
     const doneChanges = completed.map(a => a.command);
     deniedCommands = [...new Set([...deniedCommands, ...newlyFailed, ...doneChanges])];
     deniedPatterns = [...new Set([...deniedPatterns, ...completed.flatMap(a => changeDenyPatterns(a.command))])];
