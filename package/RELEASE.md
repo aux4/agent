@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.38
+
+- Preserve full request values and exclusions in delegated goals; recover missing required data before considering automatic confirmation.
+
 ## 4.1.37
 
 - Surface installed child-command parameter names before verbose help, retaining command indexes for every discovered service.

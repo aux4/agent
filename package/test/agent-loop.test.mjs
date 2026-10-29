@@ -124,6 +124,8 @@ if (args.includes('find')) process.stdout.write('find\\n  --question <question>'
     const reference = executionCommandReference(request, {}, [delegate]);
     assert.match(reference, /agent forms run/);
     assert.match(reference, /--goal <outcome>/);
+    assert.match(reference, /pass the complete requested outcome, supplied values, and exclusions/);
+    assert.match(reference, /Authorization does not replace required data/);
     assert.match(reference, /agent forms find/);
   });
 });
@@ -2057,4 +2059,64 @@ test("metrics also count explicit backend protocol-error feedback", () => {
   assert.equal(stats.failed, 1);
   assert.equal(stats.toolCalls, 1);
   assert.equal(stats.emptyReplies, 0);
+});
+
+
+test("requested submission with missing required values gets bounded recovery, never automatic confirmation", async () => {
+  const fake=planVerifyFake({verifyStatus:'pass'});
+  const history=tmpFile('history.json',JSON.stringify({messages:[],tokenUsage:{}}));
+  await withAux4Bin(fake,async()=>{
+    const next="agent forms run --session s1 --field confirm=yes";
+    const questions=[];
+    const result=await runLoop({...baseOptions(),request:'Save the application for Pat, pat@example.net.'},history,(question,h)=>{
+      questions.push(question);
+      if(questions.length===1){
+        const data=JSON.parse(pendingConfirmFixture('Save',next,'agent forms run --goal apply'));
+        const contract=JSON.parse(data.messages[1].content);
+        contract.confirmation.emptyFields=['Badge number'];
+        data.messages[1].content=JSON.stringify(contract);
+        fs.writeFileSync(h,JSON.stringify(data));
+        return 'The tool is waiting.';
+      }
+      assert.match(question,/not permission to submit/);
+      assert.match(question,/pat@example.net/);
+      assert.doesNotMatch(question,/Run the next command now/);
+      return 'BLOCKED: Badge number is unavailable.';
+    });
+    assert.equal(questions.length,2);
+    assert.equal(result.stopped,'blocked');
+    assert.equal(result.attempts,1);
+    assert.match(result.content,/Badge number/);
+  });
+});
+
+
+test("supplied data can clear a missing field before same-round confirmation",async()=>{
+  const fake=planVerifyFake({verifyStatus:'pass'});
+  const history=tmpFile('history.json',JSON.stringify({messages:[],tokenUsage:{}}));
+  await withAux4Bin(fake,async()=>{
+    const next="agent forms run --session s1 --field confirm=yes";
+    const questions=[];
+    const result=await runLoop({...baseOptions(),request:'Save the application using badge B7.'},history,(question,h)=>{
+      questions.push(question);
+      if(questions.length===1){
+        const data=JSON.parse(pendingConfirmFixture('Save',next,'agent forms run --goal apply'));
+        const contract=JSON.parse(data.messages[1].content);contract.confirmation.emptyFields=['Badge number'];
+        data.messages[1].content=JSON.stringify(contract);fs.writeFileSync(h,JSON.stringify(data));
+        return 'Waiting for a field.';
+      }
+      const data=JSON.parse(fs.readFileSync(h,'utf8'));
+      const id='c'+questions.length;
+      const command=questions.length===2?'agent forms run --field badge=B7':next;
+      const content=questions.length===2?JSON.stringify({status:'needs-input',confirmation:{action:'Save',target:'Save',emptyFields:[],next}}):'{"status":"done"}';
+      data.messages.push({role:'assistant_with_tool',content:{tool_calls:[{id,name:'executeAux4',args:{command}}]}},{role:'tool',tool_call_id:id,content});
+      fs.writeFileSync(h,JSON.stringify(data));
+      return questions.length===2?'Ready to save.':'Saved.';
+    });
+    assert.equal(questions.length,3);
+    assert.match(questions[1],/badge B7/);
+    assert.match(questions[2],/Run the next command now/);
+    assert.equal(result.stopped,'pass');
+    assert.equal(result.attempts,1);
+  });
 });

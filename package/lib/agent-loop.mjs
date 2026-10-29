@@ -1906,7 +1906,10 @@ export function executionCommandReference(request, plan, delegations = []) {
   const delegate = preferredDelegation(request, delegations);
   if (!delegate) return describeFoundCommands(findCommands(lookupQueries(request, plan)));
   const group = delegate.via.replace(/:/g, " ");
-  const lines = ["Registered goal-level capability for this page task. Use it to inspect and complete the requested outcome; discover additional commands if another part of the request needs them:"];
+  const lines = [
+    "Registered goal-level capability for this page task. Use it to inspect and complete the requested outcome; discover additional commands if another part of the request needs them:",
+    "For a command accepting --goal, pass the complete requested outcome, supplied values, and exclusions. A partial lookup goal can hide values the user already gave. Use --question for information-only lookups. If a tool reports missing required values, reuse the original request and successful evidence; if still unavailable after one relevant source, stop and name what is missing. Authorization does not replace required data."
+  ];
   for (const child of delegate.entrypoints || []) {
     const command = `aux4 ${group} ${child}`;
     const help = commandHelp(command, HELP_OUTPUT_LIMIT);
@@ -2332,7 +2335,28 @@ export async function runLoop(options, history, execute, recovery = "") {
     // deterministically: run it now, in the SAME round, only when the request
     // itself clearly asks for it; otherwise stop and ask -- an ambiguous case
     // is treated exactly like one that is clearly not requested.
-    const pending = attempts.length > before ? pendingConfirmation(attempts.slice(before)) : null;
+    let pending = attempts.length > before ? pendingConfirmation(attempts.slice(before)) : null;
+    if (pending?.emptyFields.length) {
+      const question = [
+        "The tool is waiting for required values, not permission to submit.",
+        `Required fields still empty: ${pending.emptyFields.join("; ")}.`,
+        `Original request: ${options.request}`,
+        "Fill values already supplied by the request or successful evidence. Use one relevant available lookup for anything still missing; do not search the same content repeatedly or retry a denied source. Do not run a confirmation command while required values remain absent. If a value cannot be obtained, stop with BLOCKED and name it."
+      ].join("\n");
+      lastContent = await runExecution(question, history, deniedCommands, false, deniedPatterns);
+      if (String(lastContent || "").trim()) lastAnswer = lastContent;
+      round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "missing-input-recovery" };
+      const innerStop = stopAfterExecution(attempt);
+      if (innerStop) return innerStop;
+      if (isBlocked(lastContent)) return done("blocked", attempt);
+      attempts = extractAttemptLog(history);
+      const remaining = pendingConfirmation(attempts.slice(before));
+      if (remaining?.emptyFields.length) {
+        lastContent = `The action has not been submitted. Required values are still missing: ${remaining.emptyFields.join("; ")}.`;
+        return done("needs-input", attempt);
+      }
+      pending = remaining;
+    }
     if (pending) {
       if (isClearlyRequestedAction(pending.label, options.request)) {
         const priorGate = options.gateDeny;
