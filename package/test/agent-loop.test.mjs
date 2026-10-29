@@ -960,6 +960,39 @@ setTimeout(() => {}, 10000);
   }
 });
 
+test("runAux4Monitored stops on the repeated-action refusal emitted by executeAux4", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-action-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const pidFile = path.join(dir, "pid");
+  const refusal = 'Error executing tool "executeAux4": Aborting: the same action has returned the same result 4 times, whatever values were passed. The agent is not making progress. Last result was: {"answered":true}';
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const file = args[args.indexOf('--history') + 1];
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => fs.writeFileSync(file, JSON.stringify({ messages: [
+  { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'repeat-action', name: 'executeAux4', args: { command: 'agent browser find --question "What is on this page?"' } }] } },
+  { role: 'tool', tool_call_id: 'repeat-action', name: 'executeAux4', content: ${JSON.stringify(refusal)} }
+] })), 40);
+setTimeout(() => {}, 10000);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25 });
+    assert.equal(result.noProgress, true);
+    assert.equal(result.budgetExceeded, false);
+    assert.equal(result.ok, false);
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runAux4Monitored stops after the same no-op repeat refusal twice", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-refusal-watch-"));
   const bin = path.join(dir, "aux4");

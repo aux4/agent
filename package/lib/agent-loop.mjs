@@ -217,6 +217,11 @@ export function isBudgetExceededResult(content) {
     || /budget exceeded\s*\(spent .*\bcap\b/i.test(text);
 }
 
+function isNoProgressAbort(content) {
+  const text = typeof content === "string" ? content : JSON.stringify(content || "");
+  return /aborting:\s*the same (?:call has been refused|action has returned the same result)\b/i.test(text);
+}
+
 // Run an execution turn while watching its persisted tool history. Once the
 // agent runtime says its call/token budget is exhausted, every later tool call
 // is denied anyway; terminate the inner generation instead of letting it
@@ -268,8 +273,7 @@ export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {})
       }
       const last = attempts.at(-1);
       const previous = attempts.at(-2);
-      if (last && isDeterministicToolFailure(last.source)
-        && /aborting: the same call has been refused/i.test(last.source)) {
+      if (last && isDeterministicToolFailure(last.source) && isNoProgressAbort(last.source)) {
         stop("no-progress");
         return;
       }
@@ -302,7 +306,8 @@ export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {})
 
 function isDeterministicToolFailure(content) {
   const text = typeof content === "string" ? content : JSON.stringify(content || "");
-  return /command not found|invalid (?:command|arguments?|option)|unknown (?:command|option)|blocked by hook:|permission denied|not run: you have already made this exact call|aborting: the same call has been refused/i.test(text);
+  return /command not found|invalid (?:command|arguments?|option)|unknown (?:command|option)|blocked by hook:|permission denied|not run: you have already made this exact call/i.test(text)
+    || isNoProgressAbort(text);
 }
 
 // The requester was asked to confirm an action and did not. Retrying cannot
