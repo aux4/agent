@@ -974,7 +974,9 @@ console.log(JSON.stringify(out));
     const text = describeFoundCommands(found);
     assert.match(text, /exact syntax from --help/);
     assert.match(text, /Pass the shown command path and flags to executeAux4; it adds the aux4 binary/);
-    assert.match(text, /- google gmail \(group; complete child paths: google gmail list, google gmail archive\)\n  gmail\n    list\n      --query <optional>\n    archive\n      --id <arg> <multiple>/);
+    assert.match(text, /- google gmail \(group; complete child paths: google gmail list, google gmail archive\)/);
+    assert.match(text, /--query <optional>/);
+    assert.match(text, /--id <arg> <multiple>/);
     assert.doesNotMatch(text, /- aux4 google gmail list/);
     assert.match(text, /Use these flags directly without another help lookup/);
     const fallback = describeFoundCommands([{ command: "aux4 missing group list", description: "List missing items." }]);
@@ -2006,4 +2008,23 @@ test("a retry repeats observed facts in context, without failed, pending, or doc
   assert.equal(evidence.split(fact).length - 1, 1);
   assert.doesNotMatch(evidence, /pending-secret|example-secret|failed-secret/);
   assert.match(q, /Reuse facts from successful reads/);
+});
+
+
+test("large first-group help cannot hide another group's read commands", async () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+const group = args.slice(0, -1).join(' ');
+if (group === 'records events') console.log('events\\n  list\\n  List events.\\n' + '    long parameter documentation\\n'.repeat(200));
+else if (group === 'correspondence') console.log('correspondence\\n  list\\n  List message IDs.\\n  get\\n  Read a full message by identifier.\\n    --recordId <arg>\\n  download\\n  Download one attachment.');
+`);
+  await withAux4Bin(fake, async () => {
+    const text = describeFoundCommands([
+      { command: "aux4 records events list", description: "List events." },
+      { command: "aux4 correspondence", description: "The correspondence command group." }
+    ]);
+    assert.match(text, /correspondence get: Read a full message by identifier/);
+    assert.match(text, /correspondence download: Download one attachment/);
+    assert.ok(text.indexOf('correspondence get:') < text.indexOf('Parameter details for records events'));
+    assert.ok(text.length < 6500);
+  });
 });

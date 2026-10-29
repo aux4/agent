@@ -1803,22 +1803,43 @@ export function describeFoundCommands(found) {
     !groupCandidates.some(other => other !== group && other.startsWith(`${group} `)));
   deepestGroups.sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length
     || groupCandidates.indexOf(a) - groupCandidates.indexOf(b));
-  for (const group of deepestGroups) {
-    if (helped >= MAX_HELP_OUTPUTS) break;
-    const groupHelp = commandHelp(group, HELP_GROUP_OUTPUT_LIMIT);
-    if (!groupHelp || groupHelp.length > remaining) continue;
-    describedGroups.add(group);
-    const subcommands = [...new Set(groupHelp.split(/\r?\n/)
-      .map(line => line.match(/^ {2}([a-zA-Z][a-zA-Z0-9:_-]*)\s*$/)?.[1])
-      .filter(Boolean))];
+  const references = [];
+  for (const group of deepestGroups.slice(0, MAX_HELP_OUTPUTS)) {
+    const groupHelp = commandHelp(group, HELP_GROUP_OUTPUT_LIMIT * 3);
+    if (!groupHelp) continue;
+    const helpLines = groupHelp.split(/\r?\n/);
+    const children = [];
+    for (let i = 0; i < helpLines.length; i++) {
+      const name = helpLines[i].match(/^ {2}([a-zA-Z][a-zA-Z0-9:_-]*)\s*$/)?.[1];
+      if (!name) continue;
+      const nextLine = (helpLines[i + 1] || "").trim();
+      const description = nextLine.startsWith("--") ? "" : nextLine.slice(0, 100);
+      children.push({ name, description });
+    }
     const commandPath = group.replace(/^aux4\s+/, "");
-    const paths = subcommands.map(name => `${commandPath} ${name}`);
+    const paths = [...new Set(children.map(child => `${commandPath} ${child.name}`))];
     const heading = paths.length
       ? `- ${commandPath} (group; complete child paths: ${paths.join(", ")})`
       : `- ${commandPath}`;
-    lines.push(`${heading}\n${groupHelp.split("\n").map(line => `  ${line}`).join("\n")}`);
-    remaining -= groupHelp.length;
+    const outline = children.map(child => `  ${commandPath} ${child.name}: ${child.description}`).join("\n");
+    const index = `${heading}\n${outline}`;
+    if (index.length > remaining) continue;
+    lines.push(index);
+    remaining -= index.length;
+    describedGroups.add(group);
+    references.push({ commandPath, groupHelp });
     helped++;
+  }
+  // Reserve the command index for EVERY matched group before spending the
+  // remaining budget on verbose flags from any single group. A large first
+  // service must not hide the follow-up reads in another service.
+  for (let i = 0; i < references.length; i++) {
+    const { commandPath, groupHelp } = references[i];
+    const limit = Math.min(HELP_GROUP_OUTPUT_LIMIT, Math.floor(remaining / (references.length - i)));
+    if (limit <= 0) continue;
+    const clipped = groupHelp.slice(0, limit);
+    lines.push(`  Parameter details for ${commandPath}:\n${clipped.split("\n").map(line => `  ${line}`).join("\n")}`);
+    remaining -= clipped.length;
   }
 
   for (const f of found) {

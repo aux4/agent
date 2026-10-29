@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.33
+
+- Reserve a compact child-command index for every discovered group before distributing detailed-help budget, keeping prerequisite lookups visible across services.
+- Evaluate each proposed write as a valid step toward the request, allowing remaining authorized targets after earlier changes succeed.
+
 ## 4.1.32
 
 - Provide bounded, deduplicated successful read evidence in recovery questions so retries can finish remaining work without rereading facts.
