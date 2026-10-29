@@ -24,6 +24,10 @@ import {
   sameFailureShape,
   extractFailureClass,
   isBlocked,
+  sameReadEvidence,
+  isChangeCommand,
+  isBudgetExceededResult,
+  runAux4Monitored,
   composeDiagnoseQuestion,
   composeExecuteQuestion,
   incompleteNote,
@@ -269,11 +273,11 @@ if (command.includes("loop-plan.md")) {
 `);
 }
 
-function withAux4Bin(fake, fn) {
+async function withAux4Bin(fake, fn) {
   const prior = process.env.AUX4_BIN;
   process.env.AUX4_BIN = fake;
   try {
-    return fn();
+    return await fn();
   } finally {
     if (prior === undefined) delete process.env.AUX4_BIN;
     else process.env.AUX4_BIN = prior;
@@ -765,18 +769,32 @@ test("working rules forbid guessing commands and say how to recover from Command
   assert.match(WORKING_RULES, /Use the installed commands listed above/);
   assert.match(WORKING_RULES, /Never guess a command name/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
+  assert.match(WORKING_RULES, /Do not repeat a search with reworded queries/);
+  assert.match(WORKING_RULES, /After a successful lookup, reuse its facts/);
+  assert.match(WORKING_RULES, /If a tool reports that a call or token budget is exhausted, stop making tool calls/);
+  assert.match(WORKING_RULES, /do not issue back-to-back status checks/);
+  assert.match(WORKING_RULES, /executeAux4 adds the aux4 binary/);
 });
 
 test("working rules say to re-check a message against tool results before sending it", () => {
   assert.match(WORKING_RULES, /Before sending or submitting a message, re-read the tool results it depends on/);
 });
 
-test("findCommands merges pkger find results by rank and leaves out the agent's own commands", () => {
+test("findCommands aggregates pkger ranks across queries and leaves out the agent's own commands", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-"));
   const bin = path.join(dir, "aux4");
   fs.writeFileSync(bin, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("--help")) {
+  const command = args.slice(0, args.indexOf("--help")).join(" ");
+  if (command === "google gmail") console.log("gmail\\n  list\\n    --query <optional>\\n  archive\\n    --id <arg> <multiple>");
+  else if (command === "google gmail list") console.log("list\\n  --query <optional>\\n    Gmail search query\\n  --maxResults <optional>\\n    Maximum messages");
+  else if (command.startsWith("missing group")) process.exit(1);
+  else console.log("help for " + command);
+  process.exit(0);
+}
 const q = process.argv[process.argv.indexOf("--query") + 1];
-const out = q === "open web page" ? [{command:"aux4 ai agent ask",score:9},{command:"aux4 aux4 pkger find",score:8},{command:"aux4 agent ask",score:7},{command:"aux4 agent browser run",description:"Run a goal.",score:0.1},{command:"aux4 browser open",description:"Open a page.",score:1},{command:"aux4 browser read",score:0.5}]
+const out = q === "open web page" ? [{command:"aux4 ai agent ask",score:9},{command:"aux4 aux4 pkger find",score:8},{command:"aux4 agent ask",score:7},{command:"aux4 agent browser run",description:"Run a goal.",score:0.1},{command:"aux4 browser open",description:"Open a page.",score:1},{command:"aux4 browser read",score:0.5},{command:"aux4 google gmail trash",score:0.1}]
   : [{command:"aux4 google gmail trash",score:50},{command:"aux4 google gmail list",description:"List messages.",score:40},{command:"aux4 browser open",score:30}];
 console.log(JSON.stringify(out));
 `, { mode: 0o755 });
@@ -784,10 +802,15 @@ console.log(JSON.stringify(out));
   process.env.AUX4_BIN = bin;
   try {
     const found = findCommands(["open https://example.com/x", "b", ""]);
-    assert.deepEqual(found.map(f => f.command), ["aux4 agent browser run", "aux4 google gmail trash", "aux4 browser open", "aux4 google gmail list", "aux4 browser read"]);
+    assert.deepEqual(found.map(f => f.command), ["aux4 google gmail trash", "aux4 agent browser run", "aux4 browser open", "aux4 google gmail list", "aux4 browser read"]);
     const text = describeFoundCommands(found);
-    assert.match(text, /run them through the executeAux4 tool/);
-    assert.match(text, /- executeAux4 \{"command": "aux4 google gmail list --help"\} -- List messages\./);
+    assert.match(text, /exact syntax from --help/);
+    assert.match(text, /Pass the shown command path and flags to executeAux4; it adds the aux4 binary/);
+    assert.match(text, /- google gmail\n  gmail\n    list\n      --query <optional>\n    archive\n      --id <arg> <multiple>/);
+    assert.doesNotMatch(text, /- aux4 google gmail list/);
+    assert.match(text, /Use these flags directly without another help lookup/);
+    const fallback = describeFoundCommands([{ command: "aux4 missing group list", description: "List missing items." }]);
+    assert.match(fallback, /executeAux4 \{"command": "missing group list --help"\}/);
   } finally {
     if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -795,8 +818,271 @@ console.log(JSON.stringify(out));
   assert.equal(describeFoundCommands([]), "");
 });
 
-test("command lookup searches the plan's short lookFor phrases, else the request and steps", () => {
-  assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"], lookFor: ["fill and submit a form on a web page"] }), ["fill and submit a form on a web page"]);
+test("findCommands follows a discovered mock preset to the service commands", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-preset-"));
+  const bin = path.join(dir, "aux4");
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const q = args[args.indexOf("--query") + 1] || "";
+const out = q === "manage the inbox"
+  ? [{command:"aux4 mock preset acme inbox",description:"Configure the inbox mock."}]
+  : q.startsWith("acme inbox ")
+    ? [{command:"aux4 acme inbox list",description:"List inbox messages."}]
+    : [];
+console.log(JSON.stringify(out));
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const found = findCommands(["manage the inbox"]);
+    assert.ok(found.some(item => item.command === "aux4 acme inbox list"));
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sameReadEvidence ignores query/session metadata but notices changed facts", () => {
+  const prior = [{
+    command: 'agent browser find --question "find a missing order"',
+    source: JSON.stringify({ question: "find a missing order", answered: false, answerScore: 0.02, session: "s1", matches: [{ text: "Orders table", location: { url: "/orders" } }] })
+  }];
+  const repeated = [{
+    command: 'agent browser find --question "search all orders for a matching customer"',
+    source: JSON.stringify({ question: "search all orders for a matching customer", answered: false, answerScore: 0.04, session: "s2", matches: [{ text: "Orders table", location: { url: "/orders" } }] })
+  }];
+  const newFact = [{
+    command: 'agent browser find --question "search all orders for a matching customer"',
+    source: JSON.stringify({ question: "search all orders for a matching customer", answered: false, answerScore: 0.04, session: "s2", matches: [{ text: "Zoe Nolan | ord-0099", location: { url: "/orders?page=3" } }] })
+  }];
+  assert.equal(sameReadEvidence(repeated, prior), true);
+  assert.equal(sameReadEvidence(newFact, prior), false);
+  assert.equal(sameReadEvidence(
+    [{ command: "jobs status 2", source: JSON.stringify({ state: "RUNNING", duration: "2s" }) }],
+    [{ command: "jobs status 2", source: JSON.stringify({ state: "RUNNING", duration: "1s" }) }]
+  ), true);
+  assert.equal(sameReadEvidence(
+    [{ command: "grade list", source: JSON.stringify({ student: "A", score: 92 }) }],
+    [{ command: "grade list", source: JSON.stringify({ student: "A", score: 91 }) }]
+  ), false);
+  assert.equal(sameReadEvidence(
+    [{ command: "jobs status 2", failed: true, source: "⛔ policy budget_exceeded: cap reached" }],
+    [{ command: "jobs status 2", source: JSON.stringify({ state: "RUNNING" }) }]
+  ), false);
+});
+
+test("read/change classification ignores flag values and recognizes command actions", () => {
+  assert.equal(isReadCommand('google gmail list --query "archive the promotions"'), true);
+  assert.equal(isReadCommand('jobs run "aux4 email list all"'), false);
+  assert.equal(isChangeCommand('todo add --title "open the dashboard"'), true);
+  assert.equal(isChangeCommand('todo list --query "archive"'), false);
+});
+
+test("attempt log treats timeouts, hook blocks, and policy denials as failures", () => {
+  const file = tmpFile("failed-results.json", JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [
+      { id: "timeout", name: "executeAux4", args: { command: "email list all" } },
+      { id: "hook", name: "executeAux4", args: { command: "jobs status 2" } },
+      { id: "budget", name: "executeAux4", args: { command: "jobs status 2" } }
+    ] } },
+    { role: "tool", tool_call_id: "timeout", name: "executeAux4", content: 'TIMEOUT: "email list all" was killed' },
+    { role: "tool", tool_call_id: "hook", name: "executeAux4", content: "Blocked by hook: Error: repeated lookup" },
+    { role: "tool", tool_call_id: "budget", name: "executeAux4", content: "⛔ policy budget_exceeded: budget exceeded (spent 26 calls, cap 25)" }
+  ] }));
+  const attempts = extractAttemptLog(file);
+  assert.deepEqual(attempts.map(attempt => attempt.failed), [true, true, true]);
+  assert.equal(isBudgetExceededResult(attempts[2].source), true);
+  fs.rmSync(file, { force: true });
+});
+
+test("runAux4Monitored stops the inner agent when the tool budget is denied", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "budget-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const pidFile = path.join(dir, "pid");
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const file = args[args.indexOf('--history') + 1];
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => fs.writeFileSync(file, JSON.stringify({ messages: [
+  { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'denied', name: 'executeAux4', args: { command: 'jobs status 2' } }] } },
+  { role: 'tool', tool_call_id: 'denied', name: 'executeAux4', content: '⛔ policy budget_exceeded: budget exceeded (spent 26 calls / cap 25)' }
+] })), 40);
+setTimeout(() => {}, 10000);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25 });
+    assert.equal(result.budgetExceeded, true);
+    assert.equal(result.ok, false);
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runAux4Monitored stops after the same deterministic command error repeats", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-error-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const pidFile = path.join(dir, "pid");
+  const failure = "Error executing command: Command not found: community/google-gmail";
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const file = args[args.indexOf('--history') + 1];
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => fs.writeFileSync(file, JSON.stringify({ messages: [
+  { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'missing-1', name: 'executeAux4', args: { command: 'community/google-gmail --help' } }] } },
+  { role: 'tool', tool_call_id: 'missing-1', name: 'executeAux4', content: ${JSON.stringify(failure)} },
+  { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'missing-2', name: 'executeAux4', args: { command: 'community/google-gmail --help' } }] } },
+  { role: 'tool', tool_call_id: 'missing-2', name: 'executeAux4', content: ${JSON.stringify(failure)} }
+] })), 40);
+setTimeout(() => {}, 10000);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25 });
+    assert.equal(result.noProgress, true);
+    assert.equal(result.budgetExceeded, false);
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runAux4Monitored stops after the same no-op repeat refusal twice", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-refusal-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const pidFile = path.join(dir, "pid");
+  const command = 'google gmail list --query "label:INBOX"';
+  const refusal = "Not run: you have already made this exact call 2 times and it returned the same result every time.";
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const file = args[args.indexOf('--history') + 1];
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => fs.writeFileSync(file, JSON.stringify({ messages: [
+  { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'repeat-1', name: 'executeAux4', args: { command: ${JSON.stringify(command)} } }] } },
+  { role: 'tool', tool_call_id: 'repeat-1', name: 'executeAux4', content: ${JSON.stringify(refusal)} },
+  { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'repeat-2', name: 'executeAux4', args: { command: ${JSON.stringify(command)} } }] } },
+  { role: 'tool', tool_call_id: 'repeat-2', name: 'executeAux4', content: ${JSON.stringify(refusal)} }
+] })), 40);
+setTimeout(() => {}, 10000);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25 });
+    assert.equal(result.noProgress, true);
+    assert.equal(result.ok, false);
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runAux4Monitored resolves a normally completed execution as successful", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "successful-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
+  fs.writeFileSync(bin, "#!/usr/bin/env node\nprocess.stdout.write('finished');\n", { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history);
+    assert.deepEqual(result, {
+      ok: true,
+      status: 0,
+      signal: null,
+      stdout: "finished",
+      stderr: "",
+      budgetExceeded: false,
+      noProgress: false
+    });
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLoop stops when a retry changes the query but reads the same evidence", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const outcome = await runLoop(baseOptions(), history, (_question, file) => {
+      calls++;
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      const id = `read-${calls}`;
+      const question = calls === 1 ? "find the missing order" : "search all orders for that customer";
+      data.messages.push(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command: `agent browser find --question \"${question}\"` } }] } },
+        { role: "tool", tool_call_id: id, name: "executeAux4", content: JSON.stringify({ question, answered: false, answerScore: 0.03, session: `s${calls}`, matches: [{ text: "Orders table", location: { url: "/orders" } }] }) }
+      );
+      fs.writeFileSync(file, JSON.stringify(data));
+      return "The requested record was not found.";
+    });
+    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.attempts, 2);
+    assert.equal(calls, 2);
+  });
+});
+
+test("runLoop stops without verifying again after a tool-budget denial", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("budget-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executeCalls = 0;
+    const outcome = await runLoop(baseOptions(), history, (_question, file) => {
+      executeCalls++;
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      data.messages.push(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "budget-denied", name: "executeAux4", args: { command: "jobs status 2" } }] } },
+        { role: "tool", tool_call_id: "budget-denied", name: "executeAux4", content: "⛔ policy budget_exceeded: budget exceeded (spent 26 calls / cap 25)" }
+      );
+      fs.writeFileSync(file, JSON.stringify(data));
+      return "The execution budget was exhausted.";
+    });
+    assert.equal(outcome.stopped, "tool-budget");
+    assert.equal(outcome.attempts, 1);
+    assert.equal(executeCalls, 1);
+    assert.match(outcome.content, /remaining work could not be confirmed/);
+  });
+});
+
+test("runLoop stops cleanly when the inner executor reports no progress", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("stalled-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executeCalls = 0;
+    const outcome = await runLoop(baseOptions(), history, () => {
+      executeCalls++;
+      return { content: "Execution stopped after a repeated failure.", stopReason: "no-progress" };
+    });
+    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.attempts, 1);
+    assert.equal(executeCalls, 1);
+    assert.match(outcome.content, /remaining work could not be confirmed/);
+  });
+});
+
+test("command lookup searches plan phrases, a task step, and the original request", () => {
+  assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"], lookFor: ["fill and submit a form on a web page"] }), ["fill and submit a form on a web page", "s1", "Book a trip"]);
   assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"], lookFor: [] }), ["Book a trip", "s1"]);
   assert.deepEqual(lookupQueries("Book a trip", { steps: ["s1"] }), ["Book a trip", "s1"]);
 });
@@ -805,6 +1091,7 @@ test("a capability with a goal-level agent is delegated: its low-level commands 
   const delegations = activeDelegations(new Set(["main", "agent", "agent:browser", "browser"]));
   assert.equal(delegations.length, 1);
   assert.match(delegations[0].note, /executeAux4 with command "agent browser run --url/);
+  assert.match(delegations[0].note, /Reuse the returned session id/);
   assert.deepEqual(delegatedDenyPatterns(delegations), ["browser", "browser *", "aux4 browser", "aux4 browser *"]);
   assert.deepEqual(activeDelegations(new Set(["main", "browser"])), []);
   const policy = JSON.parse(addDenyPatterns('{"budget":{"calls":60},"deny":[{"executeAux4":["x"]}]}', ["browser *"]));

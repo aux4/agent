@@ -11,7 +11,7 @@ import {
   detectAiAgentHooksSupport,
   resetHooksSupportCacheForTests
 } from "../lib/agent-loop.mjs";
-import { parseFields, checkValues } from "../lib/check-values.mjs";
+import { parseFields, checkValues, repeatedReadGuardMessage } from "../lib/check-values.mjs";
 
 function writeHistory(file, messages) {
   fs.writeFileSync(file, JSON.stringify({ messages }));
@@ -55,14 +55,16 @@ test("unsourcedFieldValues skips the confirmation flag but flags a placeholder c
 
 test("checkValuesHooksFile targets executeAux4 on every agent:browser/run call", () => {
   const file = checkValuesHooksFile("/pkg/dir");
-  assert.equal(file.hooks.length, 1);
-  const hook = file.hooks[0];
+  assert.equal(file.hooks.length, 3);
+  const hook = file.hooks[2];
   assert.equal(hook.tool, "executeAux4");
   assert.equal(hook.command, "agent:browser/run");
   assert.equal(hook.params, undefined);
   assert.equal(hook.before.length, 1);
   assert.match(hook.before[0], /check-values\.mjs/);
   assert.match(hook.before[0], /\/pkg\/dir/);
+  assert.deepEqual(file.hooks.slice(0, 2).map(h => h.command), ["*/*", "*/*/*"]);
+  assert.match(file.hooks[0].before[0], /--repeatReadGuard true --history value\(__history\) --command value\(command\)/);
 });
 
 test("writeCheckValuesHooksFile writes the hooks file next to the history file", () => {
@@ -71,7 +73,7 @@ test("writeCheckValuesHooksFile writes the hooks file next to the history file",
   const file = writeCheckValuesHooksFile("/pkg/dir", history);
   assert.equal(file, `${history}.hooks.json`);
   const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-  assert.equal(parsed.hooks[0].command, "agent:browser/run");
+  assert.equal(parsed.hooks[2].command, "agent:browser/run");
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -178,9 +180,29 @@ test("checkValues: a sourced value passes in one round", () => {
 });
 
 test("the check-values hook passes the request and history with value(), never raw ${...} in a shell line", () => {
-  const step = checkValuesHooksFile("/pkg").hooks[0].before[0];
+  const step = checkValuesHooksFile("/pkg").hooks[2].before[0];
   assert.match(step, /--request value\(__request\) --history value\(__history\) --fieldsJson value\(field\)/);
   assert.doesNotMatch(step, /\$\{/);
+});
+
+test("repeated-read guard blocks only duplicate evidence without an intervening change", () => {
+  const first = {
+    tool: "executeAux4", command: "jobs status 2", failed: false,
+    source: JSON.stringify({ id: "2", state: "RUNNING", duration: "1s" })
+  };
+  const second = {
+    ...first,
+    source: JSON.stringify({ id: "2", state: "RUNNING", duration: "2s" })
+  };
+  assert.equal(repeatedReadGuardMessage("jobs status 2", [first]), "");
+  assert.match(repeatedReadGuardMessage("jobs status 2", [first, second]), /same evidence twice/);
+  assert.equal(repeatedReadGuardMessage("jobs status 2", [first, second, {
+    tool: "executeAux4", command: "calendar events update --id 1", failed: false, source: "updated"
+  }]), "");
+  assert.equal(repeatedReadGuardMessage("jobs status 2", [first, {
+    ...second,
+    source: JSON.stringify({ id: "2", state: "COMPLETED", duration: "2s" })
+  }]), "");
 });
 
 test("unsourcedFieldValues: a value echoed back by the call that typed it is not a source", () => {
@@ -255,7 +277,7 @@ test("the hook reads the person's original request from the file next to the his
   const history = path.join(tmp, "h.json");
   const hooksFile = writeCheckValuesHooksFile("/pkg", history, "Please cancel my order");
   assert.equal(fs.readFileSync(`${history}.request.txt`, "utf8"), "Please cancel my order");
-  assert.match(JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[0].before[0], /--requestFile \/.*h\.json\.request\.txt$/);
+  assert.match(JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[2].before[0], /--requestFile \/.*h\.json\.request\.txt$/);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

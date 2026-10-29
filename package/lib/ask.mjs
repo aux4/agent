@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  runLoop, mergeDenyPolicy, addDenyPatterns, capRetryBudget, runAux4, activeDelegations, delegatedDenyPatterns,
+  runLoop, mergeDenyPolicy, addDenyPatterns, capRetryBudget, runAux4Monitored, activeDelegations, delegatedDenyPatterns,
   detectAiAgentHooksSupport, writeCheckValuesHooksFile
 } from "./agent-loop.mjs";
 
@@ -63,8 +63,26 @@ export async function main(argv) {
   if (options.hooksSupported) {
     options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, options.request);
   }
-  const execute = (question, h, deniedCommands, retry = false, targetPatterns = []) =>
-    runAux4(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns)).stdout.trim();
+  const execute = async (question, h, deniedCommands, retry = false, targetPatterns = []) => {
+    const result = await runAux4Monitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h);
+    if (result.budgetExceeded) {
+      return {
+        content: [result.stdout.trim(), "Execution stopped after the tool-call budget was exhausted."].filter(Boolean).join("\n"),
+        stopReason: "budget"
+      };
+    }
+    if (result.noProgress) {
+      return {
+        content: [result.stdout.trim(), "Execution stopped after a deterministic tool failure repeated."].filter(Boolean).join("\n"),
+        stopReason: "no-progress"
+      };
+    }
+    if (!result.ok) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `aux4 exited ${result.status}${result.signal ? ` (${result.signal})` : ""}`;
+      throw new Error(detail);
+    }
+    return result.stdout.trim();
+  };
   const outcome = await runLoop(options, history, execute);
   process.stdout.write(`${outcome.content}\n`);
 }

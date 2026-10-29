@@ -6,7 +6,7 @@
 // `aux4 ai agent ask` invocations; no change is made to aux4/ai-agent itself.
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export const RETRY_BUDGET = 2;
 // How much of each tool result the verifier sees, and in total.
@@ -206,7 +206,103 @@ function getToolCalls(message) {
 
 function isFailedResult(content) {
   const text = typeof content === "string" ? content : JSON.stringify(content || "");
-  return /^\s*(error\b|permission denied|command not found)/i.test(text) || /⛔\s*policy denied/i.test(text) || isDeclinedResult(text);
+  return /^\s*(error\b|permission denied|command not found|timeout:|blocked by hook:|not run:|aborting:)/i.test(text)
+    || /⛔\s*policy\b/i.test(text)
+    || isDeclinedResult(text);
+}
+
+export function isBudgetExceededResult(content) {
+  const text = typeof content === "string" ? content : JSON.stringify(content || "");
+  return /⛔\s*policy\s+budget_exceeded\b/i.test(text)
+    || /budget exceeded\s*\(spent .*\bcap\b/i.test(text);
+}
+
+// Run an execution turn while watching its persisted tool history. Once the
+// agent runtime says its call/token budget is exhausted, every later tool call
+// is denied anyway; terminate the inner generation instead of letting it
+// replay an ever-growing transcript of denials. Kill the process group so a
+// shell wrapper cannot leave its node child running in the background.
+export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {}) {
+  const bin = process.env.AUX4_BIN || "aux4";
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(bin, args, {
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32"
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let stopReason = "";
+    const stop = reason => {
+      if (stopReason) return;
+      stopReason = reason;
+      try {
+        if (process.platform === "win32") child.kill("SIGTERM");
+        else process.kill(-child.pid, "SIGTERM");
+      } catch {
+        child.kill("SIGTERM");
+      }
+    };
+    const append = (current, chunk) => {
+      const next = current + chunk.toString();
+      return next.length > 20 * 1024 * 1024 ? next.slice(-20 * 1024 * 1024) : next;
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", chunk => { stdout = append(stdout, chunk); });
+    child.stderr.on("data", chunk => { stderr = append(stderr, chunk); });
+
+    const monitor = setInterval(() => {
+      if (stopReason || !historyFile || !fs.existsSync(historyFile)) return;
+      const attempts = extractAttemptLog(historyFile);
+      if (attempts.some(attempt => isBudgetExceededResult(attempt.source))) {
+        stop("budget");
+        return;
+      }
+      const last = attempts.at(-1);
+      const previous = attempts.at(-2);
+      if (last && isDeterministicToolFailure(last.source)
+        && /aborting: the same call has been refused/i.test(last.source)) {
+        stop("no-progress");
+        return;
+      }
+      if (last && previous && last.failed && previous.failed
+        && last.command === previous.command
+        && isDeterministicToolFailure(last.source)
+        && last.source.trim().replace(/\s+/g, " ") === previous.source.trim().replace(/\s+/g, " ")) {
+        stop("no-progress");
+      }
+    }, Math.max(25, pollInterval));
+
+    child.on("error", error => {
+      clearInterval(monitor);
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      clearInterval(monitor);
+      resolve({
+        ok: code === 0 && !stopReason,
+        status: code ?? 1,
+        signal,
+        stdout,
+        stderr,
+        budgetExceeded: stopReason === "budget",
+        noProgress: stopReason === "no-progress"
+      });
+    });
+  });
+}
+
+function isDeterministicToolFailure(content) {
+  const text = typeof content === "string" ? content : JSON.stringify(content || "");
+  return /command not found|invalid (?:command|arguments?|option)|unknown (?:command|option)|blocked by hook:|permission denied|not run: you have already made this exact call|aborting: the same call has been refused/i.test(text);
 }
 
 // The requester was asked to confirm an action and did not. Retrying cannot
@@ -550,7 +646,7 @@ export function readBackCandidates(attempts, limit = 5) {
 // ran successfully in this run (so permissions allowed it) and that carries no
 // change verb is ever re-run.
 
-const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update|patch|put|post|create|insert|add|set|write|move|cancel|modify|edit|rename|upload|publish|deploy|pay|approve|install|uninstall|save|submit|book|confirm)\b/i;
+export const CHANGE_VERB = /\b(send|reply|forward|delete|remove|rm|trash|archive|update|patch|put|post|create|insert|add|set|write|move|cancel|modify|edit|rename|upload|publish|deploy|pay|approve|install|uninstall|save|submit|book|confirm|run)\b/i;
 const ENTITY_TARGET_FLAG = /^(?:id|[a-z0-9_-]*id|key|[a-z0-9_-]*key)$/i;
 const CONTEXT_TARGET_FLAGS = new Set(["accountid", "calendarid", "folderid", "orgid", "organizationid", "parentid", "projectid", "teamid", "tenantid", "userid", "workspaceid"]);
 const NATURAL_TARGET_FLAGS = new Set(["date", "email", "name", "number", "phone", "slug", "start", "startdate", "starttime", "subject", "summary", "title", "to", "url", "username"]);
@@ -620,13 +716,33 @@ export function changeDenyPatterns(command) {
 const READ_VERB = new Set(["get", "list", "show", "view", "read", "find", "search", "describe", "fetch", "status", "count", "info", "inspect", "query", "freebusy", "ls", "cat"]);
 
 export function isReadCommand(command) {
-  if (!command || CHANGE_VERB.test(command)) return false;
-  const words = [];
-  for (const token of String(command).trim().split(/\s+/)) {
-    if (token.startsWith("-")) break;
-    words.push(token.toLowerCase());
+  if (!command || isChangeCommand(command)) return false;
+  return commandPathWords(command).some(word => READ_VERB.has(word));
+}
+
+const EXECUTION_VALUE_FLAGS = new Set(["--command", "--execute", "--run", "--then"]);
+
+function commandPathWords(command) {
+  const parsed = commandWords(command);
+  if (!parsed?.length) return [];
+  const words = parsed[0] === "aux4" ? parsed.slice(1) : parsed;
+  const firstFlag = words.findIndex(word => word.startsWith("-"));
+  const path = firstFlag < 0 ? words : words.slice(0, firstFlag);
+  const embeddedActions = [];
+  for (let i = Math.max(firstFlag, 0); i < words.length; i++) {
+    const token = words[i];
+    if (!token.startsWith("--")) continue;
+    const equals = token.indexOf("=");
+    const flag = equals < 0 ? token : token.slice(0, equals);
+    if (!EXECUTION_VALUE_FLAGS.has(flag)) continue;
+    const value = equals < 0 ? words[++i] : token.slice(equals + 1);
+    embeddedActions.push(...(commandWords(value || "") || []));
   }
-  return words.some(w => READ_VERB.has(w));
+  return [...path, ...embeddedActions].map(word => word.toLowerCase());
+}
+
+export function isChangeCommand(command) {
+  return CHANGE_VERB.test(commandPathWords(command).join(" "));
 }
 
 export function isSafeReadBack(command, candidates) {
@@ -1128,8 +1244,17 @@ export function resetHooksSupportCacheForTests() {
 }
 
 export function checkValuesHooksFile(packageDir, requestFile = "") {
+  const repeatedReadHook = pattern => ({
+    tool: "executeAux4",
+    command: pattern,
+    before: [`node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(command)`]
+  });
   return {
     hooks: [
+      // Installed command paths currently resolve to two or three segments;
+      // cover both forms so the loop guard works across package profiles.
+      repeatedReadHook("*/*"),
+      repeatedReadHook("*/*/*"),
       {
         tool: "executeAux4",
         command: "agent:browser/run",
@@ -1340,10 +1465,15 @@ export const WORKING_RULES = [
   "- Find the command: match the request's own words to the help descriptions and to any list of commands you may run; drill down with --help from the most specific group.",
   "- Use the installed commands listed above when they fit; otherwise find one with --help (aux4 --help lists every group). A package name (scope/name) is not a command.",
   "- Never guess a command name. If a call returns \"Command not found\", run --help on its parent group (drop the last word) and use a command listed there, or look for another command that does the same thing.",
+  "- executeAux4 adds the aux4 binary: pass only the command path and flags shown below, without an aux4 prefix.",
   "- Before first using a command that changes something, read its --help for the exact parameter names. Once a change succeeds, do not run it again.",
   "- Before anything that cannot be undone (sending, deleting, paying), first get the facts it depends on from the tools, then say in one sentence what they mean for the action (e.g. whether the time is free) and act on exactly that.",
   "- Before sending or submitting a message, re-read the tool results it depends on and make sure the message agrees with them.",
   "- If an action returns \"User aborted\", the requester declined it: stop and say so, do not retry it.",
+  "- After a successful lookup, reuse its facts; rerun it only if a change or new evidence could have changed the result.",
+  "- Read each lookup result before choosing the next step. Do not repeat a search with reworded queries when it returned the same evidence; try one materially different relevant source or scope, then stop if it adds nothing.",
+  "- If a tool reports that a call or token budget is exhausted, stop making tool calls and report what remains incomplete.",
+  "- For a background job, use a real wait interval or a polling command; do not issue back-to-back status checks when the job is still running.",
   "- Anything you send must name what it refers to (the item, the date and time), not just \"that\".",
   "- Never make up a value (an id, a code, a number, a name): use only values the request gives or a tool returned. If a required value cannot be found, do not submit or send -- say exactly what is missing.",
   "- Never ask the requester for something the tools can find out (a date, an id, a name): look it up. If a question is ambiguous, answer with the reading the results best support and say which."
@@ -1353,56 +1483,156 @@ export const WORKING_RULES = [
 // harness looks up which installed commands fit the request (and each planned
 // step) with `aux4 aux4 pkger find`, the same search the agent is told to use,
 // and lists them. Commands of the agent itself are left out.
-const FIND_LIMIT = 6;
-const FIND_TIMEOUT_MS = 20000;
-const MAX_FOUND = 8;
+const FIND_LIMIT = 10;
+const FIND_TIMEOUT_MS = 5000;
+const MAX_FOUND = 12;
+const MAX_LOOKUP_QUERIES = 5;
+const MAX_PRESET_LOOKUPS = 1;
+const MAX_HELP_OUTPUTS = 6;
+const HELP_TIMEOUT_MS = 5000;
+const HELP_OUTPUT_LIMIT = 1200;
+const HELP_GROUP_OUTPUT_LIMIT = 3600;
+const HELP_TOTAL_LIMIT = 5200;
 
-// A URL is not a word the docs use: it is searched as "web page". Scores from
-// different queries do not compare, so results are merged by rank: every
-// query's best match first, then every query's second, and so on.
+// A URL is not a word the docs use: it is searched as "web page".
 export function findQuery(text) {
   return String(text || "").replace(/https?:\/\/\S+/gi, "web page").trim().slice(0, 300);
 }
 
-export function findCommands(queries) {
-  const lists = [];
-  for (const query of queries.map(findQuery).filter(Boolean)) {
-    const result = runAux4(["aux4", "pkger", "find", "--query", query, "--limit", String(FIND_LIMIT)], { allowFailure: true, timeout: FIND_TIMEOUT_MS });
-    const list = parseJSONLoose(result.stdout, []);
-    if (!Array.isArray(list)) continue;
-    lists.push(list
-      .map(item => ({ command: String(item?.command || "").trim(), description: String(item?.description || "") }))
-      .filter(item => item.command && !/^aux4 (ai agent|agent ask|aux4 pkger)(\s|$)/.test(item.command)));
-  }
-  const found = new Map();
-  for (let rank = 0; rank < FIND_LIMIT && found.size < MAX_FOUND; rank++) {
-    for (const list of lists) {
-      const item = list[rank];
-      if (item && !found.has(item.command)) found.set(item.command, item);
-      if (found.size >= MAX_FOUND) break;
-    }
-  }
-  return [...found.values()];
+const FIND_STOP_WORDS = new Set("a an and are as at be been but by can do does for from go had has have he her here him his how i if in into is it its me my no not of on or our she so that the their them there they this to up us was we were what when where which who why will with you your".split(" "));
+
+function compactFindTerms(queries) {
+  return [...new Set(String(queries || "").toLowerCase().match(/[a-z0-9]+/g) || [])]
+    .filter(word => !FIND_STOP_WORDS.has(word))
+    .slice(0, 24)
+    .join(" ");
 }
 
-// Each command is written as the executeAux4 call that runs it: a small model
-// shown a bare "aux4 agent browser find" tends to call it as a tool of that
-// name, which no parser accepts, and the turn comes back empty.
+export function findCommands(queries) {
+  const lists = [];
+  const search = (query, serviceSearch = false) => {
+    if (!query) return;
+    const result = runAux4(["aux4", "pkger", "find", "--query", query, "--limit", String(FIND_LIMIT)], { allowFailure: true, timeout: FIND_TIMEOUT_MS });
+    const list = parseJSONLoose(result.stdout, []);
+    if (!Array.isArray(list)) return;
+    lists.push(list
+      .map(item => ({ command: String(item?.command || "").trim(), description: String(item?.description || ""), serviceSearch }))
+      .filter(item => item.command && !/^aux4 (ai agent|agent ask|aux4 pkger)(\s|$)/.test(item.command)));
+  };
+  const cleanQueries = queries.map(findQuery).filter(Boolean);
+  for (const query of cleanQueries) search(query);
+
+  // A matching mock preset names the service it configures (for example,
+  // "aux4 mock preset <service>"). Search that service plus the same task
+  // terms so the indexed setup command does not crowd out the service's actual
+  // commands. The service name is discovered from pkger results.
+  const presetServices = [...new Set(lists.flatMap(list => list
+    .map(item => item.command.match(/^aux4 mock preset\s+(.+)$/)?.[1]?.trim())
+    .filter(service => service && !/\b(?:auth|oauth|credentials?)\b/i.test(service))))].slice(0, MAX_PRESET_LOOKUPS);
+  const taskTerms = compactFindTerms([cleanQueries[0], cleanQueries.at(-1)].filter(Boolean).join(" "));
+  for (const service of presetServices) search(findQuery(`${service} ${taskTerms}`), true);
+
+  // A command that ranks well for several distinct task phrases is a better
+  // lead than unrelated first-place results from each query. Reciprocal rank
+  // avoids comparing the search provider's raw scores across queries.
+  const found = new Map();
+  for (const list of lists) {
+    list.forEach((item, rank) => {
+      const existing = found.get(item.command) || { ...item, hits: 0, rankScore: 0, bestRank: rank, serviceBestRank: Infinity };
+      existing.hits++;
+      existing.rankScore += 1 / (rank + 1);
+      existing.bestRank = Math.min(existing.bestRank, rank);
+      existing.serviceSearch ||= item.serviceSearch;
+      if (item.serviceSearch) existing.serviceBestRank = Math.min(existing.serviceBestRank, rank);
+      if (!existing.description && item.description) existing.description = item.description;
+      found.set(item.command, existing);
+    });
+  }
+  return [...found.values()]
+    .sort((a, b) => Number(b.serviceSearch) - Number(a.serviceSearch)
+      || (a.serviceSearch && b.serviceSearch ? a.serviceBestRank - b.serviceBestRank : 0)
+      || b.rankScore - a.rankScore || b.hits - a.hits || a.bestRank - b.bestRank)
+    .filter(({ command }) => !/^aux4 mock preset\s/.test(command))
+    .slice(0, MAX_FOUND)
+    .map(({ command, description }) => ({ command, description }));
+}
+
+function commandHelp(command, limit = HELP_OUTPUT_LIMIT) {
+  const parts = String(command || "").trim().split(/\s+/);
+  // pkger find returns command paths, not invocations. Only ask for help on a
+  // plain aux4 path; never execute package-supplied arguments as a command.
+  if (parts[0] !== "aux4" || parts.length < 2 || parts.slice(1).some(part => !/^[a-zA-Z0-9:_-]+$/.test(part))) return "";
+  // executeAux4 accepts the path after the `aux4` binary; runAux4 supplies the
+  // binary itself. Keep the package-provided command path out of shell parsing.
+  const result = runAux4([...parts.slice(1), "--help"], { allowFailure: true, timeout: HELP_TIMEOUT_MS });
+  return result.ok ? String(result.stdout || "").trim().slice(0, limit) : "";
+}
+
+// Show the command path expected by executeAux4. pkger find returns shell
+// paths prefixed with `aux4`, but the tool supplies that binary itself.
 // Command search works on short phrases about what a command does ("read email
 // in the inbox"); a whole task sentence pulls in commands that merely share a
 // word with it ("order" -> a todo list's order). The plan's lookFor phrases are
 // searched when there are any; otherwise the request and its steps.
 export function lookupQueries(request, plan) {
   const lookFor = Array.isArray(plan?.lookFor) ? plan.lookFor.filter(Boolean) : [];
-  return lookFor.length ? lookFor : [request, ...(plan?.steps || [])];
+  const steps = Array.isArray(plan?.steps) ? plan.steps.filter(Boolean) : [];
+  const queries = lookFor.length
+    ? [...lookFor.slice(0, MAX_LOOKUP_QUERIES - 2), ...steps.slice(0, MAX_LOOKUP_QUERIES - lookFor.length - 1), request, ...lookFor.slice(MAX_LOOKUP_QUERIES - 2)]
+    : [request, ...steps];
+  return [...new Set(queries.map(query => String(query || "").trim()).filter(Boolean))].slice(0, MAX_LOOKUP_QUERIES);
 }
 
 export function describeFoundCommands(found) {
   if (!found.length) return "";
-  return [
-    "Installed aux4 commands that may fit -- run them through the executeAux4 tool:",
-    ...found.map(f => `- executeAux4 {"command": "${f.command} --help"}${f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : ""}`)
-  ].join("\n");
+  let remaining = HELP_TOTAL_LIMIT;
+  let helped = 0;
+  const describedGroups = new Set();
+  const lines = [
+    "Installed aux4 command reference (exact syntax from --help). Pass the shown command path and flags to executeAux4; it adds the aux4 binary. Use these flags directly without another help lookup:"
+  ];
+
+  // Search may return a read subcommand while omitting the related write
+  // subcommand that actually completes the request. Put a relevant parent
+  // group's help first; it lists sibling commands and keeps the model from
+  // getting trapped with only half of a service's capabilities.
+  const groupCandidates = [];
+  for (const f of found) {
+    const parts = String(f.command || "").trim().split(/\s+/);
+    const group = parts[0] === "aux4"
+      ? (parts.length >= 4 ? parts.slice(0, -1).join(" ") : parts.length === 3 ? f.command : "")
+      : "";
+    if (group && !groupCandidates.includes(group)) groupCandidates.push(group);
+  }
+  for (const group of groupCandidates) {
+    if (helped >= MAX_HELP_OUTPUTS) break;
+    const groupHelp = commandHelp(group, HELP_GROUP_OUTPUT_LIMIT);
+    if (!groupHelp || groupHelp.length > remaining) continue;
+    describedGroups.add(group);
+    lines.push(`- ${group.replace(/^aux4\s+/, "")}\n${groupHelp.split("\n").map(line => `  ${line}`).join("\n")}`);
+    remaining -= groupHelp.length;
+    helped++;
+  }
+
+  for (const f of found) {
+    const commandPath = String(f.command || "").replace(/^aux4\s+/, "");
+    const parts = String(f.command || "").trim().split(/\s+/);
+    const group = parts[0] === "aux4" && parts.length >= 4 ? parts.slice(0, -1).join(" ") : "";
+    if (describedGroups.has(f.command) || (group && describedGroups.has(group))) {
+      continue;
+    }
+    const help = helped < MAX_HELP_OUTPUTS ? commandHelp(f.command) : "";
+    if (help && remaining > 0) {
+      const clipped = help.slice(0, remaining);
+      lines.push(`- ${commandPath}\n${clipped.split("\n").map(line => `  ${line}`).join("\n")}`);
+      remaining -= clipped.length;
+      helped++;
+    } else {
+      const description = f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : "";
+      lines.push(`- executeAux4 {"command": "${commandPath} --help"}${description}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 export function composeExecuteQuestion(request, plan, recovery = "", foundCommands = "", delegationNote = "") {
@@ -1447,7 +1677,7 @@ export const DELEGATIONS = [
   {
     via: "agent:browser",
     group: "browser",
-    note: "Web pages: call executeAux4 with command \"agent browser run --url <page> --goal \\\"<what to do>\\\"\" to do something, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to find something out -- they open, read, fill and click for you. Commands that start with \"browser\" are not available to you."
+    note: "Web pages: call executeAux4 with command \"agent browser run --url <page> --goal \\\"<what to do>\\\"\" to do something, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to find something out -- they open, read, fill and click for you. Reuse the returned session id for follow-up calls; do not open a new session to reword the same search. Commands that start with \"browser\" are not available to you."
   }
 ];
 
@@ -1512,7 +1742,7 @@ export function unverifiableOnlyAfterChange(verdict, attempts) {
   if (!verdict || verdict.overall === "pass") return false;
   if (verdict.criteria.some(c => c.status === "fail")) return false;
   if (!verdict.criteria.some(c => c.status === "unverifiable")) return false;
-  return attempts.some(a => !a.failed && CHANGE_VERB.test(a.command));
+  return attempts.some(a => !a.failed && isChangeCommand(a.command));
 }
 
 export function sameFailureShape(a, b) {
@@ -1523,6 +1753,44 @@ export function sameFailureShape(a, b) {
     .sort()
     .join("|");
   return key(a) === key(b);
+}
+
+// A retry can change the wording of a search without learning anything new.
+// Compare read results while ignoring query and request metadata, but retain
+// returned facts such as ids, dates, and page contents.
+const EPHEMERAL_EVIDENCE_KEYS = new Set([
+  "session", "sessionid", "requestid", "correlationid", "traceid",
+  "question", "answerscore", "usage", "wallms", "rankcalls",
+  "duration", "elapsed", "elapsedms", "runtime"
+]);
+
+function stableEvidence(value) {
+  if (Array.isArray(value)) return value.map(stableEvidence);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort()
+    .filter(key => !EPHEMERAL_EVIDENCE_KEYS.has(key.toLowerCase()))
+    .map(key => [key, stableEvidence(value[key])]));
+}
+
+function readEvidenceKey(attempt) {
+  const raw = String(attempt?.source ?? attempt?.result ?? "").trim();
+  if (!raw) return "";
+  try {
+    return JSON.stringify(stableEvidence(JSON.parse(raw)));
+  } catch {
+    return raw.replace(/\s+/g, " ");
+  }
+}
+
+export function sameReadEvidence(current, previous) {
+  const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
+  const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
+  if (!priorReads.length || !currentReads.length) return false;
+  const prior = new Set(priorReads.map(readEvidenceKey).filter(Boolean));
+  return prior.size > 0 && currentReads.every(a => {
+    const key = readEvidenceKey(a);
+    return key && prior.has(key);
+  });
 }
 
 // When a denied command came back with the list of commands that may run, the
@@ -1649,8 +1917,27 @@ export async function runLoop(options, history, execute, recovery = "") {
       metrics
     };
   };
+  let innerStopReason = "";
+  const runExecution = async (...args) => {
+    const result = await execute(...args);
+    if (result && typeof result === "object" && !Array.isArray(result)) {
+      innerStopReason = String(result.stopReason || "");
+      return String(result.content ?? "");
+    }
+    innerStopReason = "";
+    return String(result ?? "");
+  };
+  const stopAfterExecution = attempt => {
+    if (!innerStopReason) return null;
+    const reason = innerStopReason;
+    innerStopReason = "";
+    return reason === "budget"
+      ? done("tool-budget", attempt, "The model's tool-call budget was exhausted, so the remaining work could not be confirmed.")
+      : done("no-progress", attempt, "Execution stopped after a deterministic tool failure repeated; the remaining work could not be confirmed.");
+  };
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
+    const executeStart = Date.now();
     // The two-step note describes the fallback gate only; with tool-call hooks
     // nothing is held, and telling the agent otherwise sends it round in circles.
     const notes = [...(options.delegations || []).map(d => d.note), ...(options.hooksSupported ? [] : [CONFIRM_NOTE])].join("\n");
@@ -1663,7 +1950,6 @@ export async function runLoop(options, history, execute, recovery = "") {
     const before = extractAttemptLog(history).length;
     const messagesBefore = readMessages(history).length;
     const usageBefore = readTokenUsage(history);
-    const executeStart = Date.now();
     nextQuestion = "";
     // The gate opens for one round only: a later irreversible step is held again.
     // When ai-agent supports hooks (HARN-030), the confirmation is checked
@@ -1672,10 +1958,15 @@ export async function runLoop(options, history, execute, recovery = "") {
     const gateOpen = confirmOpen || options.hooksSupported;
     confirmOpen = false;
     options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN, CONFIRM_DATA_PATTERN];
-    lastContent = execute(question, history, deniedCommands, attempt > 1, deniedPatterns);
+    lastContent = await runExecution(question, history, deniedCommands, attempt > 1, deniedPatterns);
     if (String(lastContent || "").trim()) lastAnswer = lastContent;
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
+    const innerStop = stopAfterExecution(attempt);
+    if (innerStop) return innerStop;
+    if (extractAttemptLog(history).slice(before).some(a => isBudgetExceededResult(a.source))) {
+      return done("tool-budget", attempt, "The model's tool-call budget was exhausted, so the remaining work could not be confirmed.");
+    }
     // One push per round, straight away (cheaper than verifying a round that
     // did nothing): a question asked without looking, or a step described or
     // written out as text instead of carried out.
@@ -1684,9 +1975,11 @@ export async function runLoop(options, history, execute, recovery = "") {
         : describedWithoutDoing(lastContent, round.execute.toolCalls) ? DO_IT_NOW : "";
       if (push) {
         if (push === DO_IT_NOW) dropTrailingTextCall(history);
-        lastContent = execute(push, history, deniedCommands, false, deniedPatterns);
+        lastContent = await runExecution(push, history, deniedCommands, false, deniedPatterns);
         if (String(lastContent || "").trim()) lastAnswer = lastContent;
         round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: push === DO_IT_NOW ? "do-it-now" : "look-first" };
+        const innerStop = stopAfterExecution(attempt);
+        if (innerStop) return innerStop;
       }
     }
 
@@ -1694,9 +1987,11 @@ export async function runLoop(options, history, execute, recovery = "") {
       const offered = !pushedPastBlocked && allowedCommandsOffered(extractAttemptLog(history));
       if (!offered) return done("blocked", attempt);
       pushedPastBlocked = true;
-      lastContent = execute(composeNotBlockedQuestion(offered), history, deniedCommands, false, deniedPatterns);
+      lastContent = await runExecution(composeNotBlockedQuestion(offered), history, deniedCommands, false, deniedPatterns);
       if (String(lastContent || "").trim()) lastAnswer = lastContent;
       round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart };
+      const innerStop = stopAfterExecution(attempt);
+      if (innerStop) return innerStop;
       if (isBlocked(lastContent)) return done("blocked", attempt);
     }
 
@@ -1734,11 +2029,13 @@ export async function runLoop(options, history, execute, recovery = "") {
       if (isClearlyRequestedAction(pending.label, options.request)) {
         const priorGate = options.gateDeny;
         options.gateDeny = [];
-        lastContent = execute(composeRunNextQuestion(pending), history, deniedCommands, false, deniedPatterns);
+        lastContent = await runExecution(composeRunNextQuestion(pending), history, deniedCommands, false, deniedPatterns);
         if (String(lastContent || "").trim()) lastAnswer = lastContent;
         options.gateDeny = priorGate;
         round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "confirm-requested" };
         round.confirmation = { command: pending.command, next: pending.next, requested: true };
+        const innerStop = stopAfterExecution(attempt);
+        if (innerStop) return innerStop;
         attempts = extractAttemptLog(history);
       } else {
         round.confirmation = { command: pending.command, next: pending.next, requested: false };
@@ -1757,10 +2054,16 @@ export async function runLoop(options, history, execute, recovery = "") {
     // the change behind it already ran -- a retry would just repeat a denied
     // command for the same inconclusive verdict. Stop now with the best answer.
     if (unverifiableOnlyAfterChange(lastVerdict, attempts)) return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
-    // No progress means the verdict did not move AND the round tried nothing
-    // new; a retry that tried a different action is still making progress.
-    const triedSomethingNew = attempts.slice(before).some(a => !priorCommands.has(a.command));
-    if (sameFailureShape(priorVerdict, lastVerdict) && !triedSomethingNew) return done("no-progress", attempt, incompleteNote(lastVerdict));
+    // A new command that returns the same read evidence is only a renamed
+    // retry. Preserve attempts that introduce new evidence or change state.
+    const previousAttempts = attempts.slice(0, before);
+    const currentAttempts = attempts.slice(before);
+    const triedSomethingNew = currentAttempts.some(a => !priorCommands.has(a.command));
+    const repeatedReadOnly = sameReadEvidence(currentAttempts, previousAttempts);
+    const changedState = currentAttempts.some(a => !a.failed && isChangeCommand(a.command));
+    if (sameFailureShape(priorVerdict, lastVerdict) && (!triedSomethingNew || (repeatedReadOnly && !changedState))) {
+      return done("no-progress", attempt, incompleteNote(lastVerdict));
+    }
     for (const a of attempts) priorCommands.add(a.command);
     if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
 
@@ -1768,7 +2071,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
     // A change that already went through must not be repeated by a retry.
-    const completed = attempts.filter(a => !a.failed && CHANGE_VERB.test(a.command));
+    const completed = attempts.filter(a => !a.failed && isChangeCommand(a.command));
     const doneChanges = completed.map(a => a.command);
     deniedCommands = [...new Set([...deniedCommands, ...newlyFailed, ...doneChanges])];
     deniedPatterns = [...new Set([...deniedPatterns, ...completed.flatMap(a => changeDenyPatterns(a.command))])];

@@ -13,7 +13,7 @@ import fs from "node:fs";
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem, isReadCommand, isChangeCommand, sameReadEvidence } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -76,6 +76,25 @@ export function checkValues({ request = "", history = "", fieldsJson = "", dataJ
   return unsourcedFieldValues([...new Set([...fields, ...earlier])], attempts, request);
 }
 
+// A short-model tool loop can poll or repeat the same lookup many times in a
+// single execution turn, before the outer plan/verify loop gets a chance to
+// stop it. After two successful reads return the same facts, block the next
+// read until a state-changing command succeeds. The agent can then choose a
+// different source, use a real polling interval, or report the remaining gap.
+export function repeatedReadGuardMessage(command, attempts = []) {
+  const requested = String(command || "").trim();
+  if (!requested || !isReadCommand(requested)) return "";
+  let lastChange = -1;
+  attempts.forEach((attempt, index) => {
+    if (!attempt.failed && isChangeCommand(attempt.command || "")) lastChange = index;
+  });
+  const reads = attempts.slice(lastChange + 1).filter(attempt =>
+    attempt.tool === "executeAux4" && !attempt.failed && isReadCommand(attempt.command)
+  );
+  if (reads.length < 2 || !sameReadEvidence([reads.at(-1)], reads.slice(0, -1))) return "";
+  return "Error: recent lookups already returned the same evidence twice. Do not repeat another equivalent search or status check; use a materially different source/scope, wait with a polling interval if this is a running job, or report what remains unknown.";
+}
+
 // The most recent tool result still waiting for a confirmation, if any.
 function lastPendingConfirmation(attempts) {
   for (let i = attempts.length; i > 0; i--) {
@@ -99,6 +118,14 @@ async function main(argv) {
   // The person's original request, when the harness wrote it next to the history.
   if (options.requestFile) {
     try { options.request = fs.readFileSync(options.requestFile, "utf8"); } catch {}
+  }
+  if (options.repeatReadGuard) {
+    const message = repeatedReadGuardMessage(options.command, extractAttemptLog(options.history));
+    if (message) {
+      process.stdout.write(`${message}\n`);
+      process.exit(1);
+    }
+    process.exit(0);
   }
   const unsourced = checkValues(options);
   const incomplete = unsourced.find(u => u.emptyFields);
