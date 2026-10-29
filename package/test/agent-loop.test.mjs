@@ -320,6 +320,53 @@ test("runLoop exhausts the retry budget and reports what remained unmet", async 
   });
 });
 
+test("runLoop recovers after an inner repeated-result stop instead of ending the task", async () => {
+  const verifyCounter = tmpFile("verify-count.txt", "0");
+  const fake = makeFakeAux4(`
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args.some(a => a.endsWith('loop-plan.md'))) {
+  process.stdout.write(JSON.stringify({ goal: 'g', doneCriteria: [{ text: 'the answer says done', kind: 'answer' }] }));
+} else if (args.some(a => a.endsWith('loop-verify.md'))) {
+  const n = Number(fs.readFileSync(${JSON.stringify(verifyCounter)}, 'utf8')) + 1;
+  fs.writeFileSync(${JSON.stringify(verifyCounter)}, String(n));
+  const question = args[args.indexOf('--question') + 1] || '';
+  const payload = JSON.parse(question.slice(question.indexOf('{')));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({
+    criterion: c.criterion,
+    status: c.criterion === 'the answer says done' && n === 1 ? 'fail' : 'pass',
+    evidence: 'checked'
+  })) }));
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const questions = [];
+    let calls = 0;
+    const addAttempt = (messages, id, command, result) => {
+      messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
+      messages.push({ role: "tool", tool_call_id: id, name: "executeAux4", content: result });
+    };
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      calls++;
+      questions.push(question);
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      if (calls === 1) {
+        const command = "agent browser find --url https://example.test --question 'find the item'";
+        for (let i = 0; i < 3; i++) addAttempt(data.messages, `repeat-${i}`, command, "same empty result");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return { content: "Stopped after repeated results.", stopReason: "no-progress" };
+      }
+      addAttempt(data.messages, "alternate", "agent browser find --url https://example.test --question 'inspect the visible form'", "new page evidence");
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "done";
+    });
+    assert.equal(outcome.stopped, "pass");
+    assert.equal(outcome.attempts, 2);
+    assert.match(questions[1], /materially different action or evidence source/);
+  });
+});
+
 test("runLoop sends target-aware denials for a successful change into the next execution round", async () => {
   const fake = planVerifyFake({ verifyStatus: "fail" });
   const command = 'google calendar events create --summary "Vendor sync meeting" --start "2026-03-20T10:00:00Z" --end "2026-03-20T10:30:00Z"';
@@ -1185,19 +1232,19 @@ test("runLoop stops without verifying again after a tool-budget denial", async (
   });
 });
 
-test("runLoop stops cleanly when the inner executor reports no progress", async () => {
+test("runLoop verifies the evidence after the inner executor reports no progress", async () => {
   const fake = planVerifyFake({ verifyStatus: "pass" });
   const history = tmpFile("stalled-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
   await withAux4Bin(fake, async () => {
     let executeCalls = 0;
     const outcome = await runLoop(baseOptions(), history, () => {
       executeCalls++;
-      return { content: "Execution stopped after a repeated failure.", stopReason: "no-progress" };
+      return { content: "The outcome holds.", stopReason: "no-progress" };
     });
-    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.stopped, "pass");
     assert.equal(outcome.attempts, 1);
     assert.equal(executeCalls, 1);
-    assert.match(outcome.content, /remaining work could not be confirmed/);
+    assert.equal(outcome.content, "The outcome holds.");
   });
 });
 

@@ -22,7 +22,9 @@ claim in the final answer alone cannot prove that something was sent, submitted,
 saved or changed; require a successful action result or direct read-back evidence.
 On a miss the agent rewrites its answer (when only the answer was off and requested
 state changes have action evidence) or retries with
-the unmet criteria, the attempt log and hints; failed actions and changes that
+the unmet criteria, the attempt log and hints. If an inner run stops after identical
+results repeat, the harness verifies what it has and gives a bounded retry an
+alternate-action hint. Failed actions and changes that
 already went through are denied, and retries run on a 10-call budget. It stops on a
 pass, 2 spent retries, no progress, a declined confirmation, or a `BLOCKED:` reply,
 and says plainly what is not confirmed. Plans, verdicts and per-phase metrics (calls,

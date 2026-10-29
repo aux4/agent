@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.23
+
+- A repeated-result stop now goes through verification and a bounded recovery round with an alternate-action hint instead of ending the whole task.
+- Keep the interrupted execution's actual output for verification instead of appending a generic stop message to the answer.
+
 ## 4.1.22
 
 - Recover an unresolved structured confirmation when later `confirm=yes` calls were blocked, limited to the current execution round.

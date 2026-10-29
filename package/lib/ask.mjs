@@ -73,7 +73,7 @@ export async function main(argv) {
     }
     if (result.noProgress) {
       return {
-        content: [result.stdout.trim(), "Execution stopped after a deterministic tool failure repeated."].filter(Boolean).join("\n"),
+        content: result.stdout.trim(),
         stopReason: "no-progress"
       };
     }

@@ -1946,6 +1946,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   let confirmOpen = false;
   let commitGranted = false;
   let nextQuestion = "";
+  let recoveryHint = "";
   const priorCommands = new Set();
   const done = (stopped, attempt, note = "") => {
     metrics.stopped = stopped;
@@ -1975,9 +1976,13 @@ export async function runLoop(options, history, execute, recovery = "") {
     if (!innerStopReason) return null;
     const reason = innerStopReason;
     innerStopReason = "";
-    return reason === "budget"
-      ? done("tool-budget", attempt, "The model's tool-call budget was exhausted, so the remaining work could not be confirmed.")
-      : done("no-progress", attempt, "Execution stopped after a deterministic tool failure repeated; the remaining work could not be confirmed.");
+    if (reason === "budget") {
+      return done("tool-budget", attempt, "The model's tool-call budget was exhausted, so the remaining work could not be confirmed.");
+    }
+    // Stop the inner loop early, then let the outer plan/verify loop inspect
+    // the evidence and make a bounded recovery attempt with a different route.
+    recoveryHint = "The previous inner run was stopped after identical tool results repeated. Use a materially different action or evidence source; do not repeat that call. The task may still be recoverable.";
+    return null;
   };
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
@@ -1985,11 +1990,15 @@ export async function runLoop(options, history, execute, recovery = "") {
     // The two-step note describes the fallback gate only; with tool-call hooks
     // nothing is held, and telling the agent otherwise sends it round in circles.
     const notes = [...(options.delegations || []).map(d => d.note), ...(options.hooksSupported ? [] : [CONFIRM_NOTE])].join("\n");
-    const question = nextQuestion ? nextQuestion : attempt === 1
+    const questionBase = nextQuestion ? nextQuestion : attempt === 1
       ? composeExecuteQuestion(options.request, plan, recovery, describeFoundCommands(findCommands(lookupQueries(options.request, plan))), notes)
       : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
+    const question = recoveryHint && attempt > 1 && !nextQuestion
+      ? `${questionBase}\n\n${recoveryHint}`
+      : questionBase;
+    if (recoveryHint && !nextQuestion) recoveryHint = "";
 
     const before = extractAttemptLog(history).length;
     const messagesBefore = readMessages(history).length;

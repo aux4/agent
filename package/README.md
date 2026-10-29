@@ -99,14 +99,15 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    state change is supported by action evidence, the agent rewrites its answer without acting
    again; otherwise it gets the unmet criteria, the attempt log, any list of
    allowed commands a denial offered, and plain hints for aux4 missing-parameter errors, and must
-   fix the problem by acting. Failed actions, and changes that already went through, are denied
-   for the retry (`--policy` `deny`), and a retry runs on a 10-call tool budget.
+   fix the problem by acting. If an inner run stops after identical results repeat, the harness
+   verifies what it has and gives a bounded retry an alternate-action hint. Failed actions, and
+   changes that already went through, are denied for the retry (`--policy` `deny`), and a retry
+   runs on a 10-call tool budget.
 5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
-   failure with nothing new tried), three identical commands returning the same result, the
-   requester declining a confirmation, or a `BLOCKED:` reply (only after the agent searched the
-   help and any allowed-command list). Transient session IDs and confidence scores do not count as
-   new results. Otherwise the answer says plainly what is not confirmed, and the harness label never
-   reaches the requester.
+   failure with nothing new tried), the requester declining a confirmation, or a `BLOCKED:` reply
+   (only after the agent searched the help and any allowed-command list). Transient session IDs
+   and confidence scores do not count as new results. Otherwise the answer says plainly what is
+   not confirmed, and the harness label never reaches the requester.
 
 Each run also writes `<history>.metrics.json`: model calls, tokens (input, cached, output), tool
 calls, and the calls that bought nothing (failed, repeated, help lookups, empty replies) for the
