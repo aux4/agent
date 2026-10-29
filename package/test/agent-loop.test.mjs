@@ -45,6 +45,7 @@ import {
   AGREEMENT_CRITERION,
   verifyCriteria,
   allowedCommandsOffered,
+  unresolvedActionGuard,
   readBackCandidates,
   askedWithoutLooking,
   describedWithoutDoing,
@@ -2118,5 +2119,48 @@ test("supplied data can clear a missing field before same-round confirmation",as
     assert.match(questions[2],/Run the next command now/);
     assert.equal(result.stopped,'pass');
     assert.equal(result.attempts,1);
+  });
+});
+
+
+test("a question or help call cannot hide an unresolved action guard",()=>{
+  const guard={command:'records update --recordId missing',failed:true,source:'ACTION_CHECK_EVIDENCE_REQUIRED: read the record first'};
+  const ask={command:'askUser {"question":"What is the id?"}',failed:false,source:'Non-interactive session'};
+  assert.equal(unresolvedActionGuard([guard,ask]),guard);
+  assert.equal(unresolvedActionGuard([guard,{command:'records --help',source:'documentation'},ask]),guard);
+  assert.equal(unresolvedActionGuard([guard,{command:'records list',source:'[]'}]),null);
+  assert.equal(unresolvedActionGuard([guard,{command:'records update --recordId r7',source:'done'}]),null);
+  assert.equal(unresolvedActionGuard([guard,{command:'records list',failed:true,source:'Permission denied'}]),guard);
+  assert.equal(unresolvedActionGuard([guard,{command:'askUser',declined:true,source:'User aborted'}]),null);
+});
+
+test("a non-interactive question after a guard still gets same-round lookup recovery",async()=>{
+  const fake=planVerifyFake({verifyStatus:'pass'});
+  const history=tmpFile('history.json',JSON.stringify({messages:[],tokenUsage:{}}));
+  await withAux4Bin(fake,async()=>{
+    let calls=0;
+    const result=await runLoop(baseOptions(),history,(question,h)=>{
+      calls++;
+      if(calls===1){
+        fs.writeFileSync(h,JSON.stringify({messages:[
+          {role:'assistant_with_tool',content:{tool_calls:[{id:'one',name:'executeAux4',args:{command:'records update --recordId unknown'}}]}},
+          {role:'tool',tool_call_id:'one',content:'Blocked by hook: ACTION_CHECK_EVIDENCE_REQUIRED: Read records list --query <text> first.'},
+          {role:'assistant_with_tool',content:{tool_calls:[{id:'two',name:'askUser',args:{question:'What is the record id?'}}]}},
+          {role:'tool',tool_call_id:'two',content:'Non-interactive session detected (no TTY).'}
+        ]}));
+        return 'I need the record id from you.';
+      }
+      assert.match(question,/Unresolved guard and available lookup contract/);
+      assert.match(question,/records list --query/);
+      const data=JSON.parse(fs.readFileSync(h,'utf8'));
+      data.messages.push(
+        {role:'assistant_with_tool',content:{tool_calls:[{id:'three',name:'executeAux4',args:{command:'records list --query target'}}]}},
+        {role:'tool',tool_call_id:'three',content:'{"items":[{"id":"r7"}]}'},
+        {role:'assistant_with_tool',content:{tool_calls:[{id:'four',name:'executeAux4',args:{command:'records update --recordId r7'}}]}},
+        {role:'tool',tool_call_id:'four',content:'{"status":"done"}'}
+      );
+      fs.writeFileSync(h,JSON.stringify(data));return 'Updated.';
+    });
+    assert.equal(calls,2);assert.equal(result.attempts,1);assert.equal(result.stopped,'pass');
   });
 });

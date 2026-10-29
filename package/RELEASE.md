@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.39
+
+- Keep pre-action evidence refusals pending across unrelated questions and documentation calls, so a non-interactive question cannot suppress lookup recovery.
+
 ## 4.1.38
 
 - Preserve full request values and exclusions in delegated goals; recover missing required data before considering automatic confirmation.

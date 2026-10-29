@@ -2080,6 +2080,20 @@ export function sameReadEvidence(current, previous) {
 
 // When a denied command came back with the list of commands that may run, the
 // agent is not blocked: it has not yet tried what it is allowed to use.
+// An unrelated question or help lookup must not hide a still-unresolved
+// pre-action guard. A real subsequent lookup/change gets its normal verification.
+export function unresolvedActionGuard(attempts) {
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const attempt = attempts[i];
+    const text = String(attempt.source ?? attempt.result ?? "");
+    if (attempt.declined) return null;
+    if (attempt.failed && /ACTION_CHECK_(?:EVIDENCE_REQUIRED|SCOPE_DENIED)/.test(text)) return attempt;
+    if (!attempt.failed && !/(?:^|\s)(?:--help|-h)(?:\s|$)/.test(attempt.command || "")
+      && (isReadCommand(attempt.command) || isChangeCommand(attempt.command))) return null;
+  }
+  return null;
+}
+
 export function allowedCommandsOffered(attempts) {
   for (const a of [...attempts].reverse()) {
     const m = String(a.result || "").match(/Commands you may run:\s*([^\n]+)/i);
@@ -2282,11 +2296,10 @@ export async function runLoop(options, history, execute, recovery = "") {
     // A guard's refusal is a request to correct one proposed action. The model
     // may phrase that as ordinary prose rather than the BLOCKED marker, so
     // recover from the unresolved tool result itself before paying for verify.
-    const lastAttempt = extractAttemptLog(history).at(-1);
-    if (!pushedPastBlocked && lastAttempt?.failed &&
-        /ACTION_CHECK_(?:EVIDENCE_REQUIRED|SCOPE_DENIED)/.test(lastAttempt.source ?? lastAttempt.result ?? "")) {
+    const pendingGuard = unresolvedActionGuard(extractAttemptLog(history).slice(before));
+    if (!pushedPastBlocked && pendingGuard) {
       pushedPastBlocked = true;
-      lastContent = await runExecution("The last proposed change was stopped before it ran. That does not establish that the request needs user input. Read the guard's reason, obtain the missing evidence with the available lookup tools, and complete the remaining authorized work. Preserve every exclusion. If the requested changes already succeeded, report those results and stop; do not make an additional change.", history, deniedCommands, false, deniedPatterns);
+      lastContent = await runExecution("The last proposed change was stopped before it ran. That does not establish that the request needs user input. An unrelated question or documentation call did not resolve the missing evidence. Read the guard's reason and obtain the missing evidence with an actual available lookup before asking the requester; if that lookup cannot establish it, report what is missing. Preserve every exclusion and do not repeat a successful change.\n\nUnresolved guard and available lookup contract:\n" + String(pendingGuard.source ?? pendingGuard.result ?? "").slice(0, 5000), history, deniedCommands, false, deniedPatterns);
       if (String(lastContent || "").trim()) lastAnswer = lastContent;
       round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "action-check-recovery" };
       const innerStop = stopAfterExecution(attempt);
