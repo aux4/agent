@@ -3352,6 +3352,10 @@ export async function runLoop(options, history, execute, recovery = "") {
           lastContent = `The action has not been submitted. Required values are still missing: ${remaining.emptyFields.join("; ")}.`;
           return done("needs-input", attempt);
         }
+        if (completedConfirmationCommand(fresh, pending)) {
+          pending = null;
+          break;
+        }
         if (!remaining) {
           lastContent = `The action has not been submitted. Required values are still missing: ${pending.emptyFields.join("; ")}.`;
           return done("needs-input", attempt);

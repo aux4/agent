@@ -2538,6 +2538,25 @@ test("yielded unrequested actions ask, and yielded missing inputs never submit",
     assert.equal(readCalls, 2);
     assert.equal(readOnlyRecovery.stopped, "needs-input", "inspection text is not an explicit cleared-field contract");
     assert.equal(extractAttemptLog(readHistory).some(attempt => /confirm=yes/.test(attempt.command)), false);
+
+    const completedHistory = tmpFile("exact-continuation-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    const exactNext = "records create --name Alpha --field confirm=yes";
+    let completionCalls = 0;
+    const completedRecovery = await runLoop({ ...baseOptions(), request: "Create a record named Alpha." }, completedHistory, (question, h) => {
+      completionCalls++;
+      if (completionCalls === 1) {
+        appendExecutionResult(h, "records create", JSON.stringify({ status: "needs-input", confirmation: {
+          action: "Create record", target: "new record", emptyFields: ["Record name"], next: exactNext
+        } }), "missing-before-submit");
+        return { content: "The record name must be supplied before submission.", stopReason: "confirmation" };
+      }
+      assert.match(question, /Required fields still empty: Record name/);
+      appendExecutionResult(h, exactNext, JSON.stringify({ status: "done", submitted: true, recordId: "record A" }), "exact-submit");
+      return "Created the record.";
+    });
+    assert.equal(completionCalls, 2);
+    assert.equal(completedRecovery.stopped, "pass", "only the exact conclusive continuation clears the pending missing-input state");
+    assert.ok(completedRecovery.metrics.rounds[0].verify);
   });
 });
 
