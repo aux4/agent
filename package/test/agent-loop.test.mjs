@@ -983,6 +983,8 @@ test("fail/unverifiable drift with unchanged facts stops after one retry", async
     assert.equal(outcome.attempts, 2);
     assert.equal(executions, 2);
     assert.equal(outcome.verdict.criteria[0].status, "unverifiable");
+    assert.match(outcome.content, /Not confirmed: the outcome holds — Reason: “same unmet outcome”/,
+      "the bounded no-progress stop keeps a grounded reason and does not convert it into success");
   });
 });
 
