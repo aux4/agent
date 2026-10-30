@@ -2597,9 +2597,9 @@ test("nonpassing summary explains a missing prerequisite without repeating raw c
 
   const summary = composeEvidenceSummary(answer, verdict, { stateCriteria: [criterion], doneCriteria: [criterion] });
   assert.match(summary, /Failed: The requested record is submitted with all required values\./);
-  assert.match(summary, /Evidence \(descriptive only\): “A required priority was unavailable, so no record was submitted\./);
+  assert.match(summary, /Reason: “A required priority was unavailable, so no record was submitted\./);
   assert.doesNotMatch(summary, /submitted successfully|follows|Additional context/);
-  const evidenceLine = summary.split("\n").find(line => line.includes("Evidence (descriptive only)"));
+  const evidenceLine = summary.split("\n").find(line => line.includes("Reason: “"));
   assert.ok(evidenceLine.length < 260, "summary evidence is bounded");
   const evidenceText = evidenceLine.split("“")[1].split("”")[0];
   assert.ok(evidenceText.match(/\b\w+\b/g).length <= 12, "summary evidence is limited to twelve words");
@@ -2609,12 +2609,13 @@ test("mixed nonpassing summary retains each outcome's evidence and verified part
   const first = "The first requested outcome is complete.";
   const second = "The second requested outcome is complete.";
   const answerFact = "The response includes the verified total.";
+  const verifiedAnswerEvidence = "The displayed total is 500 dollars, with fees included and all requested line items checked, but tax and shipping are excluded.";
   const plan = { stateCriteria: [first, second], doneCriteria: [first, second, answerFact] };
   const answer = "Both outcomes are complete and the total is 500.";
   const verdict = { overall: "fail", criteria: [
     { criterion: first, status: "pass", evidence: "The first item appears in the current record." },
     { criterion: second, status: "unverifiable", evidence: "The destination value is missing from available results." },
-    { criterion: answerFact, status: "pass", evidence: "The verified total is 500." },
+    { criterion: answerFact, status: "pass", evidence: verifiedAnswerEvidence },
     { criterion: COVERAGE_CRITERION, status: "pass" },
     { criterion: HONESTY_CRITERION, status: "unverifiable" },
     { criterion: AGREEMENT_CRITERION, status: "unverifiable" }
@@ -2622,8 +2623,8 @@ test("mixed nonpassing summary retains each outcome's evidence and verified part
 
   const summary = composeEvidenceSummary(answer, verdict, plan);
   assert.match(summary, /Verified: The first requested outcome is complete\./);
-  assert.match(summary, /Not confirmed: The second requested outcome is complete\..*destination value is missing/s);
-  assert.match(summary, /Verified answer fact: The verified total is 500\./);
+  assert.match(summary, /Not confirmed: The second requested outcome is complete\..*Reason: “The destination value is missing from available results\.”/s);
+  assert.ok(summary.includes(`Verified answer fact: ${verifiedAnswerEvidence}`), "passing answer evidence retains its full qualifier");
   assert.doesNotMatch(summary, /Both outcomes are complete/);
 });
 
@@ -2642,7 +2643,27 @@ test("missing verifier evidence preserves non-success status without inventing a
   const summary = composeEvidenceSummary(answer, verdict, { stateCriteria: [failed], doneCriteria: [failed, unknown] });
   assert.match(summary, /Failed: The requested change is complete\./);
   assert.match(summary, /Not confirmed: The requested answer is complete\./);
-  assert.doesNotMatch(summary, /Evidence \(descriptive only\)|requested change and answer are complete/);
+  assert.doesNotMatch(summary, /Reason:|requested change and answer are complete/);
+});
+
+test("nonpassing evidence sanitizes controls and bounds a single oversized word", () => {
+  const longWordCriterion = "The first outcome is complete.";
+  const controlCriterion = "The second outcome is complete.";
+  const verdict = { overall: "fail", criteria: [
+    { criterion: longWordCriterion, status: "fail", evidence: "x".repeat(500) },
+    { criterion: controlCriterion, status: "unverifiable", evidence: "required\u0000value\nremains missing" },
+    { criterion: COVERAGE_CRITERION, status: "pass" },
+    { criterion: HONESTY_CRITERION, status: "unverifiable" },
+    { criterion: AGREEMENT_CRITERION, status: "unverifiable" }
+  ] };
+
+  const summary = composeEvidenceSummary("Both outcomes completed.", verdict, { stateCriteria: [longWordCriterion, controlCriterion] });
+  const longLine = summary.split("\n").find(line => line.startsWith(`Failed: ${longWordCriterion}`));
+  assert.ok(longLine.length < 260, "a single long word remains within the evidence limit");
+  assert.match(longLine, /Reason: “x+…”$/);
+  const controlLine = summary.split("\n").find(line => line.startsWith(`Not confirmed: ${controlCriterion}`));
+  assert.match(controlLine, /Reason: “required value remains missing”$/);
+  assert.doesNotMatch(summary, /\u0000|Both outcomes completed/);
 });
 
 test("fresh scoped continuation requires changed current evidence and no later mutation", () => {

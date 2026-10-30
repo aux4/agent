@@ -1409,7 +1409,7 @@ function boundedEvidenceText(result) {
 
 function summaryEvidence(result) {
   const text = boundedEvidenceText(result);
-  return text ? ` — Evidence (descriptive only): “${text}”` : "";
+  return text ? ` — Reason: “${text}”` : "";
 }
 
 function summaryOutcome(label, criterion, result) {
@@ -1444,7 +1444,7 @@ export function composeEvidenceSummary(content, verdict, plan) {
   const passedAnswerFacts = (verdict?.criteria || []).filter(c => requestedAnswerCriteria.has(c.criterion)
     && c.status === "pass" && c.evidence);
   for (const fact of passedAnswerFacts) {
-    lines.push(`Verified answer fact: ${boundedEvidenceText(fact)}`);
+    lines.push(`Verified answer fact: ${fact.evidence}`);
   }
   for (const criterion of requestedAnswerCriteria) {
     const result = byCriterion.get(criterion) || { status: "unverifiable" };
