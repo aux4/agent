@@ -104,7 +104,8 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    guess a value. If the reference, permission rules, or result cannot support a suitable lookup,
    the task remains blocked for the missing information. When the lookup returns an unambiguous
    record reference instead of the fact itself, the next normal agent turn may follow a documented
-   read-only detail command with that returned reference, then continue the original task. Existing
+   read-only detail command with that returned reference through the structured tool call, then
+   continue the original task. The one-shot proposal format ends after the first lookup. Existing
    permissions, hooks, and budgets still apply; ambiguous results remain blocked.
 
 For web-page reads, the registered browser capability includes `agent browser inspect` for the

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.68
+
+- Explicitly end the controller's one-shot lookup proposal stage before returning to ordinary tool execution, so a detail read uses the structured executeAux4 tool rather than repeating proposal JSON.
+
 ## 4.1.67
 
 - After a bounded lookup returns an unambiguous record reference, direct the next ordinary task attempt to use the documented detail-read capability and continue the original request under the existing policy and tool budgets. Preserve BLOCKED for empty or ambiguous results.
