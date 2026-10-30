@@ -2551,14 +2551,8 @@ export async function runLoop(options, history, execute, recovery = "") {
     saveMetrics(history, metrics);
     const rawContent = executionProofContent(stripFailureClass(String(lastContent || "").trim() ? lastContent : lastAnswer), lastVerdict, extractAttemptLog(history));
     const summarizedContent = composeEvidenceSummary(rawContent, lastVerdict, plan);
-    const blocker = stopped === "blocked" && lastVerdict?.criteria
-      ? stripFailureClass(lastContent).replace(/^\s*BLOCKED:?\s*/i, "").trim()
-      : "";
-    const finalContent = blocker
-      ? `${summarizedContent}\n\nExecutor input request (not outcome evidence): ${blocker}`
-      : summarizedContent;
     return {
-      content: appendStatusNote(finalContent, summarizedContent === rawContent ? note : ""),
+      content: appendStatusNote(summarizedContent, summarizedContent === rawContent ? note : ""),
       plan,
       verdict: lastVerdict,
       stopped,

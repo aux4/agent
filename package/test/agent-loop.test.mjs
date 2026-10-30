@@ -440,18 +440,19 @@ test("runLoop sends target-aware denials for a successful change into the next e
   });
 });
 
-test("runLoop stops immediately when a retry classifies itself as blocked", async () => {
+test("runLoop stops on a blocked retry without leaking its unsupported completion claim", async () => {
   const fake = planVerifyFake({ verifyStatus: "fail" });
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
   await withAux4Bin(fake, async () => {
     let calls = 0;
     const outcome = await runLoop(baseOptions(), history, () => {
       calls++;
-      return calls === 1 ? "first attempt text" : "FAILURE_CLASS: blocked\nI need the requester's approval.";
+      return calls === 1 ? "first attempt text" : "FAILURE_CLASS: blocked\nThe requested task is complete. I need the requester's approval.";
     });
     assert.equal(outcome.stopped, "blocked");
     assert.equal(outcome.attempts, 2);
-    assert.match(outcome.content, /need the requester's approval/);
+    assert.match(outcome.content, /Not fully confirmed/);
+    assert.doesNotMatch(outcome.content, /requested task is complete|requester's approval/);
   });
 });
 
