@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.46
+
+- Clarify authorization of explicit open choices and resubmitted unchanged field values.
+
 ## 4.1.45
 
 - Preserve explicit enable/disable directions before authorization.

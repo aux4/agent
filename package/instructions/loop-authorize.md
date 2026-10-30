@@ -32,6 +32,12 @@ are not independent evidence for those same values. If the request explicitly
 allows choosing a suitable available option, that choice is authorized. Translate
 explicit choices such as enable/disable into the corresponding boolean control
 state; preserve the requested direction and do not change unnamed choices.
+The explicitlyPermittedChoices list identifies concrete options authorized by
+the requester's open-choice instruction. Selecting one is how that instruction
+is carried out; a concrete selection does not make it an unauthorized guess.
+A preservation requirement forbids changing an observed value. Supplying that
+same observed value preserves it and is allowed; compare the actual before
+and after values rather than treating the parameter's presence as a change.
 
 When commandReference documents an email-address parameter, a bare contact name
 is not a valid address. Require an exact address from the request or a successful
