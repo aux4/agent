@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.69
+
+- Format supplemental installed-command references as a flat compact index with discovered paths, available descriptions, group/action markers, and documented parameter signatures; fall back to the existing detailed reference if the complete index exceeds its bound.
+
 ## 4.1.68
 
 - Explicitly end the controller's one-shot lookup proposal stage before returning to ordinary tool execution, so a detail read uses the structured executeAux4 tool rather than repeating proposal JSON.

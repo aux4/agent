@@ -1554,6 +1554,165 @@ else console.log('help for ' + command);`);
   });
 });
 
+test("supplemental references compact prose while retaining every path, group, description, and flag", async () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+if (args.includes('pkger')) {
+  console.log(JSON.stringify([
+    {command:'aux4 google calendar',description:'Calendar command group.'},
+    {command:'aux4 google calendar events',description:'Events command group.'},
+    {command:'aux4 google calendar events list',description:'List calendar events.'},
+    {command:'aux4 google gmail send',description:'Send a message.'}
+  ]));
+  process.exit(0);
+}
+const command = args.slice(0, args.indexOf('--help')).join(' ');
+if (command === 'google calendar') console.log('calendar\\n  events\\n  Calendar events.\\n  freebusy\\n  Query availability.');
+else if (command === 'google calendar events') console.log('events\\n  list\\n  List calendar events.\\n    --query <arg>\\n      Search query.\\n    --maxResults <number>\\n      Result limit.');
+else if (command === 'google gmail send') console.log('send\\n  --to <email>\\n  --subject <text>\\n  --body <text>\\nverbose send help\\n'.repeat(30));
+else console.log('help for ' + command);
+`);
+  const delegate = { via: "agent:browser", group: "browser", urlTasks: true, entrypoints: ["run"] };
+  const request = "Use the page at https://example.test and read calendar availability.";
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = fake;
+  try {
+    const found = [
+      { command: "aux4 google calendar", description: "Calendar command group." },
+      { command: "aux4 google calendar events", description: "Events command group." },
+      { command: "aux4 google calendar events list", description: "List calendar events." },
+      { command: "aux4 google gmail send", description: "Send a message." }
+    ];
+    const full = describeFoundCommands(found);
+    const compact = describeFoundCommands(found, null, { format: "supplemental" });
+    assert.match(compact, /- google calendar \(group\)/);
+    assert.match(compact, /- google calendar events \(group\)/);
+    assert.match(compact, /- google calendar events list \(command\) -- List calendar events/);
+    assert.match(compact, /google calendar events list \(command\)[^\n]*Parameters: --query <arg>, --maxResults <number>/);
+    assert.match(compact, /- google calendar freebusy \(command\) -- Query availability/);
+    assert.match(compact, /- google gmail send \(action\) -- Send a message/);
+    assert.match(compact, /google gmail send \(action\)[^\n]*Parameters: --to <email>, --subject <text>, --body <text>/);
+    assert.ok(compact.length < full.length, `compact=${compact.length}, full=${full.length}`);
+    assert.doesNotMatch(compact, /verbose send help/);
+
+    const previousReference = executionCommandReference(request, { lookFor: ["read calendar availability"] }, [delegate]);
+    const noDelegateReference = executionCommandReference(request, { lookFor: ["read calendar availability"] }, []);
+    assert.match(previousReference, /Additional installed capabilities[\s\S]*Supplemental installed aux4 command index/);
+    assert.doesNotMatch(previousReference, /verbose send help/);
+    assert.match(noDelegateReference, /Installed aux4 command reference \(exact syntax from --help\)/);
+    assert.match(noDelegateReference, /verbose send help/);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(path.dirname(fake), { recursive: true, force: true });
+  }
+});
+
+test("supplemental references deduplicate exact paths and fall back intact when the compact index exceeds its bound", async () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+if (!args.includes('--help')) process.exit(0);
+const command = args.slice(0, args.indexOf('--help')).join(' ');
+if (command === 'records') {
+  const children = Array.from({length: 34}, (_, index) => '  item' + index + '\\n    Description for item ' + index + ' ' + 'x'.repeat(72));
+  console.log('records\\n' + children.join('\\n'));
+} else if (command === 'odd invoke') console.log('invoke\\n  --query <text>\\n');
+else if (command === 'missing group list' || command === 'unavailable') process.exit(1);
+else console.log('help for ' + command);
+`);
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = fake;
+  try {
+    const duplicate = describeFoundCommands([
+      { command: "aux4 odd invoke", description: "First description." },
+      { command: "aux4 odd invoke", description: "Second description." },
+      { command: "aux4 odd invoke now", description: "A distinct route." }
+    ], null, { format: "supplemental" });
+    assert.equal((duplicate.match(/- odd invoke \(action\)/g) || []).length, 1);
+    assert.match(duplicate, /First description\. \/ Second description\./);
+    assert.match(duplicate, /- odd invoke now \(action\)/);
+    const helpFallback = describeFoundCommands([
+      { command: "aux4 missing group list", description: "List missing items." }
+    ], null, { format: "supplemental" });
+    assert.match(helpFallback, /executeAux4 \{"command": "missing group list --help"\} -- List missing items/);
+    const groupHelpFallback = describeFoundCommands([
+      { command: "aux4 unavailable", description: "Unavailable command group." }
+    ], null, { format: "supplemental" });
+    assert.match(groupHelpFallback, /- unavailable \(group\)/);
+    assert.match(groupHelpFallback, /Help fallback: executeAux4 \{"command": "unavailable --help"\}/);
+
+    const many = [{ command: "aux4 records", description: "Records command group." }];
+    const full = describeFoundCommands(many);
+    const compactFallback = describeFoundCommands(many, null, { format: "supplemental" });
+    assert.equal(compactFallback, full);
+    assert.match(compactFallback, /records item33/);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(path.dirname(fake), { recursive: true, force: true });
+  }
+});
+
+test("supplemental flat index keeps a 34-path, six-group, thirteen-flag catalog below its size bound", async () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+if (!args.includes('--help')) process.exit(0);
+const command = args.slice(0, args.indexOf('--help')).join(' ');
+const groups = {};
+let actionIndex = 0;
+for (let groupIndex = 0; groupIndex < 6; groupIndex++) {
+  const group = 'service' + groupIndex;
+  const actionCount = groupIndex < 4 ? 5 : 4;
+  const children = [];
+  for (let childIndex = 0; childIndex < actionCount; childIndex++, actionIndex++) {
+    const child = 'operation' + childIndex;
+    children.push('  ' + child + '\\n  Read ' + child + ' from ' + group + '.');
+    const flagCount = actionIndex < 7 ? 3 : actionIndex < 13 ? 2 : 0;
+    for (let flagIndex = 0; flagIndex < flagCount; flagIndex++) {
+      children.push('    --value' + actionIndex + '_' + flagIndex + ' <arg>\\n      Exact documented value.');
+    }
+  }
+  groups[group] = group + '\\n' + children.join('\\n');
+}
+console.log(groups[command] || 'help for ' + command);
+`);
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = fake;
+  try {
+    const found = [];
+    const expectedPaths = new Set();
+    const expectedDescriptions = new Set();
+    for (let groupIndex = 0; groupIndex < 6; groupIndex++) {
+      const group = `service${groupIndex}`;
+      found.push({ command: `aux4 ${group}`, description: `${group} command group.` });
+      expectedPaths.add(group);
+      const actionCount = groupIndex < 4 ? 5 : 4;
+      for (let childIndex = 0; childIndex < actionCount; childIndex++) {
+        const child = `${group} operation${childIndex}`;
+        found.push({ command: `aux4 ${child}`, description: `Read ${child}.` });
+        expectedPaths.add(child);
+        expectedDescriptions.add(`Read operation${childIndex} from ${group}.`);
+      }
+    }
+    const full = describeFoundCommands(found);
+    const compact = describeFoundCommands(found, null, { format: "supplemental" });
+    const compactPaths = new Set([...compact.matchAll(/^- (.+?) \((?:group|action|command)\)/gm)].map(([, command]) => command));
+    assert.deepEqual(compactPaths, expectedPaths);
+    for (const description of expectedDescriptions) {
+      assert.ok(compact.includes(description), `compact reference omitted ${description}`);
+    }
+    const expectedFlags = Array.from({ length: 13 }, (_, actionIndex) => {
+      const count = actionIndex < 7 ? 3 : 2;
+      return Array.from({ length: count }, (_, flagIndex) => `--value${actionIndex}_${flagIndex} <arg>`);
+    }).flat();
+    for (const flag of expectedFlags) {
+      assert.ok(full.includes(flag), `legacy reference omitted ${flag}`);
+      assert.ok(compact.includes(flag), `compact reference omitted ${flag}`);
+    }
+    assert.equal((compact.match(/Parameters:/g) || []).length, 13, "flags remain grouped into the same 13 command signatures");
+    assert.ok(compact.length < 3600);
+    assert.ok(compact.length < full.length, `compact=${compact.length}, full=${full.length}`);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(path.dirname(fake), { recursive: true, force: true });
+  }
+});
+
 test("findCommands stops after an unavailable search instead of repeating a cold-index failure", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-failure-"));
   const bin = path.join(dir, "aux4");

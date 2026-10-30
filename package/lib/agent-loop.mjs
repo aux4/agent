@@ -2710,6 +2710,10 @@ const HELP_TIMEOUT_MS = 5000;
 const HELP_OUTPUT_LIMIT = 1200;
 const HELP_GROUP_OUTPUT_LIMIT = 3600;
 const HELP_TOTAL_LIMIT = 5200;
+// Supplemental cross-service references should be an index, not a second
+// copy of the full command manuals. If the index itself is larger than this
+// bound, retain the existing detailed formatter rather than dropping rows.
+const SUPPLEMENTAL_REFERENCE_LIMIT = 3600;
 
 // A URL is not a word the docs use: it is searched as "web page".
 export function findQuery(text) {
@@ -2841,8 +2845,73 @@ export function lookupQueries(request, plan) {
   return [...new Set(queries.map(query => String(query || "").trim()).filter(Boolean))].slice(0, MAX_LOOKUP_QUERIES);
 }
 
-export function describeFoundCommands(found, commandCatalog = null) {
+function compactHelpFlags(help) {
+  const flags = [];
+  const source = String(help || "");
+  const lines = source.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // A tool may truncate help in the middle of a parameter signature. Do
+    // not present that incomplete final fragment as a usable flag.
+    if (i === lines.length - 1 && source.length >= HELP_OUTPUT_LIMIT) continue;
+    if (!/^\s{2,}--[a-zA-Z][a-zA-Z0-9_-]*(?:\s+[^\n]+)?\s*$/.test(line)) continue;
+    const signature = line.trim();
+    if (!flags.includes(signature)) flags.push(signature);
+  }
+  return flags;
+}
+
+function groupChildrenWithExactFlags(groupHelp) {
+  const children = groupChildrenFromHelp(groupHelp);
+  const helpLines = String(groupHelp || "").split(/\r?\n/);
+  for (const child of children) {
+    const flags = [];
+    for (let start = 0; start < helpLines.length; start++) {
+      if (helpLines[start].match(/^ {2}([a-zA-Z][a-zA-Z0-9:_-]*)\s*$/)?.[1] !== child.name) continue;
+      for (let i = start + 1; i < helpLines.length && !/^ {2}[a-zA-Z][a-zA-Z0-9:_-]*\s*$/.test(helpLines[i]); i++) {
+        if (i === helpLines.length - 1 && String(groupHelp || "").length >= HELP_GROUP_OUTPUT_LIMIT * 3) continue;
+        const flag = helpLines[i].match(/^ {4}(--[a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([^\n]+))?$/);
+        if (flag) {
+          const signature = `${flag[1]}${flag[2] ? ` ${flag[2].trim()}` : ""}`;
+          if (!flags.includes(signature)) flags.push(signature);
+        }
+      }
+    }
+    child.referenceFlags = flags;
+  }
+  const byName = new Map();
+  for (const child of children) {
+    const current = byName.get(child.name);
+    if (!current) {
+      byName.set(child.name, { ...child, referenceDescriptions: child.description ? [child.description] : [] });
+      continue;
+    }
+    if (child.description && !current.referenceDescriptions.includes(child.description)) current.referenceDescriptions.push(child.description);
+    for (const flag of child.referenceFlags || child.flags) {
+      if (!(current.referenceFlags || current.flags).includes(flag)) (current.referenceFlags || current.flags).push(flag);
+    }
+    current.description = current.referenceDescriptions.join(" / ");
+  }
+  return [...byName.values()];
+}
+
+function addSupplementalEntry(entries, commandPath, { kind = "command", description = "", flags = [], fallback = "" } = {}) {
+  const command = String(commandPath || "").trim();
+  if (!command) return;
+  const entry = entries.get(command) || { command, kind, descriptions: [], flags: [], fallback: "" };
+  const rank = { fallback: 0, command: 1, action: 2, group: 3 };
+  if ((rank[kind] || 0) > (rank[entry.kind] || 0)) entry.kind = kind;
+  if (fallback && entry.kind === "command") entry.kind = "fallback";
+  const cleanDescription = String(description || "").trim().split("\n")[0].slice(0, 100);
+  if (cleanDescription && !entry.descriptions.includes(cleanDescription)) entry.descriptions.push(cleanDescription);
+  for (const flag of flags || []) if (flag && !entry.flags.includes(flag)) entry.flags.push(flag);
+  if (fallback && !entry.fallback) entry.fallback = fallback;
+  entries.set(command, entry);
+}
+
+export function describeFoundCommands(found, commandCatalog = null, options = {}) {
   if (!found.length) return "";
+  const supplemental = options?.format === "supplemental";
   const addCatalogPath = value => {
     if (!(commandCatalog instanceof Set)) return;
     const words = commandWords(value);
@@ -2854,6 +2923,7 @@ export function describeFoundCommands(found, commandCatalog = null) {
   let remaining = HELP_TOTAL_LIMIT;
   let helped = 0;
   const describedGroups = new Set();
+  const supplementalEntries = supplemental ? new Map() : null;
   const lines = [
     "Installed aux4 command reference (exact syntax from --help). Pass the shown command path and flags to executeAux4; it adds the aux4 binary. Use these flags directly without another help lookup. Group headings are not actions: run a complete listed child path before adding flags:"
   ];
@@ -2911,6 +2981,16 @@ export function describeFoundCommands(found, commandCatalog = null) {
     const index = `${heading}\n${outline}`;
     if (index.length > remaining) continue;
     lines.push(index);
+    if (supplemental) {
+      const compactChildren = groupChildrenWithExactFlags(groupHelp);
+      addSupplementalEntry(supplementalEntries, commandPath, { kind: "group" });
+      for (const child of compactChildren) {
+        addSupplementalEntry(supplementalEntries, `${commandPath} ${child.name}`, {
+          description: child.description,
+          flags: child.referenceFlags || child.flags
+        });
+      }
+    }
     remaining -= index.length;
     describedGroups.add(group);
     references.push({ commandPath, groupHelp, children });
@@ -2944,6 +3024,7 @@ export function describeFoundCommands(found, commandCatalog = null) {
     remaining -= clipped.length;
   }
 
+  const fullHelpByPath = supplemental ? new Map() : null;
   for (const f of found) {
     const commandPath = String(f.command || "").replace(/^aux4\s+/, "");
     const parts = String(f.command || "").trim().split(/\s+/);
@@ -2956,6 +3037,7 @@ export function describeFoundCommands(found, commandCatalog = null) {
     }
     const help = helped < MAX_HELP_OUTPUTS ? commandHelp(f.command) : "";
     if (help && remaining > 0) {
+      if (supplemental) fullHelpByPath.set(f.command, help);
       const clipped = help.slice(0, remaining);
       lines.push(`- ${commandPath}\n${clipped.split("\n").map(line => `  ${line}`).join("\n")}`);
       remaining -= clipped.length;
@@ -2965,6 +3047,65 @@ export function describeFoundCommands(found, commandCatalog = null) {
       const description = f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : "";
       lines.push(`- executeAux4 {"command": "${commandPath} --help"}${description}`);
     }
+  }
+  if (supplemental) {
+    for (const f of found) {
+      const commandPath = String(f.command || "").replace(/^aux4\s+/, "");
+      const parts = String(f.command || "").trim().split(/\s+/);
+      const group = parts[0] === "aux4" && parts.length >= 4 ? parts.slice(0, -1).join(" ") : "";
+      if (describedGroups.has(f.command) || (group && describedGroups.has(group))
+        || [...describedGroups].some(parent => f.command.startsWith(`${parent} `))
+        || (/\bcommand group\b/i.test(f.description || "")
+          && [...describedGroups].some(child => child.startsWith(`${f.command} `)))) continue;
+      const help = fullHelpByPath.get(f.command) || "";
+      addSupplementalEntry(supplementalEntries, commandPath, {
+        description: f.description,
+        kind: /\bcommand group\b/i.test(f.description || "") ? "group" : "command"
+      });
+      if (help) {
+        const children = groupChildrenWithExactFlags(help);
+        if (children.length) {
+          addSupplementalEntry(supplementalEntries, commandPath, { kind: "group" });
+          for (const child of children) {
+            const flags = child.referenceFlags || child.flags;
+            addSupplementalEntry(supplementalEntries, `${commandPath} ${child.name}`, {
+              description: child.description,
+              flags
+            });
+          }
+        } else {
+          addSupplementalEntry(supplementalEntries, commandPath, {
+            kind: "action",
+            flags: compactHelpFlags(help)
+          });
+        }
+      } else {
+        const description = f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : "";
+        addSupplementalEntry(supplementalEntries, commandPath, {
+          kind: "fallback",
+          fallback: `- executeAux4 {"command": "${commandPath} --help"}${description}`
+        });
+      }
+    }
+  }
+  if (supplemental) {
+    const compactLines = [
+      "Supplemental installed aux4 command index. Discovered paths and documented parameter signatures are retained; descriptions are included when available. Group markers are not actions. Full help prose is omitted; use the listed command's --help when more detail is needed."
+    ];
+    for (const entry of supplementalEntries.values()) {
+      if (entry.fallback && entry.kind === "fallback") {
+        compactLines.push(entry.fallback);
+        continue;
+      }
+      const description = entry.descriptions.length ? ` -- ${entry.descriptions.join(" / ")}` : "";
+      const flags = entry.flags.length ? `; Parameters: ${entry.flags.join(", ")}` : "";
+      const helpFallback = entry.fallback ? `; Help fallback: ${entry.fallback.replace(/^- /, "")}` : "";
+      compactLines.push(`- ${entry.command} (${entry.kind})${description}${flags}${helpFallback}`);
+    }
+    const compact = compactLines.join("\n");
+    if (compact.length <= SUPPLEMENTAL_REFERENCE_LIMIT) return compact;
+    // Never truncate a discovered path or flag. Fall back to the established
+    // detailed formatter when the complete compact index exceeds its bound.
   }
   return lines.join("\n");
 }
@@ -3002,7 +3143,7 @@ export function executionCommandReference(request, plan, delegations = [], comma
       const command = item.command.replace(/^aux4\s+/, "");
       return !covered.some(prefix => command === prefix || command.startsWith(`${prefix} `));
     });
-    const reference = describeFoundCommands(supplemental, commandCatalog);
+    const reference = describeFoundCommands(supplemental, commandCatalog, { format: "supplemental" });
     if (reference) lines.push("Additional installed capabilities for the other planned operations (the registered goal capability still owns its page work):\n" + reference);
   }
   return lines.join("\n");
