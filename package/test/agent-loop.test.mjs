@@ -32,6 +32,8 @@ import {
   extractFailureClass,
   isBlocked,
   sameReadEvidence,
+  sameReadFacts,
+  hasNewReadSource,
   isChangeCommand,
   isBudgetExceededResult,
   runAux4Monitored,
@@ -241,10 +243,12 @@ test("mergeDenyPolicy does not duplicate a command already denied", () => {
 
 // --- stop-condition helpers --------------------------------------------------
 
-test("sameFailureShape compares criterion+status pairs, ignoring evidence wording", () => {
+test("sameFailureShape compares unmet criteria, ignoring evidence wording and fail/unverifiable drift", () => {
   const a = { criteria: [{ criterion: "x", status: "fail", evidence: "tried A" }] };
   const b = { criteria: [{ criterion: "x", status: "fail", evidence: "tried B, differently" }] };
   assert.equal(sameFailureShape(a, b), true);
+  assert.equal(sameFailureShape(a, { criteria: [{ criterion: "x", status: "unverifiable", evidence: "same evidence" }] }), true);
+  assert.equal(sameFailureShape(a, { criteria: [{ criterion: "x", status: "pass", evidence: "newly verified" }] }), false);
 });
 
 test("sameFailureShape is false when the failing criterion changes", () => {
@@ -327,6 +331,41 @@ if (command.includes("loop-plan.md")) {
   process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: "${verifyStatus}", evidence: "checked" })) }));
 }
 `);
+}
+
+function statusSequenceFake(statuses) {
+  return makeFakeAux4(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) {
+  process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: ["the outcome holds"], steps: [] }));
+} else if (command.includes("loop-verify.md")) {
+  const historyAt = args.indexOf("--history");
+  const verifyHistory = args[historyAt + 1];
+  const messages = [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "v1", name: "executeAux4", args: { command: "read the current state" } }] } },
+    { role: "tool", tool_call_id: "v1", name: "executeAux4", content: "current state observed" }
+  ];
+  fs.writeFileSync(verifyHistory, JSON.stringify({ messages }));
+  const match = verifyHistory.match(/\\.verify-(\\d+)\\.json$/);
+  const round = match ? Number(match[1]) : 1;
+  const statuses = ${JSON.stringify(statuses)};
+  const status = statuses[Math.min(round - 1, statuses.length - 1)];
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status, evidence: "same unmet outcome" })) }));
+}
+`);
+}
+
+function appendExecutionResult(history, command, source, id) {
+  const data = JSON.parse(fs.readFileSync(history, "utf8"));
+  data.messages.push(
+    { role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } },
+    { role: "tool", tool_call_id: id, name: "executeAux4", content: source }
+  );
+  fs.writeFileSync(history, JSON.stringify(data));
 }
 
 async function withAux4Bin(fake, fn) {
@@ -844,6 +883,66 @@ test("a retry that tried a new action is not stopped as no-progress", async () =
   });
 });
 
+test("fail/unverifiable drift with unchanged facts stops after one retry", async () => {
+  const fake = statusSequenceFake(["fail", "unverifiable", "fail"]);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      executions++;
+      appendExecutionResult(h,
+        'agent browser find --url https://example.test/page --question "lookup the required value" --session s' + executions,
+        JSON.stringify({ answered: false, question: "lookup the required value", url: `https://example.test/page?read=${executions}`, session: `s${executions}`, matches: [{ text: "Directory", location: { url: "https://example.test/page/directory" } }] }),
+        `read-${executions}`);
+      return "The lookup did not return the requested value.";
+    });
+    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.attempts, 2);
+    assert.equal(executions, 2);
+    assert.equal(outcome.verdict.criteria[0].status, "unverifiable");
+  });
+});
+
+test("a distinct read source gets one opportunity, but repeating it with metadata-only changes stops", async () => {
+  const fake = statusSequenceFake(["fail", "unverifiable", "fail"]);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      executions++;
+      const url = executions === 1 ? "https://example.test/page" : "https://alternate.example.test/page";
+      appendExecutionResult(h,
+        `agent browser find --url ${url} --question "lookup the required value" --session s${executions}`,
+        JSON.stringify({ answered: false, question: "lookup the required value", url: `${url}?read=${executions}`, session: `s${executions}`, matches: [{ text: "Directory", location: { url: "https://example.test/page/directory" } }] }),
+        `read-${executions}`);
+      return "The lookup did not return the requested value.";
+    });
+    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.attempts, 3, "two retries run: one for the distinct source, then the unchanged repeat stops");
+    assert.equal(executions, 3);
+  });
+});
+
+test("a newly observed required value permits another retry; a duplicate of that value then stops", async () => {
+  const fake = statusSequenceFake(["fail", "unverifiable", "fail"]);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      executions++;
+      const value = executions === 1 ? "The directory has no matching entry." : "Employee ID E-17 is assigned.";
+      appendExecutionResult(h,
+        'agent browser find --url https://example.test/page --question "lookup the required value" --session s' + executions,
+        JSON.stringify({ answered: executions > 1, question: "lookup the required value", session: `s${executions}`, matches: [{ text: value, location: { url: "https://example.test/page/directory" } }] }),
+        `read-${executions}`);
+      return value;
+    });
+    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.attempts, 3, "the newly supplied value advances one round before its duplicate is recognized");
+    assert.equal(executions, 3);
+  });
+});
+
 test("missingParameterHints explains aux4's missing-parameter error", () => {
   const hints = missingParameterHints([{ command: "x send --body hi", failed: true, result: "Error executing command: Error to enter the value of to" }]);
   assert.match(hints.join(" "), /missing the required --to parameter/);
@@ -1220,6 +1319,56 @@ test("sameReadEvidence ignores query/session metadata but notices changed facts"
     [{ command: "jobs status 2", failed: true, source: "⛔ policy budget_exceeded: cap reached" }],
     [{ command: "jobs status 2", source: JSON.stringify({ state: "RUNNING" }) }]
   ), false);
+});
+
+test("fact comparison ignores only browser envelope locators and keeps fact-bearing nested locators", () => {
+  const prior = [{
+    command: 'agent browser find --url https://example.test/a --question "find the assigned id" --session s1',
+    source: JSON.stringify({ answered: false, question: "find the assigned id", url: "https://example.test/a", session: "s1", timestamp: "2026-01-01T00:00:00Z", matches: [{ text: "Directory", location: { url: "https://example.test/a/records" }, timestamp: "2025-12-01" }] })
+  }];
+  const locatorOnly = [{
+    command: 'agent browser find --url https://example.test/a --question "find the assigned id" --session s2',
+    source: JSON.stringify({ answered: false, question: "find the assigned id", url: "https://example.test/b", session: "s2", timestamp: "2026-01-02T00:00:00Z", matches: [{ text: "Directory", location: { url: "https://example.test/a/records" }, timestamp: "2025-12-01" }] })
+  }];
+  assert.equal(sameReadFacts(locatorOnly, prior), true);
+  assert.equal(hasNewReadSource(locatorOnly, prior), false, "session and question changes are not new sources");
+
+  const changedSource = [{
+    ...locatorOnly[0],
+    command: 'agent browser find --url https://different.example.test/directory --question "find the assigned id" --session s3'
+  }];
+  assert.equal(hasNewReadSource(changedSource, prior), true, "unrelated source URLs remain distinct");
+  assert.equal(sameReadFacts(changedSource, prior), true, "same facts from another locator are not new facts");
+  assert.equal(hasNewReadSource([{
+    ...prior[0], command: 'agent browser inspect --url https://example.test/a --offset 2'
+  }], [{
+    ...prior[0], command: 'agent browser inspect --url https://example.test/a --offset 1'
+  }]), true, "a distinct observed page/block offset remains a new source opportunity");
+
+  const changedRecordLocator = [{
+    ...locatorOnly[0],
+    source: JSON.stringify({ answered: false, url: "https://example.test/a", matches: [{ text: "Directory", location: { url: "https://example.test/a/records/assigned-id" }, timestamp: "2025-12-02" }] })
+  }];
+  assert.equal(sameReadFacts(changedRecordLocator, prior), false, "nested record/link locations remain evidence");
+  const changedRecordDate = [{
+    ...prior[0],
+    source: JSON.stringify({ answered: false, url: "https://example.test/a", matches: [{ text: "Directory", location: { url: "https://example.test/a/records" }, timestamp: "2025-12-02" }] })
+  }];
+  assert.equal(sameReadFacts(changedRecordDate, prior), false, "timestamps inside returned records remain evidence");
+
+  const newValue = [{
+    ...prior[0],
+    source: JSON.stringify({ answered: true, url: "https://example.test/a", matches: [{ text: "Employee ID: E-17", location: { url: "https://example.test/a/records" } }] })
+  }];
+  assert.equal(sameReadFacts(newValue, prior), false, "a newly supplied required value is progress");
+});
+
+test("a newly supplied required field differs from an unchanged missing-input result", () => {
+  const command = "agent forms inspect --url https://example.test/form";
+  const missing = [{ command, source: JSON.stringify({ status: "needs-input", session: "s1", finalUrl: "https://example.test/form", confirmation: { emptyFields: ["Employee ID"] } }) }];
+  const supplied = [{ command, source: JSON.stringify({ status: "ready", session: "s2", finalUrl: "https://example.test/form", confirmation: { emptyFields: [] }, observedFields: [{ label: "Employee ID", value: "E-17" }] }) }];
+  assert.equal(sameReadFacts(supplied, missing), false);
+  assert.equal(hasNewReadSource(supplied, missing), false, "the value is progress because evidence changed, not because the source changed");
 });
 
 test("read/change classification ignores flag values and recognizes command actions", () => {

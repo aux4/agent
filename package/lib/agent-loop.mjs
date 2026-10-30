@@ -2485,9 +2485,12 @@ export function unverifiableOnlyAfterChange(verdict, attempts) {
 
 export function sameFailureShape(a, b) {
   if (!a || !b) return false;
+  // A criterion can move between fail and unverifiable when a later attempt
+  // merely changes the verifier's confidence. That label change is not
+  // progress unless the evidence or achieved outcomes changed as well.
   const key = verdict => verdict.criteria
     .filter(c => c.status !== "pass")
-    .map(c => `${c.criterion}::${c.status}`)
+    .map(c => c.criterion)
     .sort()
     .join("|");
   return key(a) === key(b);
@@ -2518,6 +2521,75 @@ function readEvidenceKey(attempt) {
   } catch {
     return raw.replace(/\s+/g, " ");
   }
+}
+
+// Compare the facts returned by reads separately from the locator used to
+// obtain them. Locator changes do not create new facts; readSourceKey below
+// still permits a bounded first observation from a genuinely different
+// command/source. Keep unrelated URLs distinct there rather than normalizing
+// them into one source.
+const READ_LOCATOR_KEYS = new Set(["url", "finalurl"]);
+const READ_ENVELOPE_TIME_KEYS = new Set(["timestamp", "observedat", "queriedat", "fetchedat", "checkedat"]);
+function stableReadFacts(value, root = true) {
+  if (Array.isArray(value)) return value.map(item => stableReadFacts(item, false));
+  if (!value || typeof value !== "object") return value;
+  const isToolEnvelope = root && (Object.hasOwn(value, "answered")
+    || (Object.hasOwn(value, "session") && (Object.hasOwn(value, "status") || Object.hasOwn(value, "steps"))));
+  return Object.fromEntries(Object.keys(value).sort()
+    .filter(key => !EPHEMERAL_EVIDENCE_KEYS.has(key.toLowerCase())
+      && !(isToolEnvelope && (READ_LOCATOR_KEYS.has(key.toLowerCase()) || READ_ENVELOPE_TIME_KEYS.has(key.toLowerCase()))))
+    .map(key => [key, stableReadFacts(value[key], false)]));
+}
+
+function readFactsKey(attempt) {
+  const raw = String(attempt?.source ?? attempt?.result ?? "").trim();
+  if (!raw) return "";
+  try { return JSON.stringify(stableReadFacts(JSON.parse(raw))); }
+  catch { return raw.replace(/\s+/g, " "); }
+}
+
+const QUERY_AND_SESSION_FLAGS = new Set([
+  "--question", "--query", "--search", "--q", "--where", "--filter",
+  "--session", "--limit", "--sort", "--order", "--rank"
+]);
+
+function readSourceKey(attempt) {
+  const words = commandWords(attempt?.command);
+  if (!words?.length) return "";
+  const source = [];
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index];
+    const equals = word.indexOf("=");
+    const flag = equals >= 0 ? word.slice(0, equals) : word;
+    if (QUERY_AND_SESSION_FLAGS.has(flag.toLowerCase())) {
+      if (equals < 0 && index + 1 < words.length) index++;
+      continue;
+    }
+    source.push(word);
+  }
+  return JSON.stringify(source);
+}
+
+export function sameReadFacts(current, previous) {
+  const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
+  const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
+  if (!priorReads.length || !currentReads.length) return false;
+  const prior = new Set(priorReads.map(readFactsKey).filter(Boolean));
+  return prior.size > 0 && currentReads.every(attempt => {
+    const key = readFactsKey(attempt);
+    return key && prior.has(key);
+  });
+}
+
+export function hasNewReadSource(current, previous) {
+  const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
+  const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
+  if (!currentReads.length) return false;
+  const prior = new Set(priorReads.map(readSourceKey).filter(Boolean));
+  return currentReads.some(attempt => {
+    const key = readSourceKey(attempt);
+    return key && !prior.has(key);
+  });
 }
 
 export function sameReadEvidence(current, previous) {
@@ -2666,7 +2738,6 @@ export async function runLoop(options, history, execute, recovery = "") {
   let commitGranted = false;
   let nextQuestion = "";
   let recoveryHint = "";
-  const priorCommands = new Set();
   const done = (stopped, attempt, note = "") => {
     if (scopedContinuationFile) fs.rmSync(scopedContinuationFile, { force: true });
     metrics.stopped = stopped;
@@ -2883,17 +2954,22 @@ export async function runLoop(options, history, execute, recovery = "") {
     if (unverifiableOnlyAfterChange(lastVerdict, attempts) && !scopedContinuation) {
       return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
     }
-    // A new command that returns the same read evidence is only a renamed
-    // retry. Preserve attempts that introduce new evidence or change state.
+    // A reworded/repointed read of the same source, verifier status drift, and
+    // result locator metadata are not progress by themselves. A genuinely new
+    // read source gets one bounded opportunity; new returned facts, a distinct
+    // non-read action, and completed state changes also remain progress.
     const previousAttempts = attempts.slice(0, before);
     const currentAttempts = attempts.slice(before);
-    const triedSomethingNew = currentAttempts.some(a => !priorCommands.has(a.command));
-    const repeatedReadOnly = sameReadEvidence(currentAttempts, previousAttempts);
     const changedState = currentAttempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
-    if (!scopedContinuation && sameFailureShape(priorVerdict, lastVerdict) && (!triedSomethingNew || (repeatedReadOnly && !changedState))) {
+    const currentReads = currentAttempts.some(a => !a.failed && isReadCommand(a.command));
+    const newFacts = currentReads && !sameReadFacts(currentAttempts, previousAttempts);
+    const newSource = hasNewReadSource(currentAttempts, previousAttempts);
+    const novelNonReadAction = currentAttempts.some(a => !isReadCommand(a.command)
+      && !previousAttempts.some(previous => previous.command === a.command));
+    if (!scopedContinuation && sameFailureShape(priorVerdict, lastVerdict)
+      && !changedState && !newFacts && !newSource && !novelNonReadAction) {
       return done("no-progress", attempt, incompleteNote(lastVerdict));
     }
-    for (const a of attempts) priorCommands.add(a.command);
     if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
 
     priorVerdict = lastVerdict;
