@@ -82,6 +82,8 @@ import {
   commandWords,
   pendingConfirmation,
   isClearlyRequestedAction,
+  hasConfirmationActionCheckHook,
+  writeCheckValuesHooksFile,
   compactResult,
   composeRunNextQuestion,
   composeNeedsConfirmationAnswer
@@ -2519,6 +2521,225 @@ test("a pending continuation stays blocked when the installed ai-agent lacks exa
     assert.equal(outcome.metrics.rounds[0].verify, undefined);
     assert.match(outcome.content, /has not been submitted/);
   });
+});
+
+test("lexically inconclusive pending actions use only the generated action-check hook before exact dispatch", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pending-action-check-"));
+  const history = path.join(dir, "history.json");
+  const configFile = path.join(dir, "local.yaml");
+  fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+  fs.writeFileSync(configFile, "config: {}\n");
+  const request = "Fill the contact form for Dana Lee, then save it.";
+  const next = "agent browser run --session s1 --goal 'Fill the contact form' --field confirm=yes";
+  const actionCheckLog = path.join(dir, "action-check.json");
+  const fake = makeFakeAux4(`
+const fs=require('node:fs'),args=process.argv.slice(2),command=args.join(' ');
+if(command.includes('loop-plan.md')) process.stdout.write(JSON.stringify({goal:'Complete the requested outcome',doneCriteria:['the requested outcome holds'],steps:[]}));
+else if(command.includes('loop-verify.md')) {
+ const at=args.indexOf('--question'),payload=JSON.parse((args[at+1]||'').slice((args[at+1]||'').indexOf('{')));
+ process.stdout.write(JSON.stringify({results:payload.criteria.map(c=>({criterion:c.criterion,status:'pass',evidence:'checked'}))}));
+} else if(command.includes('loop-authorize.md')) {
+ const at=args.indexOf('--question');fs.writeFileSync(${JSON.stringify(actionCheckLog)},args[at+1]);
+ process.stdout.write(process.env.PENDING_ACTION_VERDICT||'{"reason":"The requested saved outcome is supported.","allow":true}');
+}
+`);
+
+  const runCase = async ({ expectedCalls = 1, expectedEffects = 0, requestText = request, target = "Contact form for Dana Lee", emptyFields = [], resultError = "" } = {}) => {
+    fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+    const options = {
+      ...baseOptions(), request: requestText, packageDir: path.resolve("package"), configFile,
+      hooksSupported: true, toolDispatchSupported: true
+    };
+    options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, requestText, options);
+    assert.equal(hasConfirmationActionCheckHook(options, history, next), true);
+    const dispatched = [];
+    let effects = 0;
+    const initialContract = JSON.stringify({
+      status: "needs-confirmation",
+      confirmation: { action: "Submit", target, emptyFields, next }
+    });
+    const outcome = await runLoop(options, history, (_question, h) => {
+      appendExecutionResult(h, "agent browser run --goal 'Fill the contact form'", initialContract, "pending-submit");
+      return { content: "A submit confirmation is pending.", stopReason: "confirmation" };
+    }, "", (command, h) => {
+      dispatched.push(command);
+      assert.equal(command, next, "the before-hook receives the exact validated pending command");
+      const hookConfig = JSON.parse(fs.readFileSync(options.hooksFile, "utf8"));
+      const rule = hookConfig.hooks.find(item => item.tool === "executeAux4" && item.command === "agent:browser/run");
+      for (const [index, step] of rule.before.entries()) {
+        const words = commandWords(step);
+        assert.equal(words.shift(), "node");
+        const checker = words.shift();
+        const expanded = words.map(word => ({
+          "value(__history)": history,
+          "value(__commandLine)": `aux4 ${command}`,
+          "value(__request)": requestText,
+          "value(field)": "confirm=yes",
+          "value(data)": ""
+        })[word] ?? word);
+        const check = spawnSync(process.execPath, [checker, ...expanded], { encoding: "utf8", env: process.env });
+        if (check.status !== 0) {
+          appendExecutionResult(h, command, `Blocked by hook: ${check.stdout.trim()}`, `denied-submit-${index}`);
+          return "The before-hook denied the action.";
+        }
+      }
+      effects++;
+      if (resultError) {
+        appendExecutionResult(h, command, resultError, "uncertain-submit");
+        return resultError;
+      }
+      appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true }), "submitted");
+      return "The form was submitted.";
+    });
+    assert.equal(dispatched.length, expectedCalls);
+    assert.equal(effects, expectedEffects);
+    return { outcome, dispatched, effects };
+  };
+
+  const oldReply = process.env.PENDING_ACTION_VERDICT;
+  await withAux4Bin(fake, async () => {
+    try {
+      process.env.PENDING_ACTION_VERDICT = '{"reason":"The requested saved outcome matches the operation.","allow":true}';
+      const allowed = await runCase({ expectedEffects: 1 });
+      assert.equal(allowed.outcome.stopped, "pass");
+      const payload = JSON.parse(fs.readFileSync(actionCheckLog, "utf8"));
+      assert.equal(payload.request, request);
+      assert.equal(payload.proposedAction, `aux4 ${next}`);
+      assert.equal(payload.confirming, true);
+      assert.equal(payload.executionStates.at(-1).confirmation.target, "Contact form for Dana Lee");
+
+      // These stubbed decisions exercise the real generated check-values hook
+      // path and fail-closed wiring; they do not claim to test model semantics.
+      for (const refusal of [
+        { requestText: "Fill a draft only; do not send it.", target: "Contact form for Dana Lee", reason: "The request limits the outcome to a draft." },
+        { requestText: "Save the contact form for Dana Lee.", target: "A different contact form", reason: "The requested target does not match." },
+        { requestText: "Save the contact form for Dana Lee, but do not send it.", target: "Contact form for Dana Lee", reason: "The request explicitly excludes sending." }
+      ]) {
+        process.env.PENDING_ACTION_VERDICT = JSON.stringify({ allow: false, reason: refusal.reason });
+        const denied = await runCase({ ...refusal, expectedCalls: 1, expectedEffects: 0 });
+        assert.equal(denied.outcome.stopped, "needs-confirmation");
+        assert.equal(denied.outcome.metrics.rounds[0].verify, undefined);
+        assert.match(denied.outcome.content, /has not been submitted/);
+      }
+
+      process.env.PENDING_ACTION_VERDICT = "not a verdict";
+      const malformed = await runCase({ expectedCalls: 1, expectedEffects: 0 });
+      assert.equal(malformed.outcome.stopped, "needs-confirmation");
+      assert.equal(malformed.outcome.metrics.rounds[0].verify, undefined);
+
+      process.env.PENDING_ACTION_VERDICT = '{"reason":"The action matches the requested outcome.","allow":true}';
+      const uncertain = await runCase({ expectedCalls: 1, expectedEffects: 1, resultError: "Error: the connection closed after the server may have received the submission." });
+      assert.equal(uncertain.outcome.stopped, "needs-confirmation");
+      assert.equal(uncertain.outcome.metrics.rounds[0].verify, undefined);
+      assert.match(uncertain.outcome.content, /completion state is unknown/i);
+      assert.doesNotMatch(uncertain.outcome.content, /has not been submitted/i);
+
+      const quotedMarker = await runCase({ expectedCalls: 1, expectedEffects: 1, resultError: "Error: response body quoted 'Blocked by hook: ACTION_CHECK_SCOPE_DENIED' after the server may have received the submission." });
+      assert.equal(quotedMarker.outcome.stopped, "needs-confirmation");
+      assert.match(quotedMarker.outcome.content, /completion state is unknown/i, "a denial-like phrase inside a generic command error does not prove the command was stopped before effects");
+      assert.doesNotMatch(quotedMarker.outcome.content, /has not been submitted/i);
+    } finally {
+      if (oldReply === undefined) delete process.env.PENDING_ACTION_VERDICT;
+      else process.env.PENDING_ACTION_VERDICT = oldReply;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("lexically inconclusive actions cannot dispatch with missing, changed, or mismatched action-check hooks", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "missing-action-check-hook-"));
+  try {
+    const history = path.join(dir, "history.json");
+    fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+    const configFile = path.join(dir, "local.yaml");
+    fs.writeFileSync(configFile, "config: {}\n");
+    const next = "agent browser run --session s1 --field confirm=yes";
+    const cases = [
+      { hooksSupported: true, toolDispatchSupported: false, hooksFile: "" },
+      { hooksSupported: true, toolDispatchSupported: true, hooksFile: "" },
+      { hooksSupported: false, toolDispatchSupported: true, hooksFile: "" }
+    ];
+    await withAux4Bin(fake, async () => {
+      for (const capabilities of cases) {
+        const options = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, ...capabilities };
+        let dispatches = 0;
+        const outcome = await runLoop(options, history, (_question, h) => {
+          fs.writeFileSync(h, pendingConfirmFixture("Submit", next));
+          return { content: "A confirmation is pending.", stopReason: "confirmation" };
+        }, "", async () => { dispatches++; });
+        assert.equal(dispatches, 0);
+        assert.equal(outcome.stopped, "needs-confirmation");
+      }
+
+      for (const unsupportedNext of [
+        "records update --id r-1 --field confirm=yes",
+        "agent browser run --session s1 --field confirm=yes; records delete --id r-1"
+      ]) {
+        const unsupportedHistory = path.join(dir, `unsupported-${Math.random()}.json`);
+        fs.writeFileSync(unsupportedHistory, JSON.stringify({ messages: [], tokenUsage: {} }));
+        const unsupportedOptions = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+        unsupportedOptions.hooksFile = writeCheckValuesHooksFile(unsupportedOptions.packageDir, unsupportedHistory, unsupportedOptions.request, unsupportedOptions);
+        let unsupportedDispatches = 0;
+        const unsupported = await runLoop(unsupportedOptions, unsupportedHistory, (_question, h) => {
+          fs.writeFileSync(h, pendingConfirmFixture("Submit", unsupportedNext));
+          return { content: "A confirmation is pending.", stopReason: "confirmation" };
+        }, "", async () => { unsupportedDispatches++; });
+        assert.equal(unsupportedDispatches, 0, "an uncovered command path or command chain cannot use the browser hook as semantic authorization");
+        assert.equal(unsupported.stopped, "needs-confirmation");
+      }
+
+      const ambiguousHistory = path.join(dir, "ambiguous-target-history.json");
+      fs.writeFileSync(ambiguousHistory, JSON.stringify({ messages: [], tokenUsage: {} }));
+      const ambiguousOptions = { ...baseOptions(), request: "Delete a record.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+      ambiguousOptions.hooksFile = writeCheckValuesHooksFile(ambiguousOptions.packageDir, ambiguousHistory, ambiguousOptions.request, ambiguousOptions);
+      let ambiguousDispatches = 0;
+      const ambiguous = await runLoop(ambiguousOptions, ambiguousHistory, (_question, h) => {
+        fs.writeFileSync(h, pendingConfirmFixture("Delete record R-7", "agent browser run --session s1 --goal 'Delete selected record' --field confirm=yes"));
+        return { content: "A confirmation is pending.", stopReason: "confirmation" };
+      }, "", async () => { ambiguousDispatches++; });
+      assert.equal(ambiguousDispatches, 0, "the semantic outcome check cannot resolve a request that did not select a specific identifier");
+      assert.equal(ambiguous.stopped, "needs-confirmation");
+
+      const incompleteHistory = path.join(dir, "incomplete-history.json");
+      fs.writeFileSync(incompleteHistory, JSON.stringify({ messages: [], tokenUsage: {} }));
+      const incompleteOptions = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+      incompleteOptions.hooksFile = writeCheckValuesHooksFile(incompleteOptions.packageDir, incompleteHistory, incompleteOptions.request, incompleteOptions);
+      let incompleteCalls = 0;
+      let incompleteDispatches = 0;
+      const incomplete = await runLoop(incompleteOptions, incompleteHistory, (question, h) => {
+        incompleteCalls++;
+        if (incompleteCalls === 1) {
+          appendExecutionResult(h, "agent browser run --goal 'Fill the form'", JSON.stringify({ status: "needs-input", confirmation: {
+            action: "Submit", target: "selected form", emptyFields: ["Email"], next
+          } }), "missing-email");
+          return { content: "A required field is empty.", stopReason: "confirmation" };
+        }
+        assert.match(question, /Required fields still empty: Email/);
+        return "BLOCKED: the email address was not provided.";
+      }, "", async () => { incompleteDispatches++; });
+      assert.equal(incompleteCalls, 2);
+      assert.equal(incompleteDispatches, 0, "an available semantic hook cannot bypass missing required inputs");
+      assert.equal(incomplete.stopped, "blocked");
+
+      const options = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+      options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, options.request, options);
+      assert.equal(hasConfirmationActionCheckHook(options, history, next), true);
+      const hooks = JSON.parse(fs.readFileSync(options.hooksFile, "utf8"));
+      hooks.hooks.find(hook => hook.command === "agent:browser/run").before[0] = "node unrelated-check.mjs";
+      fs.writeFileSync(options.hooksFile, JSON.stringify(hooks));
+      assert.equal(hasConfirmationActionCheckHook(options, history, next), false);
+      let dispatches = 0;
+      const outcome = await runLoop(options, history, (_question, h) => {
+        fs.writeFileSync(h, pendingConfirmFixture("Submit", next));
+        return { content: "A confirmation is pending.", stopReason: "confirmation" };
+      }, "", async () => { dispatches++; });
+      assert.equal(dispatches, 0);
+      assert.equal(outcome.stopped, "needs-confirmation");
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("yielded unrequested actions ask, and yielded missing inputs never submit", async () => {

@@ -1900,6 +1900,66 @@ export function writeCheckValuesHooksFile(packageDir, history, request = "", opt
   return file;
 }
 
+// A lexical verb match is intentionally conservative. When it is inconclusive,
+// the one existing action-check before-hook may assess the original request and
+// exact pending action. Require the generated browser hook and its matching
+// per-history guard context; capability flags alone do not authorize dispatch.
+function isSingleBrowserRunCommand(command) {
+  const text = String(command || "");
+  let quote = "";
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\" && quote !== "'") { escaped = true; continue; }
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (";|&<>`\n\r".includes(ch) || (ch === "$" && text[i + 1] === "(")) return false;
+  }
+  if (quote || escaped) return false;
+  const words = commandWords(text);
+  if (!words) return false;
+  if (words[0] === "aux4") words.shift();
+  return words[0] === "agent" && words[1] === "browser" && words[2] === "run";
+}
+
+export function hasConfirmationActionCheckHook(options, history, pendingCommand = "") {
+  if (options?.hooksSupported !== true || options?.toolDispatchSupported !== true || !history
+    || !options.packageDir || !options.configFile || !options.hooksFile
+    || !isSingleBrowserRunCommand(pendingCommand)) return false;
+  const absoluteHistory = path.resolve(history);
+  const absolutePackage = path.resolve(options.packageDir);
+  const absoluteConfig = path.resolve(options.configFile);
+  const hooksFile = path.resolve(options.hooksFile);
+  if (hooksFile !== path.resolve(`${absoluteHistory}.hooks.json`)) return false;
+  const requestFile = options.authorityRequestFile || path.resolve(`${absoluteHistory}.request.txt`);
+  const guardFile = path.resolve(`${absoluteHistory}.guard-options.json`);
+  const scopedFile = path.resolve(`${absoluteHistory}.scoped-continuation.json`);
+  const checker = path.join(absolutePackage, "lib", "check-values.mjs");
+  if (![hooksFile, requestFile, guardFile, scopedFile, checker].every(file => fs.existsSync(file))) return false;
+  try {
+    const guard = JSON.parse(fs.readFileSync(guardFile, "utf8"));
+    const delegatedPrefixes = (options.delegations || []).map(delegation => delegation.via.replace(/:/g, " "));
+    if (guard.history !== absoluteHistory || guard.packageDir !== absolutePackage
+      || guard.configFile !== absoluteConfig || guard.config !== (options.config || "")
+      || JSON.stringify(guard.delegatedPrefixes || []) !== JSON.stringify(delegatedPrefixes)) return false;
+    if (!options.authorityRequestFile
+      && fs.readFileSync(requestFile, "utf8") !== String(options.request || "")) return false;
+    const expectedRule = checkValuesHooksFile(absolutePackage, requestFile, guardFile, scopedFile)
+      .hooks.find(hook => hook.tool === "executeAux4" && hook.command === "agent:browser/run");
+    const configured = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
+    const actualRule = Array.isArray(configured?.hooks)
+      ? configured.hooks.find(hook => hook?.tool === "executeAux4" && hook?.command === "agent:browser/run")
+      : null;
+    if (!expectedRule || !Array.isArray(actualRule?.before)) return false;
+    // Keep the action-check and value/provenance checker in the generated order.
+    // Extra unrelated rules are fine; a substituted or missing check is not.
+    return expectedRule.before.every((step, index) => actualRule.before[index] === step);
+  } catch {
+    return false;
+  }
+}
+
 export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
   const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
   const readBack = readBackCandidates(attempts);
@@ -3330,11 +3390,10 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     }
 
     // A tool stopped itself before an irreversible step this round and handed
-    // back a pending confirmation (HARN-035) instead of a denial -- nothing
-    // was held by policy, so the gate above never saw it. Decide once,
-    // deterministically: run it now, in the SAME round, only when the request
-    // itself clearly asks for it; otherwise stop and ask -- an ambiguous case
-    // is treated exactly like one that is clearly not requested.
+    // back a pending confirmation (HARN-035) instead of a denial. Run the exact
+    // continuation in this round only when the request clearly asks for it, or
+    // when the generated action-check before-hook covers that browser command.
+    // Otherwise stop and ask; a missing or unrelated hook cannot open the gate.
     let pending = yieldedPending || (attempts.length > before ? pendingConfirmation(attempts.slice(before)) : null);
     const yieldedActionCompleted = Boolean(yieldedPending && completedConfirmationCommand(attempts.slice(before), yieldedPending));
     if (yieldedActionCompleted) pending = null;
@@ -3344,8 +3403,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     let confirmationSteps = 0;
     let previousPendingSignature = "";
     const confirmationStepLimit = RETRY_BUDGET + 1;
-    const stopPending = (current, note) => {
-      round.confirmation = { command: current.command, next: current.next, requested: true };
+    const stopPending = (current, note, requested = true) => {
+      round.confirmation = { command: current.command, next: current.next, requested };
       lastContent = `The action has not been submitted. Confirmation is still pending for ${current.label || "the requested action"}.`;
       return done("needs-confirmation", attempt, note);
     };
@@ -3383,18 +3442,30 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         continue;
       }
 
-      if (!isClearlyRequestedAction(pending.label, options.request)) {
+      const actionCheckRequired = !isClearlyRequestedAction(pending.label, options.request);
+      // Keep the deterministic item-selection rule stricter than the semantic
+      // outcome check: a hook cannot resolve an item the request did not select.
+      if (actionCheckRequired && namesUnselectedItem(pending.label, options.request)) {
+        round.confirmation = { command: pending.command, next: pending.next, requested: false };
+        lastContent = composeNeedsConfirmationAnswer(pending);
+        return done("needs-confirmation", attempt);
+      }
+      const actionCheckAvailable = actionCheckRequired
+        && options.toolDispatchSupported === true
+        && typeof executeContinuation === "function"
+        && hasConfirmationActionCheckHook(options, history, pending.next);
+      if (actionCheckRequired && !actionCheckAvailable) {
         round.confirmation = { command: pending.command, next: pending.next, requested: false };
         lastContent = composeNeedsConfirmationAnswer(pending);
         return done("needs-confirmation", attempt);
       }
 
       if (typeof executeContinuation !== "function") {
-        return stopPending(pending, "No exact tool dispatcher is configured; the continuation was not delegated to a model and no success was assumed.");
+        return stopPending(pending, "No exact tool dispatcher is configured; the continuation was not delegated to a model and no success was assumed.", !actionCheckRequired);
       }
 
       if (confirmationSteps >= confirmationStepLimit) {
-        return stopPending(pending, "The bounded confirmation continuation limit was reached; no success was assumed.");
+        return stopPending(pending, "The bounded confirmation continuation limit was reached; no success was assumed.", !actionCheckRequired);
       }
       const signature = confirmationSignature(pending);
       const continuationBefore = attempts.length;
@@ -3407,16 +3478,26 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       }
       if (String(lastContent || "").trim()) lastAnswer = lastContent;
       round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "confirm-requested" };
-      round.confirmation = { command: pending.command, next: pending.next, requested: true };
+      round.confirmation = { command: pending.command, next: pending.next, requested: !actionCheckRequired, actionCheckRequired };
       const innerStop = stopAfterExecution(attempt);
       if (innerStop) return innerStop;
       attempts = extractAttemptLog(history);
       const fresh = attempts.slice(continuationBefore);
+      const exactAttempt = fresh.find(entry => entry.command === pending.next);
+      const explicitHookDenial = Boolean(exactAttempt?.failed
+        && /^\s*(?:blocked by hook:|ACTION_CHECK_SCOPE_DENIED:|ACTION_CHECK_EVIDENCE_REQUIRED:)/i.test(String(exactAttempt.source ?? exactAttempt.result ?? "")));
+      if (explicitHookDenial) {
+        return stopPending(pending, "A before-hook explicitly denied the exact continuation before it ran. No retry or completion was assumed.", !actionCheckRequired);
+      }
+      if (exactAttempt?.failed) {
+        lastContent = "The exact confirmation command returned an error. Its completion state is unknown and was not verified; check the current state before retrying.";
+        return done("needs-confirmation", attempt, "The continuation failed, so its side effect and completion state are unknown. No automatic retry was made.");
+      }
       const nextPending = lastExecutionPending || pendingConfirmation(fresh);
       confirmationSteps++;
       if (nextPending) {
         if (confirmationSignature(nextPending) === signature) {
-          return stopPending(nextPending, "The tool returned the same pending confirmation without advancing; no completion was verified.");
+          return stopPending(nextPending, "The tool returned the same pending confirmation without advancing; no completion was verified.", !actionCheckRequired);
         }
         previousPendingSignature = signature;
         pending = nextPending;

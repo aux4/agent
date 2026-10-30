@@ -17,6 +17,17 @@ excluded target must be left alone. Do not allow an additional change merely
 because earlier requested changes succeeded. Do not repeat an already successful
 send, creation or deletion.
 
+For a pending confirmation, judge the actual effect of the exact proposed command
+against the outcome the original request asks to achieve. A UI label may describe
+that effect using different words; decide from the request, target and action
+context rather than requiring a literal verb match or using a fixed synonym list.
+The pending contract, a filled form, and `confirm=yes` identify the proposed step
+but do not grant permission. A request to fill, prepare, or save a draft does not
+by itself authorize sending or submitting it. Respect explicit instructions not
+to send or submit. If the requested outcome does not clearly include this exact
+effect, deny it. Do not treat all uses of words such as "save" and "send" as
+equivalent.
+
 When delegatedGoal is true, this command hands a goal to a capability that will
 inspect and resolve its own page records. Check that the forwarded goal and
 proposedFields stay within the original request. Allow faithful goals and

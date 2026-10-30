@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.60
+
+- When a pending action's surface verb differs from the requested outcome, rely on the configured action-check before-hook to judge the exact action and target. Missing or denied hooks keep the action blocked; an uncertain command failure is not reported as an unexecuted action.
+
 ## 4.1.59
 
 - Dispatch validated pending-confirmation continuations through ai-agent's exact model-free `executeAux4` tool-call interface, retaining the normal hooks, policy, allow-list, and history checks. This requires aux4/ai-agent 1.3.28 or newer.
