@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.58
+
+- Yield the monitored agent run as soon as it emits a fresh valid pending-confirmation contract, then follow bounded exact continuations through normal hooks and verify only after the pending step completes.
+
 ## 4.1.57
 
 - Keep structured pending/completed workflow state separate from field evidence during action authorization, so confirmation continuations remain resumable without treating echoed next-command values as facts.

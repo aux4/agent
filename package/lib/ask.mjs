@@ -78,7 +78,10 @@ export async function main(argv) {
       AUX4_AGENT_HISTORY_FILE: path.resolve(h),
       AUX4_AGENT_HISTORY_FILES: JSON.stringify([...new Set([...JSON.parse(process.env.AUX4_AGENT_HISTORY_FILES || "[]"),path.resolve(h)])])
     } : {};
-    const result = await runAux4Monitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h, {env});
+    const result = await runAux4Monitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h, {
+      env,
+      yieldOnConfirmationContract: true
+    });
     if (result.budgetExceeded) {
       return {
         content: [result.stdout.trim(), "Execution stopped after the tool-call budget was exhausted."].filter(Boolean).join("\n"),
@@ -89,6 +92,12 @@ export async function main(argv) {
       return {
         content: result.stdout.trim(),
         stopReason: "no-progress"
+      };
+    }
+    if (result.confirmationPending) {
+      return {
+        content: result.stdout.trim(),
+        stopReason: "confirmation"
       };
     }
     if (!result.ok) {

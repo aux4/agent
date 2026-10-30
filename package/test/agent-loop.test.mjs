@@ -1941,6 +1941,83 @@ test("runAux4Monitored resolves a normally completed execution as successful", a
   }
 });
 
+test("runAux4Monitored yields on a fresh confirmation before the child can issue another tool call", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "confirmation-yield-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const next = "agent browser run --session 's1' --goal 'Save the record' --field 'confirm=yes'";
+  const pending = JSON.stringify({ status: "needs-input", confirmation: { action: "Save", target: "record", emptyFields: [], next } });
+  const baseline = { messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "old", name: "executeAux4", args: { command: "agent browser run --field confirm=yes" } }] } },
+    { role: "tool", tool_call_id: "old", name: "executeAux4", content: pending }
+  ] };
+  fs.writeFileSync(history, JSON.stringify(baseline));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+const file = ${JSON.stringify(history)};
+const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+setTimeout(() => {
+  data.messages.push(
+    { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'fresh', name: 'executeAux4', args: { command: 'agent browser run --field confirm=yes' } }] } },
+    { role: 'tool', tool_call_id: 'fresh', name: 'executeAux4', content: ${JSON.stringify(pending)} }
+  );
+  fs.writeFileSync(file, JSON.stringify(data));
+}, 40);
+setTimeout(() => {
+  data.messages.push(
+    { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'after', name: 'executeAux4', args: { command: 'agent browser inspect --session s1 --url https://example.test/list' } }] } },
+    { role: 'tool', tool_call_id: 'after', name: 'executeAux4', content: 'navigated' }
+  );
+  fs.writeFileSync(file, JSON.stringify(data));
+}, 500);
+setInterval(() => {}, 10000);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25, yieldOnConfirmationContract: true });
+    assert.equal(result.confirmationPending, true);
+    assert.equal(result.noProgress, false);
+    assert.equal(result.budgetExceeded, false);
+    const attempts = extractAttemptLog(history);
+    assert.deepEqual(attempts.map(attempt => attempt.callId), ["old", "fresh"], "prior contract is ignored, and the later navigation call never runs");
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runAux4Monitored does not yield on failed or terminal confirmation-shaped results", async () => {
+  for (const { name, content, status } of [
+    { name: "failed", content: 'Blocked by hook: {"status":"needs-input","confirmation":{"action":"Save","target":"record","emptyFields":[],"next":"agent browser run --session s1 --field confirm=yes"}}', status: true },
+    { name: "done", content: JSON.stringify({ status: "done", submitted: true, confirmation: { action: "Save", target: "record", emptyFields: [], next: "agent browser run --session s1 --field confirm=yes" } }), status: true },
+    { name: "nested", content: JSON.stringify({ status: "ready", record: { status: "needs-input", confirmation: { action: "Save", target: "record", emptyFields: [], next: "agent browser run --session s1 --field confirm=yes" } } }), status: true }
+  ]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `confirmation-${name}-`));
+    const bin = path.join(dir, "aux4");
+    const history = path.join(dir, "history.json");
+    fs.writeFileSync(history, JSON.stringify({ messages: [] }));
+    const resultHistory = JSON.stringify({ messages: [
+      { role: "assistant_with_tool", content: { tool_calls: [{ id: "result", name: "executeAux4", args: { command: "records save --recordId r1" } }] } },
+      { role: "tool", tool_call_id: "result", name: "executeAux4", content }
+    ] });
+    fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(history)}, ${JSON.stringify(resultHistory)});
+`, { mode: 0o755 });
+    const previous = process.env.AUX4_BIN;
+    process.env.AUX4_BIN = bin;
+    try {
+      const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25, yieldOnConfirmationContract: true });
+      assert.equal(result.confirmationPending, undefined, `${name} must not be treated as a pending yield`);
+      assert.equal(result.ok, status, `${name} output should retain the command's normal completion status`);
+    } finally {
+      if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("runLoop stops when a retry changes the query but reads the same evidence", async () => {
   const fake = planVerifyFake({ verifyStatus: "fail" });
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
@@ -2360,6 +2437,107 @@ test("a clearly requested irreversible action is confirmed in the SAME round -- 
     assert.equal(outcome.stopped, "pass");
     // one round, not a retry: the loop never looped back for a second attempt.
     assert.equal(outcome.attempts, 1);
+  });
+});
+
+test("monitored confirmation continuations advance two pending steps before verification", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions(), request: "Save the selected record.", hooksSupported: true, hooksFile: "fixed-hooks.json" };
+    const next = "agent browser run --session 's1' --goal 'Save the selected record' --field 'confirm=yes'";
+    const contracts = [
+      { status: "needs-input", step: 1, confirmation: { action: "Save record", target: "record A", emptyFields: [], next } },
+      { status: "needs-input", step: 2, confirmation: { action: "Save record", target: "record A", emptyFields: [], next } }
+    ];
+    const seen = [];
+    const outcome = await runLoop(options, history, (question, h) => {
+      seen.push({ question, gate: [...(options.gateDeny || [])], hooksFile: options.hooksFile });
+      if (seen.length <= 2) {
+        appendExecutionResult(h, next, JSON.stringify(contracts[seen.length - 1]), `step-${seen.length}`);
+        return { content: `Confirmation step ${seen.length} is pending.`, stopReason: "confirmation" };
+      }
+      assert.match(question, /Run the next command now/);
+      assert.match(question, /agent browser run --session 's1'.*confirm=yes/);
+      appendExecutionResult(h, next, JSON.stringify({ status: "done", submitted: true, recordId: "record A" }), "done");
+      return "The record was deleted.";
+    });
+    assert.equal(seen.length, 3, "both fresh confirmation stages are continued in one bounded round");
+    assert.deepEqual(seen.slice(1).map(call => call.gate), [[], []]);
+    assert.deepEqual(seen.map(call => call.hooksFile), ["fixed-hooks.json", "fixed-hooks.json", "fixed-hooks.json"], "normal before-hooks remain configured for every continuation");
+    assert.equal(outcome.stopped, "pass");
+    assert.ok(outcome.metrics.rounds[0].verify, "verification occurs only after the explicit terminal result");
+  });
+});
+
+test("a repeated identical pending confirmation stops without verification", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const next = "agent browser run --session 's1' --goal 'Save the selected record' --field 'confirm=yes'";
+    const pending = JSON.stringify({ status: "needs-input", confirmation: { action: "Save record", target: "record A", emptyFields: [], next } });
+    let calls = 0;
+    const outcome = await runLoop({ ...baseOptions(), request: "Save the selected record." }, history, (question, h) => {
+      calls++;
+      appendExecutionResult(h, next, pending, `pending-${calls}`);
+      return { content: "The same confirmation is still pending.", stopReason: "confirmation" };
+    });
+    assert.equal(calls, 2, "the exact next is tried once, then an unchanged contract is bounded");
+    assert.equal(outcome.stopped, "needs-confirmation");
+    assert.equal(outcome.metrics.rounds[0].verify, undefined, "a pending action is never passed to the verifier as completed");
+    assert.match(outcome.content, /has not been submitted/);
+  });
+});
+
+test("yielded unrequested actions ask, and yielded missing inputs never submit", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  await withAux4Bin(fake, async () => {
+    const unrequestedHistory = tmpFile("unrequested-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    const next = "agent browser run --session s1 --goal 'Save record' --field confirm=yes";
+    let unrequestedCalls = 0;
+    const unrequested = await runLoop({ ...baseOptions(), request: "Look up the selected record." }, unrequestedHistory, (question, h) => {
+      unrequestedCalls++;
+      appendExecutionResult(h, "agent browser run --goal 'Save record'", JSON.stringify({
+        status: "needs-input", confirmation: { action: "Save record", target: "record A", emptyFields: [], next }
+      }), "unrequested");
+      return { content: "Waiting for approval.", stopReason: "confirmation" };
+    });
+    assert.equal(unrequestedCalls, 1);
+    assert.equal(unrequested.stopped, "needs-confirmation");
+
+    const missingHistory = tmpFile("missing-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    let missingCalls = 0;
+    const missing = await runLoop({ ...baseOptions(), request: "Create a record." }, missingHistory, (question, h) => {
+      missingCalls++;
+      if (missingCalls === 1) {
+        appendExecutionResult(h, "records create", JSON.stringify({ status: "needs-input", confirmation: {
+          action: "Create record", target: "new record", emptyFields: ["Record name"], next: "records create --field confirm=yes"
+        } }), "missing-field");
+        return { content: "A required field is missing.", stopReason: "confirmation" };
+      }
+      assert.match(question, /Required fields still empty: Record name/);
+      return "BLOCKED: the record name was not supplied or found.";
+    });
+    assert.equal(missingCalls, 2);
+    assert.equal(missing.stopped, "blocked");
+    assert.equal(extractAttemptLog(missingHistory).some(attempt => /confirm=yes/.test(attempt.command)), false);
+
+    const readHistory = tmpFile("read-only-recovery-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    let readCalls = 0;
+    const readOnlyRecovery = await runLoop({ ...baseOptions(), request: "Create a record." }, readHistory, (question, h) => {
+      readCalls++;
+      if (readCalls === 1) {
+        appendExecutionResult(h, "records create", JSON.stringify({ status: "needs-input", confirmation: {
+          action: "Create record", target: "new record", emptyFields: ["Record name"], next: "records create --field confirm=yes"
+        } }), "missing-before-read");
+        return { content: "The record name is required.", stopReason: "confirmation" };
+      }
+      appendExecutionResult(h, "agent browser inspect --session s1", JSON.stringify({ status: "done", observations: { current: "No record name was shown." } }), "inspect-only");
+      return "I inspected the current page, but it does not show a record name.";
+    });
+    assert.equal(readCalls, 2);
+    assert.equal(readOnlyRecovery.stopped, "needs-input", "inspection text is not an explicit cleared-field contract");
+    assert.equal(extractAttemptLog(readHistory).some(attempt => /confirm=yes/.test(attempt.command)), false);
   });
 });
 

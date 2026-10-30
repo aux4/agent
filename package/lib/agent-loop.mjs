@@ -273,7 +273,7 @@ function repeatsWithoutNewBrowserFindFacts(attempts, count, command) {
 // is denied anyway; terminate the inner generation instead of letting it
 // replay an ever-growing transcript of denials. Kill the process group so a
 // shell wrapper cannot leave its node child running in the background.
-export function runAux4Monitored(args, historyFile, { pollInterval = 100, env = {} } = {}) {
+export function runAux4Monitored(args, historyFile, { pollInterval = 100, env = {}, yieldOnConfirmationContract = false } = {}) {
   const bin = process.env.AUX4_BIN || "aux4";
   // Old refusals belong to the previous invocation, not this recovery attempt.
   const completedBefore = new Set(extractAttemptLog(historyFile)
@@ -321,6 +321,13 @@ export function runAux4Monitored(args, historyFile, { pollInterval = 100, env = 
         stop("budget");
         return;
       }
+      if (yieldOnConfirmationContract) {
+        const latest = attempts.at(-1);
+        if (hasPendingConfirmationAttempt(latest)) {
+          stop("confirmation");
+          return;
+        }
+      }
       const last = attempts.at(-1);
       const previous = attempts.at(-2);
       if (last && isDeterministicToolFailure(last.source) && isNoProgressAbort(last.source)) {
@@ -352,7 +359,8 @@ export function runAux4Monitored(args, historyFile, { pollInterval = 100, env = 
         stdout,
         stderr,
         budgetExceeded: stopReason === "budget",
-        noProgress: stopReason === "no-progress"
+        noProgress: stopReason === "no-progress",
+        ...(stopReason === "confirmation" ? { confirmationPending: true } : {})
       });
     });
   });
@@ -1664,9 +1672,12 @@ export function pendingConfirmation(attempts) {
   const readPending = attempt => {
     if (!attempt || attempt.failed) return null;
     const text = String(attempt.source ?? attempt.result ?? attempt.resultSummary ?? "");
+    const parsed = parseJSONLoose(text, null);
+    const status = typeof parsed?.status === "string" ? parsed.status.trim().toLowerCase() : "";
+    if (status && !["needs-input", "needs-confirmation"].includes(status)) return null;
+    if (parsed?.submitted === true) return null;
     const contract = readConfirmationContract(text);
     if (!contract) return null;
-    const parsed = parseJSONLoose(text, null);
     const reason = typeof parsed?.reason === "string"
       ? parsed.reason
       : 'The action "' + contract.action + '" for "' + contract.target + '" needs confirmation.';
@@ -1676,6 +1687,9 @@ export function pendingConfirmation(attempts) {
       reason,
       label: contract.action,
       target: contract.target,
+      step: Number.isInteger(parsed?.step) ? parsed.step
+        : Number.isInteger(parsed?.needsInput?.step) ? parsed.needsInput.step
+          : Number.isInteger(parsed?.confirmation?.step) ? parsed.confirmation.step : null,
       emptyFields: contract.emptyFields
     };
   };
@@ -1691,6 +1705,18 @@ export function pendingConfirmation(attempts) {
     return readPending(prior);
   }
   return null;
+}
+
+function hasPendingConfirmationAttempt(attempt) {
+  if (!attempt || attempt.failed || attempt.completed === false) return false;
+  const text = String(attempt.source ?? attempt.result ?? attempt.resultSummary ?? "");
+  let result;
+  try { result = JSON.parse(text); } catch { return false; }
+  if (!result || typeof result !== "object" || Array.isArray(result)
+    || !["needs-input", "needs-confirmation"].includes(String(result.status || "").trim().toLowerCase())
+    || result.submitted === true) return false;
+  if (!readConfirmationContract(result)) return false;
+  return Boolean(pendingConfirmation([attempt]));
 }
 
 // "Clearly requested" is kept strict on purpose: the request's OWN words must
@@ -1995,6 +2021,28 @@ const INCONCLUSIVE_STATUS = /"status"\s*:\s*"(incomplete|needs-input|needs-confi
 export function isConclusiveAttempt(attempt) {
   const result = String(attempt.source ?? attempt.result ?? "");
   return attempt.completed !== false && !attempt.failed && !INCONCLUSIVE_STATUS.test(result) && !/"submitted"\s*:\s*false\b/i.test(result);
+}
+
+function confirmationSignature(pending) {
+  if (!pending) return "";
+  return JSON.stringify({ action: pending.label, target: pending.target, step: pending.step, next: pending.next, emptyFields: pending.emptyFields });
+}
+
+function sameConfirmationCommand(actual, expected) {
+  const normalize = command => {
+    const words = commandWords(command);
+    if (!words) return null;
+    return words[0] === "aux4" || words[0] === "executeAux4" ? words.slice(1) : words;
+  };
+  const actualWords = normalize(actual);
+  const expectedWords = normalize(expected);
+  return Boolean(actualWords && expectedWords && actualWords.length === expectedWords.length
+    && actualWords.every((word, index) => word === expectedWords[index]));
+}
+
+function completedConfirmationCommand(attempts, pending) {
+  return attempts.some(attempt => !attempt.failed && isConclusiveAttempt(attempt)
+    && sameConfirmationCommand(attempt.command, pending.next));
 }
 
 export function hasPendingWorkflowStage(value) {
@@ -3091,6 +3139,8 @@ export async function runLoop(options, history, execute, recovery = "") {
   let commitGranted = false;
   let nextQuestion = "";
   let recoveryHint = "";
+  let confirmationYielded = false;
+  let yieldedPending = null;
   const done = (stopped, attempt, note = "") => {
     if (scopedContinuationFile) fs.rmSync(scopedContinuationFile, { force: true });
     metrics.stopped = stopped;
@@ -3110,10 +3160,17 @@ export async function runLoop(options, history, execute, recovery = "") {
     };
   };
   let innerStopReason = "";
+  let lastExecutionPending = null;
   const runExecution = async (...args) => {
+    const beforeRun = extractAttemptLog(history).length;
+    confirmationYielded = false;
+    lastExecutionPending = null;
     const result = await execute(...args);
     if (result && typeof result === "object" && !Array.isArray(result)) {
       innerStopReason = String(result.stopReason || "");
+      if (innerStopReason === "confirmation") {
+        lastExecutionPending = pendingConfirmation(extractAttemptLog(history).slice(beforeRun));
+      }
       return String(result.content ?? "");
     }
     innerStopReason = "";
@@ -3126,6 +3183,11 @@ export async function runLoop(options, history, execute, recovery = "") {
     if (reason === "budget") {
       return done("tool-budget", attempt, "The model's tool-call budget was exhausted, so the remaining work could not be confirmed.");
     }
+    if (reason === "confirmation") {
+      confirmationYielded = true;
+      if (lastExecutionPending) yieldedPending = lastExecutionPending;
+      return null;
+    }
     // Stop the inner loop early, then let the outer plan/verify loop inspect
     // the evidence and make a bounded recovery attempt with a different route.
     recoveryHint = "The previous inner run was stopped after identical tool results repeated. Use a materially different action or evidence source; do not repeat that call. The task may still be recoverable.";
@@ -3133,6 +3195,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   };
 
   for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
+    yieldedPending = null;
     const executeStart = Date.now();
     // The two-step note describes the fallback gate only; with tool-call hooks
     // nothing is held, and telling the agent otherwise sends it round in circles.
@@ -3185,7 +3248,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     // One push per round, straight away (cheaper than verifying a round that
     // did nothing): a question asked without looking, or a step described or
     // written out as text instead of carried out.
-    if (!isBlocked(lastContent)) {
+    if (!yieldedPending && !confirmationYielded && !isBlocked(lastContent)) {
       const push = askedWithoutLooking(lastContent, round.execute.toolCalls) ? LOOK_BEFORE_ASKING
         : describedWithoutDoing(lastContent, round.execute.toolCalls) ? DO_IT_NOW : "";
       if (push) {
@@ -3211,7 +3274,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       if (innerStop) return innerStop;
     }
 
-    if (isBlocked(lastContent)) {
+    if (!yieldedPending && isBlocked(lastContent)) {
       const currentLog = extractAttemptLog(history);
       const offered = allowedCommandsOffered(currentLog);
       if (pushedPastBlocked || !offered) return done("blocked", attempt);
@@ -3253,44 +3316,97 @@ export async function runLoop(options, history, execute, recovery = "") {
     // deterministically: run it now, in the SAME round, only when the request
     // itself clearly asks for it; otherwise stop and ask -- an ambiguous case
     // is treated exactly like one that is clearly not requested.
-    let pending = attempts.length > before ? pendingConfirmation(attempts.slice(before)) : null;
-    if (pending?.emptyFields.length) {
-      const question = [
-        "The tool is waiting for required values, not permission to submit.",
-        `Required fields still empty: ${pending.emptyFields.join("; ")}.`,
-        `Original request: ${options.request}`,
-        "Fill values already supplied by the request or successful evidence. Use one relevant available lookup for anything still missing; do not search the same content repeatedly or retry a denied source. Do not run a confirmation command while required values remain absent. If a value cannot be obtained, stop with BLOCKED and name it."
-      ].join("\n");
-      lastContent = await runExecution(question, history, deniedCommands, false, deniedPatterns);
-      if (String(lastContent || "").trim()) lastAnswer = lastContent;
-      round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "missing-input-recovery" };
-      const innerStop = stopAfterExecution(attempt);
-      if (innerStop) return innerStop;
-      if (isBlocked(lastContent)) return done("blocked", attempt);
-      attempts = extractAttemptLog(history);
-      const remaining = pendingConfirmation(attempts.slice(before));
-      if (remaining?.emptyFields.length) {
-        lastContent = `The action has not been submitted. Required values are still missing: ${remaining.emptyFields.join("; ")}.`;
-        return done("needs-input", attempt);
-      }
-      pending = remaining;
+    let pending = yieldedPending || (attempts.length > before ? pendingConfirmation(attempts.slice(before)) : null);
+    const yieldedActionCompleted = Boolean(yieldedPending && completedConfirmationCommand(attempts.slice(before), yieldedPending));
+    if (yieldedActionCompleted) pending = null;
+    if (confirmationYielded && !pending && !yieldedActionCompleted) {
+      return done("needs-confirmation", attempt, "A pending confirmation was detected, but its validated continuation could not be recovered. No completion was verified.");
     }
-    if (pending) {
-      if (isClearlyRequestedAction(pending.label, options.request)) {
-        const priorGate = options.gateDeny;
-        options.gateDeny = [];
-        lastContent = await runExecution(composeRunNextQuestion(pending), history, deniedCommands, false, deniedPatterns);
+    let confirmationSteps = 0;
+    let previousPendingSignature = "";
+    const confirmationStepLimit = RETRY_BUDGET + 1;
+    const stopPending = (current, note) => {
+      round.confirmation = { command: current.command, next: current.next, requested: true };
+      lastContent = `The action has not been submitted. Confirmation is still pending for ${current.label || "the requested action"}.`;
+      return done("needs-confirmation", attempt, note);
+    };
+    while (pending) {
+      if (pending.emptyFields.length) {
+        const question = [
+          "The tool is waiting for required values, not permission to submit.",
+          `Required fields still empty: ${pending.emptyFields.join("; ")}.`,
+          `Original request: ${options.request}`,
+          "Fill values already supplied by the request or successful evidence. Use one relevant available lookup for anything still missing; do not search the same content repeatedly or retry a denied source. Do not run a confirmation command while required values remain absent. If a value cannot be obtained, stop with BLOCKED and name it."
+        ].join("\n");
+        const missingBefore = attempts.length;
+        lastContent = await runExecution(question, history, deniedCommands, false, deniedPatterns);
         if (String(lastContent || "").trim()) lastAnswer = lastContent;
-        options.gateDeny = priorGate;
-        round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "confirm-requested" };
-        round.confirmation = { command: pending.command, next: pending.next, requested: true };
+        round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "missing-input-recovery" };
         const innerStop = stopAfterExecution(attempt);
         if (innerStop) return innerStop;
+        if (isBlocked(lastContent)) return done("blocked", attempt);
         attempts = extractAttemptLog(history);
-      } else {
+        const fresh = attempts.slice(missingBefore);
+        const remaining = pendingConfirmation(fresh);
+        if (remaining?.emptyFields.length) {
+          lastContent = `The action has not been submitted. Required values are still missing: ${remaining.emptyFields.join("; ")}.`;
+          return done("needs-input", attempt);
+        }
+        if (!remaining) {
+          lastContent = `The action has not been submitted. Required values are still missing: ${pending.emptyFields.join("; ")}.`;
+          return done("needs-input", attempt);
+        }
+        pending = remaining;
+        continue;
+      }
+
+      if (!isClearlyRequestedAction(pending.label, options.request)) {
         round.confirmation = { command: pending.command, next: pending.next, requested: false };
         lastContent = composeNeedsConfirmationAnswer(pending);
         return done("needs-confirmation", attempt);
+      }
+
+      if (confirmationSteps >= confirmationStepLimit) {
+        return stopPending(pending, "The bounded confirmation continuation limit was reached; no success was assumed.");
+      }
+      const signature = confirmationSignature(pending);
+      const continuationBefore = attempts.length;
+      const priorGate = options.gateDeny;
+      options.gateDeny = [];
+      try {
+        lastContent = await runExecution(composeRunNextQuestion(pending), history, deniedCommands, false, deniedPatterns);
+      } finally {
+        options.gateDeny = priorGate;
+      }
+      if (String(lastContent || "").trim()) lastAnswer = lastContent;
+      round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "confirm-requested" };
+      round.confirmation = { command: pending.command, next: pending.next, requested: true };
+      const innerStop = stopAfterExecution(attempt);
+      if (innerStop) return innerStop;
+      attempts = extractAttemptLog(history);
+      const fresh = attempts.slice(continuationBefore);
+      const nextPending = lastExecutionPending || pendingConfirmation(fresh);
+      confirmationSteps++;
+      if (nextPending) {
+        if (confirmationSignature(nextPending) === signature) {
+          return stopPending(nextPending, "The tool returned the same pending confirmation without advancing; no completion was verified.");
+        }
+        previousPendingSignature = signature;
+        pending = nextPending;
+        continue;
+      }
+      if (completedConfirmationCommand(fresh, pending)) {
+        pending = null;
+        break;
+      }
+      // A read or unrelated tool call does not consume the pending action.
+      // Preserve it and give the exact continuation another bounded turn.
+      if (confirmationYielded && previousPendingSignature === signature) {
+        return stopPending(pending, "The confirmation continuation did not advance after a fresh pending result.");
+      }
+      previousPendingSignature = signature;
+      if (confirmationSteps >= confirmationStepLimit) {
+        return stopPending(pending, "The bounded confirmation continuation limit was reached; no success was assumed.");
       }
     }
 
