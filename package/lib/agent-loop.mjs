@@ -238,7 +238,7 @@ function repeatsWithoutNewResult(attempts, count = 3) {
 // is denied anyway; terminate the inner generation instead of letting it
 // replay an ever-growing transcript of denials. Kill the process group so a
 // shell wrapper cannot leave its node child running in the background.
-export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {}) {
+export function runAux4Monitored(args, historyFile, { pollInterval = 100, env = {} } = {}) {
   const bin = process.env.AUX4_BIN || "aux4";
   // Old refusals belong to the previous invocation, not this recovery attempt.
   const completedBefore = new Set(extractAttemptLog(historyFile)
@@ -247,7 +247,7 @@ export function runAux4Monitored(args, historyFile, { pollInterval = 100 } = {})
     let child;
     try {
       child = spawn(bin, args, {
-        env: process.env,
+        env: {...process.env,...env},
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32"
       });
@@ -928,6 +928,9 @@ export function readVerdict(text) {
 // enteredValues (parsed from a full command string) and unsourcedFieldValues
 // (parsed from the pending call's own --field values, before it has run).
 function parseFieldEntry(raw) {
+  if (raw && typeof raw === "object" && typeof raw.label === "string" && typeof raw.value === "string") {
+    return raw.value ? {label:raw.label || "Unnamed field",value:raw.value} : null;
+  }
   const text = String(raw || "");
   const i = text.indexOf("=");
   if (i <= 0) return null;
@@ -1055,19 +1058,93 @@ export function unsourcedRecipientValues(command, attempts = [], request = "", c
 // is; a "12345" that appears nowhere is not. Made-up values are the one thing
 // the verifier cannot judge from the answer, so the harness checks them itself.
 export function unsourcedValues(attempts, request = "") {
-  const seen = new Set(sourceTokens(request));
   const found = [];
   const prior = [];
   for (const attempt of attempts) {
-    if (!attempt.failed) found.push(...unsourcedRecipientValues(attempt.command, prior, request));
-    for (const { label, value } of enteredValues(attempt.command)) {
-      const missing = tokens(value).filter(t => !seen.has(t));
-      if (isPlaceholder(value) || missing.length) found.push({ label, value, command: attempt.command });
+    if (!attempt.failed && attempt.completed !== false) {
+      found.push(...unsourcedRecipientValues(attempt.command, prior, request));
+      const fields = enteredValues(attempt.command).map(({label,value}) => `${label}=${value}`);
+      found.push(...unsourcedFieldValues(fields, prior, request).map(entry => ({...entry, command: attempt.command})));
     }
-    for (const t of sourceTokens(attempt.source ?? attempt.result)) seen.add(t);
     prior.push(attempt);
   }
   return found;
+}
+
+// Tool metadata lists possibilities; it does not establish a value assigned
+// to a record. Browser page overviews are context, while fact lookups expose
+// their answer/matches separately.
+export function fieldEvidenceText(value, command = "") {
+  const words=commandWords(command) || [];
+  const flag=words.findIndex(word=>word.startsWith("--"));
+  const producer=(flag<0?words:words.slice(0,flag)).filter((word,index)=>index!==0 || word!=="aux4").join(" ");
+  if (producer === "agent ask" || producer === "ai agent ask") return "";
+  const text = String(value ?? "");
+  const data = parseJSONLoose(text, null);
+  if (!data || typeof data !== "object") return /^[\s]*[\[{]/.test(text) ? "" : text;
+  if (data.observations && typeof data.status === "string") return JSON.stringify({pageUrl:data.finalUrl || data.url || ""});
+  if (Object.hasOwn(data, "answered")) {
+    if (data.answered !== true) return "";
+    return JSON.stringify({answer:data.answer, matches:data.matches});
+  }
+  const clean = item => Array.isArray(item) ? item.map(clean) : item && typeof item === "object"
+    ? Object.fromEntries(Object.entries(item).filter(([key]) => !/^(?:options|choices|fromGoal|commandReference|documentation|examples)$/i.test(key)).map(([key,v])=>[key,clean(v)])) : item;
+  return JSON.stringify(clean(data));
+}
+
+export function availableFieldChoices(attempts) {
+  const choices=[];
+  const walk=(value,label="",possible=false)=>{
+    if(Array.isArray(value)){for(const entry of value)walk(entry,label,possible);return;}
+    if(value && typeof value==='object'){
+      for(const [key,entry] of Object.entries(value))walk(entry,possible && !Array.isArray(value) ? key : label,possible || /^(?:options|choices)$/i.test(key));
+    }else if(possible && typeof value==='string')choices.push({label,value});
+  };
+  for(const attempt of attempts.filter(a=>!a.failed && a.completed!==false && !/(?:^|\s)--help(?:\s|$)/.test(a.command||""))) {
+    const data=parseJSONLoose(attempt.source??attempt.result??"",null);
+    walk(data);
+    for(const text of Object.values(data?.observations || {}).filter(value=>typeof value==="string")) {
+      for(const line of text.split(/[|\n]/)) {
+        const hint=line.match(/^\s*([^()]+?)\s*\(([^)]+)\)/);
+        if(!hint || !/(?:,|\bor\b)/i.test(hint[2]))continue;
+        const list=hint[2].split(/--|—/)[0];
+        for(const value of list.split(/,|\bor\b/i).map(value=>value.trim()).filter(Boolean))choices.push({label:hint[1].trim(),value,hint:true});
+      }
+    }
+  }
+  return choices;
+}
+
+export function explicitOpenChoice(label,value,attempts,request) {
+  return /\b(?:choose|select|pick)\b[^.!?]*\b(?:any|suitable|appropriate|available)\b/i.test(request)
+    && labelNamedIn(label,new Set(sourceTokens(request)))
+    && availableFieldChoices(attempts).some(choice=>!choice.hint && choice.value.toLowerCase()===String(value).toLowerCase() && (!choice.label || labelNamedIn(label,new Set(sourceTokens(choice.label)))));
+}
+
+// Explicit preservation is a write constraint even when the proposed value
+// appears elsewhere in the request (for example, a shortened identity name).
+// Only compare unambiguous structured facts; selection among multiple records
+// remains part of the action-scope check.
+function changesPreservedField(entry, attempts, request) {
+  const clauses = [...request.matchAll(/\b(?:preserve|retain)\b([^.!?;]*)|\b(?:keep|leave|maintain)\b([^.!?;]*(?:unchanged|as is|intact|the same))[^.!?;]*/gi)];
+  if (!clauses.some(match => labelNamedIn(entry.label, new Set(sourceTokens(match[1] || match[2]))))) return false;
+  const keyOf = text => String(text).replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const label = keyOf(entry.label);
+  for (const attempt of [...attempts].reverse()) {
+    if (attempt.failed || attempt.completed === false || enteredValues(attempt.command).length || /(?:^|\s)(?:--help|-h)(?:\s|$)/.test(attempt.command || "")) continue;
+    const values = new Set();
+    const walk = item => {
+      if (!item || typeof item !== "object") return;
+      for (const [key, value] of Object.entries(item)) {
+        if (keyOf(key) === label && value !== null && typeof value !== "object") values.add(String(value));
+        else if (typeof value === "object") walk(value);
+      }
+    };
+    walk(parseJSONLoose(fieldEvidenceText(attempt.source ?? attempt.result, attempt.command), null));
+    if (values.size === 1) return !values.has(entry.value);
+    if (values.size > 1) return false;
+  }
+  return false;
 }
 
 // Same provenance check as unsourcedValues, but for a call that has NOT run
@@ -1080,16 +1157,24 @@ export function unsourcedFieldValues(fields, attempts, request = "") {
   for (const raw of fields || []) {
     const entry = parseFieldEntry(raw);
     if (!entry) continue;
+    if (changesPreservedField(entry, attempts, request)) {
+      found.push({...entry, preserved: true});
+      continue;
+    }
     // A call that entered this value echoes it back in its own result; that
     // echo is not a source (it would make any made-up value look sourced).
     const seen = new Set(requestTokens);
     for (const attempt of attempts) {
+      if (attempt.failed || attempt.completed === false || /(?:^|\s)(?:--help|-h)(?:\s|$)/.test(attempt.command || "")) continue;
       if (enteredValues(attempt.command).some(e => e.value === entry.value)) continue;
-      for (const t of sourceTokens(attempt.source ?? attempt.result)) seen.add(t);
+      const observed = parseJSONLoose(attempt.source ?? attempt.result ?? "", null);
+      if (Object.values(observed?.fromGoal || {}).some(value => value === entry.value)) continue;
+      for (const t of sourceTokens(fieldEvidenceText(attempt.source ?? attempt.result,attempt.command))) seen.add(t);
     }
     // A yes/no answer for a choice the request itself names ("subscribe to
     // product updates" -> Subscribe=yes) states the request's intent, not data.
     if (isChoiceAnswer(entry.value) && labelNamedIn(entry.label, requestTokens)) continue;
+    if (explicitOpenChoice(entry.label,entry.value,attempts,request)) continue;
     const missing = tokens(entry.value).filter(t => !seen.has(t));
     if (isPlaceholder(entry.value) || missing.length) found.push(entry);
   }
@@ -1390,8 +1475,9 @@ export function checkValuesHooksFile(packageDir, requestFile = "", guardOptionsF
 export function writeCheckValuesHooksFile(packageDir, history, request = "", options = null) {
   const file = `${history}.hooks.json`;
   // Absolute: hook steps run from a scratch directory, not the agent's own.
-  const requestFile = path.resolve(`${history}.request.txt`);
-  fs.writeFileSync(requestFile, String(request || ""));
+  const ownRequestFile = path.resolve(`${history}.request.txt`);
+  fs.writeFileSync(ownRequestFile, String(request || ""));
+  const requestFile = options?.authorityRequestFile || ownRequestFile;
   const guardFile = options?.configFile ? path.resolve(`${history}.guard-options.json`) : "";
   if (guardFile) fs.writeFileSync(guardFile, JSON.stringify({
     packageDir: path.resolve(packageDir), configFile: path.resolve(options.configFile), config: options.config || "",

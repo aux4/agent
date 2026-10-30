@@ -1,5 +1,13 @@
 # Release notes
 
+## 4.1.41
+
+- Enforce explicitly preserved field values and reject already completed exact writes before model judgment.
+
+- Validate delegated goals and staged values against the original request; distinguish assigned record values from available options and staged echoes.
+- Share field provenance rules before and after actions, including named boolean choices and exclusion of failed, documentation, or model-summary sources.
+- Preserve original authority and factual history across delegated field writes; pass concrete values to the browser guard through stdin before effects.
+
 ## 4.1.40
 
 - Keep unsubmitted and waiting-input workflows eligible for continuation instead of denying their commands as completed changes.

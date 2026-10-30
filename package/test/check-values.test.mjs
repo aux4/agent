@@ -420,3 +420,43 @@ console.log(args.length === 2
     assert.match(result.stdout, /documentation only/);
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test("native field writes use original authority and factual history, never a forwarded goal",()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'native-value-source-'));
+  const request=path.join(dir,'request.txt'),history=path.join(dir,'history.json'),parent=path.join(dir,'parent.json');
+  const guard=path.resolve('package/lib/check-values.mjs');
+  const save=(file,messages)=>fs.writeFileSync(file,JSON.stringify({messages}));
+  const result=(id,command,content)=>[
+    {role:'assistant_with_tool',content:{tool_calls:[{id,name:'executeAux4',args:{command}}]}},
+    {role:'tool',tool_call_id:id,content:JSON.stringify(content)}
+  ];
+  const run=(field,extra={})=>spawnSync(process.execPath,[guard,'--requestFile',request,'--history',history,'--historyFiles',extra.histories||'[]','--fieldsStdin','true'],{encoding:'utf8',input:JSON.stringify({fields:[field],availableChoices:extra.choices||{}}),env:{...process.env,AUX4_AGENT_HISTORY_FILES:''}});
+  try{
+    fs.writeFileSync(request,'Submit the application using its assigned Class.');
+    save(history,result('view','agent browser run --goal "Show the form"',{status:'done',observations:{current:'Class (Gold or Silver)'}}));
+    const blocked=run({label:'Class',value:'Gold'});assert.notEqual(blocked.status,0);assert.doesNotMatch(blocked.stdout,/Gold/);
+    save(parent,result('record','records get',{assignedClass:'Gold'}));
+    assert.equal(run({label:'Class',value:'Gold'},{histories:JSON.stringify([parent])}).status,0);
+    fs.writeFileSync(path.join(dir,'machine-request.txt'),'Submit using Class Platinum.');
+    assert.notEqual(run({label:'Class',value:'Platinum'},{histories:JSON.stringify([parent])}).status,0);
+    fs.writeFileSync(request,'Choose any available Class for the application.');
+    assert.equal(run({label:'Class',value:'Silver'},{choices:{Class:['Gold','Silver']}}).status,0);
+    assert.notEqual(run({label:'Class',value:'Platinum'},{choices:{Class:['Gold','Silver']}}).status,0);
+    fs.writeFileSync(request,'Fill the form.');
+    for(const label of ['Confirm',''])assert.notEqual(run({label,value:'unprovided-secret'}).status,0);
+    const invalid=spawnSync(process.execPath,[guard,'--requestFile',request,'--history',history,'--fieldsStdin','true'],{encoding:'utf8',input:'{"fields":[]}',env:{...process.env,AUX4_AGENT_HISTORY_FILES:''}});
+    assert.notEqual(invalid.status,0);
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test("nested delegation guard hooks preserve the original authority file",()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'authority-source-'));
+  try{
+    const authority=path.join(dir,'original.txt');fs.writeFileSync(authority,'Change only the phone.');
+    const history=path.join(dir,'child.json');
+    const hooks=writeCheckValuesHooksFile('/agent',history,'A machine-written child goal.',{authorityRequestFile:authority});
+    assert.equal(fs.readFileSync(authority,'utf8'),'Change only the phone.');
+    assert.match(JSON.parse(fs.readFileSync(hooks,'utf8')).hooks[0].before[0],new RegExp(authority.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+    assert.equal(fs.readFileSync(history+'.request.txt','utf8'),'A machine-written child goal.');
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

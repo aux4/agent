@@ -85,3 +85,52 @@ test("existing target IDs require exact observed identifiers, including position
   assert.deepEqual(unsourcedActionIds("records create --recordId new-7", [], "Create a report", "create\nCreate a new record."), []);
   assert.deepEqual(unsourcedActionIds("records delete --recordId r-é", [{command:"records list",source:'{"id":"r-\\u00e9"}'}], "Delete the named record", help), []);
 });
+
+
+test("delegated goals and staged fields are checked against the original request",()=>{
+  const original=process.env.AUX4_BIN;
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'delegated-scope-'));
+  const bin=path.join(dir,'aux4'),log=path.join(dir,'payload.json');
+  fs.writeFileSync(bin,`#!/usr/bin/env node
+const fs=require('fs');const args=process.argv.slice(2);const payload=JSON.parse(args[args.indexOf('--question')+1]);fs.writeFileSync(${JSON.stringify(log)},JSON.stringify(payload));console.log(JSON.stringify({allow:false,reason:'An available option is not an assigned value.'}));`,{mode:0o755});
+  process.env.AUX4_BIN=bin;
+  try{
+    const options={configFile:'/local.yaml',packageDir:'/agent',delegatedPrefixes:['agent forms']};
+    const request='Submit the application using its assigned category.';
+    const prior=[{command:'records get',source:'{"Category":"Gold","Region":"West"}'},{command:'agent forms run --field "Category=Gold"',source:'{"status":"needs-input","fromGoal":{"Region":"West"}}'}];
+    const result=authorizeAction(options,'agent forms run --session s7 --field confirm=yes',prior,request,'','run\n --field <value>');
+    assert.equal(result.allow,false);assert.equal(result.delegated,true);assert.notEqual(result.skipped,true);
+    const payload=JSON.parse(fs.readFileSync(log,'utf8'));assert.equal(payload.delegatedGoal,true);assert.equal(payload.confirming,true);
+    assert.deepEqual(payload.proposedFields.sort((a,b)=>a.label.localeCompare(b.label)),[{label:'Category',value:'Gold'},{label:'Region',value:'West'}]);
+    assert.equal(payload.request,request);
+  }finally{if(original===undefined)delete process.env.AUX4_BIN;else process.env.AUX4_BIN=original;fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+
+test("a forwarded goal echo cannot establish an existing resource identifier",()=>{
+  const fake=[{command:'agent browser run --goal "Show report-17"',source:'{"status":"done","goal":"Show report-17","observations":{"current":"Report index"}}'}];
+  assert.equal(unsourcedActionIds('reports delete --id report-17',fake,'Delete the Winter report','delete').length,1);
+});
+
+
+test("completed exact writes are rejected before model judgment; incomplete writes stay resumable", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "duplicate-write-"));
+  const fake = path.join(dir, "aux4");
+  fs.writeFileSync(fake, `#!/bin/sh
+printf '%s' '{"allow":true,"reason":"Allowed"}'
+`, {mode:0o755});
+  process.env.AUX4_BIN = fake;
+  try {
+    const command = "records archive --id r-7";
+    const options = {configFile: "/local.yaml", packageDir: "/agent"};
+    const completed = [{command, completed:true, source:'{"archived":true}'}];
+    assert.match(authorizeAction(options, "aux4 " + command, completed, "Archive r-7").reason, /already succeeded/);
+    for (const source of ['{"status":"needs-input"}', '{"status":"pending","submitted":false}']) {
+      assert.equal(authorizeAction(options, command, [{command, source}], "Archive r-7", "", "archive").allow, true);
+    }
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, {recursive:true, force:true});
+  }
+});

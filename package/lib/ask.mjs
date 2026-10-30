@@ -5,6 +5,7 @@
 // this file only drives the loop and makes each execution turn a normal
 // `aux4 ai agent ask` call against the caller's own history.
 import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   runLoop, mergeDenyPolicy, addDenyPatterns, capRetryBudget, runAux4Monitored, activeDelegations, delegatedDenyPatterns,
@@ -56,6 +57,9 @@ export async function main(argv) {
   options.delegations = activeDelegations();
   options.delegatedDeny = delegatedDenyPatterns(options.delegations);
   const history = options.history;
+  const inheritedAuthority=process.env.AUX4_AGENT_REQUEST_FILE || "";
+  if(inheritedAuthority && history && path.resolve(`${history}.request.txt`)===path.resolve(inheritedAuthority))throw new Error("Nested agent calls must use a separate conversation history.");
+  options.authorityRequestFile=inheritedAuthority || (history ? path.resolve(`${history}.request.txt`) : "");
   // HARN-030: when the installed aux4/ai-agent supports tool-call hooks, use
   // one for the value-provenance check (agent-loop.mjs checkValuesHooksFile)
   // instead of the two-round confirmation gate -- same check, one round.
@@ -63,8 +67,18 @@ export async function main(argv) {
   if (options.hooksSupported) {
     options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, options.request, options);
   }
+  if (history) {
+    fs.mkdirSync(path.dirname(path.resolve(history)), {recursive:true});
+    fs.writeFileSync(`${history}.request.txt`, String(options.request || ""));
+  }
   const execute = async (question, h, deniedCommands, retry = false, targetPatterns = []) => {
-    const result = await runAux4Monitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h);
+    const env = history && options.packageDir ? {
+      AUX4_AGENT_FIELD_GUARD: process.env.AUX4_AGENT_FIELD_GUARD || path.resolve(options.packageDir,"lib/check-values.mjs"),
+      AUX4_AGENT_REQUEST_FILE: options.authorityRequestFile,
+      AUX4_AGENT_HISTORY_FILE: path.resolve(h),
+      AUX4_AGENT_HISTORY_FILES: JSON.stringify([...new Set([...JSON.parse(process.env.AUX4_AGENT_HISTORY_FILES || "[]"),path.resolve(h)])])
+    } : {};
+    const result = await runAux4Monitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h, {env});
     if (result.budgetExceeded) {
       return {
         content: [result.stdout.trim(), "Execution stopped after the tool-call budget was exhausted."].filter(Boolean).join("\n"),

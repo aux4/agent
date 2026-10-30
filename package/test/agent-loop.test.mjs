@@ -12,6 +12,9 @@ import {
   lookupQueries,
   enteredValues,
   unsourcedValues,
+  unsourcedFieldValues,
+  fieldEvidenceText,
+  availableFieldChoices,
   applyProvenance,
   activeDelegations,
   delegatedDenyPatterns,
@@ -2185,4 +2188,49 @@ test("an unsubmitted workflow is not denied as already completed on retry",async
     });
     assert.equal(calls,2);assert.equal(result.stopped,'blocked');
   });
+});
+
+
+test("before and after provenance agree on named boolean choices",()=>{
+  const request='Enable Release notices and disable Usage reports.';
+  const fields=['Release notices=checked','Usage reports=unchecked'];
+  assert.deepEqual(unsourcedFieldValues(fields,[],request),[]);
+  assert.deepEqual(unsourcedValues([{command:'agent forms run '+fields.map(value=>'--field "'+value+'"').join(' '),source:'{}'}],request),[]);
+  assert.equal(unsourcedValues([{command:'agent forms run --field "Manager override=yes"',source:'{}'}],request).length,1);
+});
+
+test("unexecuted, failed, documentation and goal-echo values are not provenance",()=>{
+  const command='agent forms run --field "Code=A7"';
+  assert.deepEqual(unsourcedValues([{command,failed:true,source:'Blocked by hook'}],'Save the form'),[]);
+  assert.deepEqual(unsourcedValues([{command,completed:false}],'Save the form'),[]);
+  for(const prior of [
+    {command:'records get',failed:true,source:'Error: A7'},
+    {command:'records get --help',source:'Example code A7'},
+    {command:'agent forms run --goal "type code A7"',source:'{"fromGoal":{"Code":"A7"}}'}
+  ])assert.equal(unsourcedFieldValues(['Code=A7'],[prior],'Save the form').length,1);
+});
+
+
+test("options and page overviews are not assigned field values",()=>{
+  const options=[{command:'forms list',source:'{"options":{"Category":["Gold","Silver"]}}'}];
+  assert.deepEqual(availableFieldChoices(options),[{label:'Category',value:'Gold'},{label:'Category',value:'Silver'}]);
+  assert.equal(unsourcedFieldValues(['Category=Gold'],options,'Use the category assigned on file.').length,1);
+  assert.deepEqual(unsourcedFieldValues(['Category=Gold'],options,'Choose any available Category.'),[]);
+  assert.equal(unsourcedFieldValues(['Category=Platinum'],options,'Choose any available Category.').length,1);
+  const assigned=[...options,{command:'records get',source:'{"Category":"Silver"}'}];
+  assert.deepEqual(unsourcedFieldValues(['Category=Silver'],assigned,'Use the category assigned on file.'),[]);
+  assert.equal(unsourcedFieldValues(['Category=Gold'],[{command:'agent browser run',source:'{"status":"done","observations":{"current":"Category (Gold or Silver)"}}'}],'Use the category assigned on file.').length,1);
+  assert.equal(fieldEvidenceText('{"answered":false,"matches":[{"text":"Gold"}]}'),'');
+  assert.equal(fieldEvidenceText('The assigned category is Gold.','agent ask --request lookup'),'');
+  assert.equal(fieldEvidenceText('{"status":"done","observations":{"current":"Gold"'), '');
+  assert.match(fieldEvidenceText('{"answered":true,"matches":[{"text":"Assigned category Silver"}]}'),/Silver/);
+});
+
+
+test("explicitly preserved fields cannot be overwritten using identity text", () => {
+  const attempts = [{command: "contacts get", source: '{"name":"Rowan Lee","postalCode":"44001"}'}];
+  assert.equal(unsourcedFieldValues(["Name=Rowan"], attempts, "Update the phone for Rowan. Preserve the name.")[0].preserved, true);
+  assert.deepEqual(unsourcedFieldValues(["Name=Rowan Lee"], attempts, "Update the phone for Rowan. Preserve the name."), []);
+  assert.equal(unsourcedFieldValues(["Postal code=44002"], attempts, "44002 is my reference. Keep postal code unchanged.")[0].preserved, true);
+  assert.deepEqual(unsourcedFieldValues(["Postal code=44002"], attempts, "Change postal code to 44002."), []);
 });

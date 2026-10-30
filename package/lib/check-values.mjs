@@ -43,7 +43,16 @@ export function parseFields(raw) {
   }
 }
 
-export function checkValues({ request = "", history = "", fieldsJson = "", dataJson = "" } = {}) {
+function contextAttempts(history, historyFiles="") {
+  const paths=historyFiles ? JSON.parse(historyFiles) : [];
+  if(!Array.isArray(paths) || paths.some(value=>typeof value!=="string"))throw new Error("Invalid source history context");
+  const attempts=new Map();
+  let serial=0;
+  for(const file of [...new Set([...paths,history].filter(Boolean))]) for(const attempt of extractAttemptLog(file))attempts.set(attempt.callId || `unidentified-${serial++}`,attempt);
+  return [...attempts.values()];
+}
+
+export function checkValues({ request = "", history = "", fieldsJson = "", dataJson = "", historyFiles = "" } = {}) {
   // --data JSON values are checked exactly like --field values.
   const dataFields = dataEntries(dataJson).map(e => `${e.label}=${e.value}`);
   const dataConfirms = (() => {
@@ -53,7 +62,7 @@ export function checkValues({ request = "", history = "", fieldsJson = "", dataJ
     } catch { return false; }
   })();
   const fields = [...parseFields(fieldsJson), ...dataFields, ...(dataConfirms ? ["confirm=yes"] : [])];
-  const attempts = extractAttemptLog(history);
+  const attempts = contextAttempts(history,historyFiles);
   // Confirming commits everything entered so far, not just this call's own
   // values: check every value an earlier browser call typed in, too.
   const confirming = fields.some(f => /^\s*confirm\s*=\s*(yes|true)\s*$/i.test(String(f)));
@@ -121,12 +130,25 @@ export function confirmationWasAsked(attempts) {
 
 async function main(argv) {
   const options = parseArgs(argv);
+  options.historyFiles = options.historyFiles || process.env.AUX4_AGENT_HISTORY_FILES || "";
   // The person's original request, when the harness wrote it next to the history.
   if (options.requestFile) {
-    try { options.request = fs.readFileSync(options.requestFile, "utf8"); } catch {}
+    try { options.request = fs.readFileSync(options.requestFile, "utf8"); } catch { if(options.fieldsStdin)process.exit(1); }
+  }
+  if (options.fieldsStdin) {
+    let input;
+    try { input=JSON.parse(fs.readFileSync(0,"utf8")); } catch { process.exit(1); }
+    if (!input || !Array.isArray(input.fields) || !input.fields.length || input.fields.some(entry=>!entry || typeof entry.label!=="string" || typeof entry.value!=="string")) process.exit(1);
+    const available=input.availableChoices || {};
+    if (typeof available!=="object" || Array.isArray(available) || Object.values(available).some(values=>!Array.isArray(values) || values.some(value=>typeof value!=="string"))) process.exit(1);
+    const attempts=contextAttempts(options.history,options.historyFiles);
+    attempts.push({command:"native field choices",source:JSON.stringify({options:available})});
+    const missing=unsourcedFieldValues(input.fields,attempts,options.request);
+    if(missing.length){process.stdout.write("A field value needs the original request or an independent factual lookup.\n");process.exit(1);}
+    process.exit(0);
   }
   if (options.repeatReadGuard) {
-    const attempts = extractAttemptLog(options.history);
+    const attempts = contextAttempts(options.history,options.historyFiles);
     const reference = actionCommandHelp(options.command);
     const recipients = unsourcedRecipientValues(options.command, attempts, options.request, reference);
     const words = commandWords(options.command) || [];

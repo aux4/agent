@@ -17,6 +17,22 @@ excluded target must be left alone. Do not allow an additional change merely
 because earlier requested changes succeeded. Do not repeat an already successful
 send, creation or deletion.
 
+When delegatedGoal is true, this command hands a goal to a capability that will
+inspect and resolve its own page records. Check that the forwarded goal and
+proposedFields stay within the original request. Allow faithful goals and
+supported partial steps without requiring the parent to have already inspected
+the page or resolved its record identifiers. Do not require unknown form fields
+before inspection. A delegated goal must not introduce guessed required values.
+
+For required values that the request says to obtain from an existing record,
+require evidence of the value actually assigned to that record. Allowed options,
+examples, form labels, defaults and headings are possibilities, not proof of an
+assigned value. Earlier suppliedFields, fromGoal values, or a filled form echo
+are not independent evidence for those same values. If the request explicitly
+allows choosing a suitable available option, that choice is authorized. Translate
+explicit choices such as enable/disable into the corresponding boolean control
+state; preserve the requested direction and do not change unnamed choices.
+
 When commandReference documents an email-address parameter, a bare contact name
 is not a valid address. Require an exact address from the request or a successful
 read. Respect other documented identifier formats; do not infer routing values.

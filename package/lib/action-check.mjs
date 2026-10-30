@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { isChangeCommand, runAux4, parseJSONLoose, commandWords } from "./agent-loop.mjs";
+import { isChangeCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, isConclusiveAttempt } from "./agent-loop.mjs";
 export { actionCheckFiles, actionCheckStats } from "./agent-loop.mjs";
 
 // Read the installed command's contract; do not assume every --to is email
@@ -41,7 +41,7 @@ export function unsourcedActionIds(command, attempts = [], request = "", referen
     if (identifierParameter(required[index] || "")) targets.push({ parameter: required[index], value });
   });
   const sources = [request, ...attempts.filter(a => a.completed !== false && !a.failed
-    && !/(?:^|\s)--help(?:\s|$)/.test(a.command)).map(a => a.source ?? a.result ?? "")].map(String);
+    && !/(?:^|\s)--help(?:\s|$)/.test(a.command)).map(a => fieldEvidenceText(a.source ?? a.result ?? "",a.command))].map(String);
   const missing = [];
   for (const target of targets) {
     const defaultValue = reference.match(new RegExp(`^\\s*--${escapePattern(target.parameter)}\\s+\\[([^\\]]+)\\]`, "m"))?.[1];
@@ -67,24 +67,55 @@ export function unsourcedActionIds(command, attempts = [], request = "", referen
 
 export function authorizeAction(options, command, attempts = [], request = "", history = "", commandReference = undefined) {
   if (!isChangeCommand(command) || /(?:^|\s)--help(?:\s|$)/.test(command)) return { allow: true, skipped: true };
-  // A registered goal-level delegate owns inspection and its own action
-  // guards. Do not require the parent to know the page's target records before
-  // the delegate can inspect them. Concrete leaf writes remain checked here.
+  // A delegate may inspect targets the parent has not seen. Still validate
+  // the forwarded goal and concrete values against the ORIGINAL request.
   const words = commandWords(command) || [];
   const unprefixed = words[0] === 'aux4' ? words.slice(1) : words;
-  if ((options.delegatedPrefixes || []).some(prefix => {
+  const delegatedGoal = (options.delegatedPrefixes || []).some(prefix => {
     const parts = commandWords(prefix) || [];
     return parts.length > 0 && parts.every((part, index) => unprefixed[index] === part);
-  })) return { allow: true, skipped: true, delegated: true };
+  });
+  const canonical = value => {
+    const parts = commandWords(value) || [];
+    return JSON.stringify(parts[0] === "aux4" ? parts.slice(1) : parts);
+  };
+  // The engine already reserves completed writes. Enforce the same invariant
+  // before asking a model, while leaving incomplete delegates resumable.
+  if (attempts.some(attempt => isConclusiveAttempt(attempt) && canonical(attempt.command) === canonical(command))) {
+    return {allow: false, reason: "This exact change already succeeded. Reuse its result instead of performing it again."};
+  }
+  const confirming = confirmsAction(command);
+  const staged = new Map();
+  if (delegatedGoal && confirming) for (const attempt of attempts.filter(a => a.completed !== false && !a.failed)) {
+    const result = parseJSONLoose(attempt.source ?? attempt.result ?? "", null);
+    for (const [label, value] of Object.entries(result?.fromGoal || {})) {
+      if (typeof value === "string") staged.set(label, value);
+    }
+    // Explicit caller data overrides values inferred from a forwarded goal.
+    for (const entry of enteredValues(attempt.command)) staged.set(entry.label, entry.value);
+  }
+  for (const entry of enteredValues(command)) staged.set(entry.label, entry.value);
+  const candidateFields = [...staged].map(([label,value])=>({label,value}));
+  if (delegatedGoal) {
+    const goalAt=words.indexOf("--goal");
+    const goal=goalAt>=0 ? words[goalAt+1] || "" : "";
+    for (const choice of availableFieldChoices(attempts)) {
+      const exact=new RegExp(`(?:^|[^A-Za-z0-9])${escapePattern(choice.value)}(?:$|[^A-Za-z0-9])`,"i");
+      if(choice.value && exact.test(goal)) candidateFields.push({label:choice.label || "Required value",value:choice.value});
+    }
+  }
   // Keep command/result pairs together: a target's membership in a query is
   // evidence, while the target identifier on its own may mean nothing.
   let remaining = 24000;
   const evidence = attempts.filter(a => a.completed !== false && !a.failed && !/(?:^|\s)--help(?:\s|$)/.test(a.command)).map(a => {
-    const result = String(a.source ?? a.result ?? "").slice(0, Math.min(4000, remaining));
+    const source = delegatedGoal ? fieldEvidenceText(a.source ?? a.result ?? "",a.command) : String(a.source ?? a.result ?? "");
+    const result = source.slice(0, Math.min(4000, remaining));
     remaining -= result.length;
-    return { command: a.command, result };
+    return { command: a.command, result, suppliedFields: enteredValues(a.command) };
   });
-  const payload = { request, proposedAction: command, successfulActionsAndResults: evidence,
+  const payload = { request, proposedAction: command, delegatedGoal, confirming,
+    proposedFields: [...staged].map(([label, value]) => ({label, value})),
+    explicitlyPermittedChoices: candidateFields.filter(entry=>explicitOpenChoice(entry.label,entry.value,attempts,request)), successfulActionsAndResults: evidence,
     commandReference: commandReference ?? actionCommandHelp(command) };
   let auditBase = "";
   if (history) {
@@ -98,6 +129,14 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   if (options.config) args.push("--config", options.config);
   if (auditBase) args.push("--history", `${auditBase}.history.json`);
   args.push("--question", JSON.stringify(payload));
+  if(delegatedGoal) {
+    const unknownFields=unsourcedFieldValues([...new Set(candidateFields.map(({label,value})=>`${label}=${value}`))],attempts,request);
+    if(unknownFields.length){
+      const verdict={allow:false,delegated:true,reason: unknownFields.some(entry => entry.preserved) ? "The proposed fields change a value the request explicitly says to preserve. Keep its observed value unchanged." : `The value ${unknownFields.map(entry=>entry.label+"="+entry.value).join(", ")} is not established by the request or independent factual evidence. Available options, page labels and staged values do not establish an assigned record value. Look up the actual value or report it missing.`};
+      if(auditBase)fs.writeFileSync(`${auditBase}.verdict.json`,JSON.stringify(verdict,null,2));
+      return verdict;
+    }
+  }
   const unknownIds = unsourcedActionIds(command, attempts, request, payload.commandReference);
   if (unknownIds.length) {
     const verdict = { allow: false, reason: `The target identifier ${unknownIds.map(item => item.value).join(", ")} is not established by the request or successful tool evidence. Look up the named target before changing it.` };
@@ -108,5 +147,5 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   const parsed = result.ok ? parseJSONLoose(result.stdout, null) : null;
   const verdict = { allow: parsed?.allow === true, reason: String(parsed?.reason || "The proposed change could not be verified against the request and evidence.").slice(0, 500) };
   if (auditBase) fs.writeFileSync(`${auditBase}.verdict.json`, JSON.stringify(verdict, null, 2));
-  return verdict;
+  return { ...verdict, ...(delegatedGoal ? {delegated: true} : {}) };
 }
