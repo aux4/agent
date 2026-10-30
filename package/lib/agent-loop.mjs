@@ -2592,6 +2592,37 @@ export function hasNewReadSource(current, previous) {
   });
 }
 
+function failureEvidenceKey(attempt) {
+  if (!attempt?.failed) return "";
+  let text = String(attempt.source ?? attempt.result ?? "").trim();
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  const notFoundLine = lines.findIndex(line => /command not found:/i.test(line));
+  if (notFoundLine >= 0) {
+    const line = lines[notFoundLine];
+    const match = /command not found:/i.exec(line);
+    const after = line.slice(match.index + match[0].length);
+    const guidance = after.match(/\b(?:did you mean|available commands|commands you may run):[\s\S]*/i)?.[0] || "";
+    // Normalize the changing name and any generic tool-error wrapper. Keep
+    // explicit command suggestions and all subsequent diagnostic lines.
+    lines[notFoundLine] = `Command not found.${guidance ? ` ${guidance}` : ""}`;
+    text = lines.join("\n");
+    return readEvidenceKey({ source: text });
+  }
+  // Other failures count only when aux4 provided a concrete parameter repair.
+  // Generic tool errors, permissions, and arbitrary model text are not new facts.
+  if (!missingParameterHints([attempt]).length) return "";
+  return readEvidenceKey({ source: text });
+}
+
+function hasNewFailureEvidence(current, previous) {
+  const priorFailures = new Set(previous.map(failureEvidenceKey).filter(Boolean));
+  return current.some(attempt => {
+    const key = failureEvidenceKey(attempt);
+    return key && !priorFailures.has(key);
+  });
+}
+
 export function sameReadEvidence(current, previous) {
   const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
   const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
@@ -2956,18 +2987,23 @@ export async function runLoop(options, history, execute, recovery = "") {
     }
     // A reworded/repointed read of the same source, verifier status drift, and
     // result locator metadata are not progress by themselves. A genuinely new
-    // read source gets one bounded opportunity; new returned facts, a distinct
-    // non-read action, and completed state changes also remain progress.
+    // read source gets one bounded opportunity; new returned facts, new
+    // successful non-read evidence, and completed state changes also remain
+    // progress. A renamed failed command is not evidence of progress.
     const previousAttempts = attempts.slice(0, before);
     const currentAttempts = attempts.slice(before);
     const changedState = currentAttempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
     const currentReads = currentAttempts.some(a => !a.failed && isReadCommand(a.command));
     const newFacts = currentReads && !sameReadFacts(currentAttempts, previousAttempts);
     const newSource = hasNewReadSource(currentAttempts, previousAttempts);
-    const novelNonReadAction = currentAttempts.some(a => !isReadCommand(a.command)
-      && !previousAttempts.some(previous => previous.command === a.command));
+    const priorNonReadResults = new Set(previousAttempts
+      .filter(a => !a.failed && !isReadCommand(a.command))
+      .map(readFactsKey).filter(Boolean));
+    const newNonReadEvidence = currentAttempts.some(a => !a.failed && !isReadCommand(a.command)
+      && Boolean(readFactsKey(a)) && !priorNonReadResults.has(readFactsKey(a)));
+    const newFailureEvidence = hasNewFailureEvidence(currentAttempts, previousAttempts);
     if (!scopedContinuation && sameFailureShape(priorVerdict, lastVerdict)
-      && !changedState && !newFacts && !newSource && !novelNonReadAction) {
+      && !changedState && !newFacts && !newSource && !newNonReadEvidence && !newFailureEvidence) {
       return done("no-progress", attempt, incompleteNote(lastVerdict));
     }
     if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));

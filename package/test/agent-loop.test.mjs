@@ -865,21 +865,104 @@ test("composeDiagnoseQuestion carries the full list of commands a denial offered
   assert.match(q, /Commands you may run: .*aux4 x send/);
 });
 
-test("a retry that tried a new action is not stopped as no-progress", async () => {
+test("new non-read evidence is not stopped as no-progress", async () => {
   const fake = planVerifyFake({ verifyStatus: "fail" });
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
   await withAux4Bin(fake, async () => {
     let n = 0;
     const outcome = await runLoop(baseOptions(), history, (q, h) => {
       n++;
-      const prior = JSON.parse(fs.readFileSync(h, "utf8")).messages;
-      prior.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: `c${n}`, name: "executeAux4", args: { command: `try ${n}` } }] } });
-      prior.push({ role: "tool", tool_call_id: `c${n}`, content: "Error: no" });
-      fs.writeFileSync(h, JSON.stringify({ messages: prior }));
+      appendExecutionResult(h, `custom workflow step ${n}`, `New prerequisite evidence: token-${n}`, `c${n}`);
       return "not yet";
     });
     assert.equal(outcome.stopped, "budget");
     assert.equal(n, RETRY_BUDGET + 1);
+  });
+});
+
+test("renamed nonexistent non-read commands with unchanged outcomes stop as no-progress", async () => {
+  const fake = statusSequenceFake(["fail", "unverifiable", "fail"]);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      executions++;
+      const error = executions === 1
+        ? `Command not found: invented command ${executions}`
+        : `Error executing tool "executeAux4": Command not found: invented command ${executions}`;
+      appendExecutionResult(h, `invented command ${executions}`, error, `missing-${executions}`);
+      return "No task evidence was produced.";
+    });
+    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.attempts, 2);
+    assert.equal(executions, 2, "a different invalid command name is not a new action or source");
+  });
+});
+
+test("a new parameter precondition earns one recovery round, then an unchanged failure stops", async () => {
+  const fake = statusSequenceFake(["fail", "unverifiable", "fail"]);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      executions++;
+      if (executions === 1) {
+        appendExecutionResult(h, "records list", JSON.stringify({ records: [] }), "read-1");
+      } else {
+        appendExecutionResult(h, `records create --name item --option${executions}`, "Error to enter the value of employeeId", `precondition-${executions}`);
+      }
+      return "The task remains incomplete.";
+    });
+    assert.equal(outcome.stopped, "no-progress");
+    assert.equal(outcome.attempts, 3, "the distinct precondition is seen once; its identical repetition does not extend retries");
+    assert.equal(executions, 3);
+  });
+});
+
+test("a completed distinct action is recognized without being replayed", async () => {
+  const fake = statusSequenceFake(["fail", "unverifiable", "fail"]);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      executions++;
+      const command = "records update --recordId r1";
+      const result = executions === 1
+        ? JSON.stringify({ status: "done", recordId: "r1" })
+        : "Not run: this exact update was already completed in the previous round.";
+      appendExecutionResult(h, command, result, `update-${executions}`);
+      return "The record update returned.";
+    });
+    assert.equal(outcome.stopped, "unverifiable-only");
+    assert.equal(outcome.attempts, 2, "one verification retry follows the completed state change");
+    assert.equal(executions, 2);
+    assert.equal(extractAttemptLog(history).filter(attempt => !attempt.failed).length, 1, "the second attempt is refused, not executed");
+  });
+});
+
+test("staged needs-input remains blocked without treating a renamed command as progress", async () => {
+  const fake = statusSequenceFake(["fail"]);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    const outcome = await runLoop(baseOptions(), history, (question, h) => {
+      executions++;
+      if (executions === 1) {
+        appendExecutionResult(h, "records create --name item", JSON.stringify({
+          status: "needs-input",
+          confirmation: { action: "Create", target: "item", emptyFields: ["Required value"], next: "records create --name item --field confirm=yes" }
+        }), "create-1");
+        return "The tool is waiting for a required value.";
+      }
+      assert.match(question, /Required fields still empty: Required value/);
+      assert.doesNotMatch(question, /Run the confirmation now/);
+      return "BLOCKED: the required value is unavailable.";
+    });
+    assert.equal(outcome.stopped, "blocked");
+    assert.equal(outcome.attempts, 1);
+    assert.equal(executions, 2);
+    const attempts = extractAttemptLog(history);
+    assert.equal(attempts.some(attempt => attempt.command.includes("confirm=yes")), false);
   });
 });
 
@@ -1347,7 +1430,7 @@ test("fact comparison ignores only browser envelope locators and keeps fact-bear
 
   const changedRecordLocator = [{
     ...locatorOnly[0],
-    source: JSON.stringify({ answered: false, url: "https://example.test/a", matches: [{ text: "Directory", location: { url: "https://example.test/a/records/assigned-id" }, timestamp: "2025-12-02" }] })
+    source: JSON.stringify({ answered: false, url: "https://example.test/a", matches: [{ text: "Directory", location: { url: "https://example.test/a/records/assigned-id" }, timestamp: "2025-12-01" }] })
   }];
   assert.equal(sameReadFacts(changedRecordLocator, prior), false, "nested record/link locations remain evidence");
   const changedRecordDate = [{
