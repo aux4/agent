@@ -2568,6 +2568,39 @@ test("a completed execute handles only its fresh unrequested pending contract be
   });
 });
 
+test("guard recovery refreshes pending state before interpreting BLOCKED prose", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const request = "Save record item-42.";
+  const next = "records save --recordId item-42 --field confirm=yes";
+  const history = tmpFile("pending-from-guard-recovery.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let modelTurns = 0;
+    let dispatches = 0;
+    const outcome = await runLoop(baseOptions({ request, toolDispatchSupported: true }), history, (question, file) => {
+      modelTurns++;
+      if (modelTurns === 1) {
+        appendExecutionResult(file, "records update --recordId unknown", "Blocked by hook: ACTION_CHECK_EVIDENCE_REQUIRED: read the selected record first.", "initial-denial");
+        return "The proposed update was blocked.";
+      }
+      assert.match(question, /Unresolved guard and available lookup contract/);
+      appendExecutionResult(file, "agent browser run --goal 'Save record item-42'", JSON.stringify({
+        status: "needs-input",
+        confirmation: { action: "Save record item-42", target: "record item-42", emptyFields: [], next }
+      }), "fresh-pending");
+      return "BLOCKED: confirmation is still required.";
+    }, "", async (command, file) => {
+      dispatches++;
+      assert.equal(command, next, "recovery may continue only with the validated exact next command");
+      appendExecutionResult(file, command, JSON.stringify({ status: "done", submitted: true, recordId: "item-42" }), "exact-next");
+      return "Saved record item-42.";
+    });
+
+    assert.equal(modelTurns, 2, "there is one initial execution and one guard-recovery turn, with no blocked-text re-push");
+    assert.equal(dispatches, 1);
+    assert.equal(outcome.stopped, "pass");
+  });
+});
+
 test("monitored confirmation continuations advance two pending steps before verification", async () => {
   const fake = planVerifyFake({ verifyStatus: "pass" });
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
