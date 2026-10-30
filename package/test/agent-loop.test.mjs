@@ -759,6 +759,58 @@ test("isBlocked accepts the BLOCKED: mark, and the answer drops it", async () =>
   assert.equal(stripFailureClass("BLOCKED: I need the account password."), "I need the account password.");
 });
 
+test("isBlocked recognizes only an explicit uppercase first-token marker without a colon", () => {
+  for (const output of ["BLOCKED I need an employee ID.", "  BLOCKED\tI need an employee ID.", "BLOCKED", "BLOCKED:"]) {
+    assert.equal(isBlocked(output), true, JSON.stringify(output));
+  }
+  assert.equal(stripFailureClass("BLOCKED I need an employee ID."), "I need an employee ID.");
+  for (const output of ["Blocked by hook: try another route", "unBLOCKED", "The word BLOCKED appears here", '"BLOCKED I need an employee ID."']) {
+    assert.equal(isBlocked(output), false, JSON.stringify(output));
+  }
+  assert.equal(stripFailureClass("Blocked by hook: try another route"), "Blocked by hook: try another route");
+});
+
+test("runLoop returns a bare BLOCKED marker before invoking the verifier", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const outcome = await runLoop(baseOptions(), history, () => {
+      calls++;
+      return "BLOCKED I need the employee ID.";
+    });
+    assert.equal(outcome.stopped, "blocked");
+    assert.equal(outcome.attempts, 1);
+    assert.equal(calls, 1);
+    assert.equal(outcome.verdict, null);
+    assert.equal(outcome.metrics.rounds[0].verify, undefined);
+    assert.match(outcome.content, /need the employee ID/);
+  });
+});
+
+test("runLoop keeps the colon marker and ordinary narrative on their existing paths", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const blocked = await runLoop(baseOptions(), history, () => { calls++; return "BLOCKED: I need the employee ID."; });
+    assert.equal(blocked.stopped, "blocked");
+    assert.equal(blocked.attempts, 1);
+    assert.equal(calls, 1);
+    assert.equal(blocked.verdict, null);
+  });
+
+  const narrativeHistory = tmpFile("narrative-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const narrative = await runLoop(baseOptions(), narrativeHistory, () => { calls++; return "Blocked by hook: try another route."; });
+    assert.equal(narrative.stopped, "pass");
+    assert.equal(narrative.attempts, 1);
+    assert.equal(calls, 1);
+    assert.ok(narrative.verdict);
+  });
+});
+
 test("composeDiagnoseQuestion carries the full list of commands a denial offered", () => {
   const verdict = { overall: "fail", criteria: [{ criterion: "b", status: "fail", evidence: "not sent" }] };
   const long = "Permission denied: command \"x reply\" is not allowed. Commands you may run: " + Array.from({ length: 30 }, (_, i) => `aux4 cmd${i} list`).join(", ") + ", aux4 x send.";

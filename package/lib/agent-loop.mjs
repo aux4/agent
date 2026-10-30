@@ -2385,7 +2385,12 @@ export const BLOCKED_MARK = "BLOCKED:";
 
 export function isBlocked(executeOutput) {
   const text = String(executeOutput || "");
-  return text.trim().toUpperCase().startsWith(BLOCKED_MARK) || extractFailureClass(text) === "blocked";
+  const trimmed = text.trim();
+  // Preserve the original case-insensitive colon marker contract. The bare
+  // token form is deliberately stricter: it must be the first unquoted token
+  // and uppercase, with a token boundary after it.
+  const explicitToken = /^BLOCKED(?=$|[\s:])/.test(trimmed);
+  return trimmed.toUpperCase().startsWith(BLOCKED_MARK) || explicitToken || extractFailureClass(text) === "blocked";
 }
 
 // A retry that only described what it would do, without a single tool call.
@@ -2422,7 +2427,8 @@ export function describedWithoutDoing(content, roundToolCalls) {
 
 // The failure-class line is for the harness, not the requester.
 export function stripFailureClass(text) {
-  return String(text || "").replace(/^\s*FAILURE_CLASS:\s*[a-z_]+\s*\n?/gim, "").replace(/^\s*BLOCKED:\s*/i, "").trim();
+  return String(text || "").replace(/^\s*FAILURE_CLASS:\s*[a-z_]+\s*\n?/gim, "")
+    .replace(/^\s*BLOCKED:\s*/i, "").replace(/^\s*BLOCKED(?=\s|$)\s*/, "").trim();
 }
 
 export function appendStatusNote(content, note) {

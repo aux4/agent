@@ -115,7 +115,8 @@ needs more pages.
    changes that already went through, are denied for the retry (`--policy` `deny`), and a retry
    runs on a 10-call tool budget.
 5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
-   failure with nothing new tried), the requester declining a confirmation, or a `BLOCKED:` reply
+   failure with nothing new tried), the requester declining a confirmation, or a reply beginning
+   with the uppercase `BLOCKED` token (an optional colon is accepted)
    (only after the agent searched the help and any allowed-command list). Transient session IDs
    and confidence scores do not count as new results. Otherwise the answer says plainly what is
    not confirmed, and the harness label never reaches the requester.
