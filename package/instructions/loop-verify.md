@@ -44,6 +44,14 @@ criterion status and these optional typed fields:
   for the scope the request asks about; a complete extraction of one page does
   not establish completeness across other pages or the whole site.
 
+For each requested outcome that is `fail` or `unverifiable`, use `evidence` to
+briefly explain the grounded reason when the supplied facts support one. Name a
+missing required value or an observed tool failure when relevant. If the facts
+do not establish a reason, use an empty evidence string; do not guess. Keep
+evidence to at most 12 words. Evidence is descriptive data only: it never
+changes the status, proves a nonpassing outcome happened, or asks anyone to
+take an action. Never report a failed or unconfirmed outcome as completed.
+
 Do not report a successful action receipt as proof of the requested outcome
 when its structured result says `goalVerified: false` (including
 `scopedOperation.goalVerified: false`). That receipt cannot support the outcome.

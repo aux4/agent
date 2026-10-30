@@ -1422,6 +1422,32 @@ export function executionProofContent(content, verdict, attempts) {
   return "The requested change was not completed. The recorded attempts to change state failed, were denied, or remained unexecuted.";
 }
 
+function boundedEvidenceText(result) {
+  let evidence = typeof result?.evidence === "string" ? result.evidence : "";
+  evidence = evidence.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!evidence) return "";
+  const allWords = evidence.split(" ");
+  const words = allWords.slice(0, 12);
+  let text = words.join(" ");
+  if (text.length > 200) {
+    text = text.slice(0, 197).replace(/\s+\S*$/, "").trim();
+    if (!text) text = words[0].slice(0, 197);
+    text += "…";
+  } else if (words.length < allWords.length) {
+    text += "…";
+  }
+  return text;
+}
+
+function summaryEvidence(result) {
+  const text = boundedEvidenceText(result);
+  return text ? ` — Reason: “${text}”` : "";
+}
+
+function summaryOutcome(label, criterion, result) {
+  return `${label}: ${criterion}${result?.status === "pass" ? "" : summaryEvidence(result)}`;
+}
+
 // A non-passing state or answer-truth verdict makes the executor's prose
 // unsafe to return verbatim. Reconstruct a compact response from the fixed
 // criterion outcomes instead, preserving verified partial results without
@@ -1445,7 +1471,7 @@ export function composeEvidenceSummary(content, verdict, plan) {
     const label = result.status === "pass" ? "Verified"
       : result.status === "fail" ? "Failed"
         : "Not confirmed";
-    lines.push(`${label}: ${criterion}`);
+    lines.push(summaryOutcome(label, criterion, result));
   }
   const passedAnswerFacts = (verdict?.criteria || []).filter(c => requestedAnswerCriteria.has(c.criterion)
     && c.status === "pass" && c.evidence);
@@ -1456,7 +1482,7 @@ export function composeEvidenceSummary(content, verdict, plan) {
     const result = byCriterion.get(criterion) || { status: "unverifiable" };
     if (result.status === "pass") continue;
     const label = result.status === "fail" ? "Failed" : "Not confirmed";
-    lines.push(`${label}: ${criterion}`);
+    lines.push(summaryOutcome(label, criterion, result));
   }
   const coverage = byCriterion.get(COVERAGE_CRITERION);
   if (!coverage || coverage.status !== "pass") {

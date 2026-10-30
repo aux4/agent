@@ -109,8 +109,10 @@ needs more pages.
    `unverifiable`. A reply cut off mid-JSON is salvaged; an unparseable one is asked once more.
    Final output is rebuilt from criterion outcomes whenever any required outcome or guard check is
    failed, unknown, or missing: verified partial state and verified answer facts remain, failed
-   outcomes are labeled `Failed`, and unknown outcomes are `Not confirmed`. Unsupported executor
-   prose and internal guard labels are omitted; an all-pass answer is returned unchanged.
+   outcomes are labeled `Failed`, and unknown outcomes are `Not confirmed`. Concise verifier
+   evidence explains failed or unconfirmed requested criteria when available; it is descriptive
+   only and does not establish completion. Unsupported executor prose and internal guard labels
+   are omitted; an all-pass answer is returned unchanged.
 4. **Retry.** If anything is not a pass: when only `answer` criteria failed and any requested
    state change is supported by action evidence, the agent rewrites its answer without acting
    again; otherwise it gets the unmet criteria, the attempt log, any list of
