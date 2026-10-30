@@ -1238,6 +1238,16 @@ export function composeNotConfirmedQuestion(unsourced) {
 
 export const PROVENANCE_CRITERION = "every value entered or sent came from the request or a tool result";
 
+function observedChange(attempt) {
+  if (attempt.failed || attempt.completed === false || !isChangeCommand(attempt.command)) return false;
+  return isConclusiveAttempt(attempt) || parseJSONLoose(attempt.source ?? attempt.result ?? "", null)?.submitted === true;
+}
+
+export function executionProofContent(content, verdict, attempts) {
+  if (!verdict?.executionEvidenceMissing || attempts.some(observedChange)) return content;
+  return "The requested change was not completed. The recorded attempts to change state failed, were denied, or remained unexecuted.";
+}
+
 // State-changing outcomes cannot be confirmed solely from failed or
 // unexecuted writes. Read-only/absence criteria and already-satisfied tasks
 // with no failed write attempt retain their normal verification.
@@ -1245,8 +1255,8 @@ export function applyExecutionProof(verdict, plan, attempts) {
   const state = new Set((plan.stateCriteria || []).filter(text => !NO_CHANGE_CRITERION.test(text) && !/^\s*(?:no|none|nothing|without)\b/i.test(text)
     && (CHANGE_VERB.test(text) || CHANGE_RESULT_WORD.test(text))));
   if (!state.size || !attempts.some(a => !isConclusiveAttempt(a) && isChangeCommand(a.command))
-    || attempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command))) return verdict;
-  return {...verdict, overall:"fail", criteria:verdict.criteria.map(criterion => state.has(criterion.criterion)
+    || attempts.some(observedChange)) return verdict;
+  return {...verdict, overall:"fail", executionEvidenceMissing:true, criteria:verdict.criteria.map(criterion => state.has(criterion.criterion)
     ? {...criterion,status:"unverifiable",evidence:"No successful state-changing action was observed. Failed, denied, or unexecuted calls cannot establish that the requested change happened."}
     : criterion)};
 }
@@ -2326,7 +2336,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       .reduce((acc, s) => addStats(acc, s), {});
     saveMetrics(history, metrics);
     return {
-      content: appendStatusNote(stripFailureClass(String(lastContent || "").trim() ? lastContent : lastAnswer), note),
+      content: appendStatusNote(executionProofContent(stripFailureClass(String(lastContent || "").trim() ? lastContent : lastAnswer), lastVerdict, extractAttemptLog(history)), note),
       plan,
       verdict: lastVerdict,
       stopped,

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.44
+
+- Suppress false success claims when completion lacks execution evidence, while recognizing a recorded submission followed by a later incomplete step.
+
 ## 4.1.43
 
 - Give malformed authorization replies one bounded re-evaluation while honoring valid denials; record both checks and require a valid boolean decision.

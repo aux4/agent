@@ -17,6 +17,7 @@ import {
   availableFieldChoices,
   applyProvenance,
   applyExecutionProof,
+  executionProofContent,
   activeDelegations,
   delegatedDenyPatterns,
   addDenyPatterns,
@@ -2265,4 +2266,15 @@ test("failed writes cannot be certified as completed state changes", () => {
   assert.equal(applyExecutionProof(verdict,{stateCriteria:[]},[...reads,failed]).overall,"pass");
   assert.equal(applyExecutionProof(verdict,{stateCriteria:["No notification was sent."]},[...reads,failed]).overall,"pass");
   assert.equal(applyExecutionProof(verdict,plan,reads).overall,"pass");
+});
+
+
+test("an unexecuted change cannot leak a false success claim into the final answer", () => {
+  const verdict={executionEvidenceMissing:true};
+  const failed={command:"messages send",failed:true,source:"Blocked by hook"};
+  assert.match(executionProofContent("I sent the notification.",verdict,[failed]),/was not completed/);
+  assert.doesNotMatch(executionProofContent("I sent the notification.",verdict,[failed]),/I sent/);
+  assert.equal(executionProofContent("I sent the notification.",verdict,[failed,{command:"messages send",source:'{"id":"sent7"}'}]),"I sent the notification.");
+  const submitted={command:"agent browser run",source:'{"status":"needs-input","submitted":true}'};
+  assert.equal(executionProofContent("A change was saved; a later step needs input.",verdict,[submitted]),"A change was saved; a later step needs input.");
 });
