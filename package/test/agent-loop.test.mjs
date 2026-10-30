@@ -2417,23 +2417,23 @@ test("a clearly requested irreversible action is confirmed in the SAME round -- 
   await withAux4Bin(fake, async () => {
     const options = { ...baseOptions(), request: "Save the shipping details for Jamie Fox." };
     const next = "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'";
+    let modelCalls = 0;
     const seen = [];
     const outcome = await runLoop(options, history, (question, h) => {
-      seen.push({ question, gate: [...(options.gateDeny || [])] });
-      if (seen.length === 1) {
-        fs.writeFileSync(h, pendingConfirmFixture("Save", next));
-        return "It needs confirmation before saving.";
-      }
-      const prior = JSON.parse(fs.readFileSync(h, "utf8")).messages;
-      prior.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: "c2", name: "executeAux4", args: { command: next } }] } });
-      prior.push({ role: "tool", tool_call_id: "c2", content: '{"status":"done"}' });
-      fs.writeFileSync(h, JSON.stringify({ messages: prior }));
+      modelCalls++;
+      assert.ok(question);
+      fs.writeFileSync(h, pendingConfirmFixture("Save", next));
+      return "It needs confirmation before saving.";
+    }, "", async (command, h) => {
+      seen.push({ command, gate: [...(options.gateDeny || [])] });
+      assert.equal(command, next);
+      appendExecutionResult(h, command, '{"status":"done","submitted":true}', "saved");
       return "Saved the shipping details.";
     });
-    assert.equal(seen.length, 2);
-    assert.match(seen[1].question, /Run the next command now/);
-    assert.match(seen[1].question, new RegExp(next.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.deepEqual(seen[1].gate, []);
+    assert.equal(modelCalls, 1);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].command, next);
+    assert.deepEqual(seen[0].gate, []);
     assert.equal(outcome.stopped, "pass");
     // one round, not a retry: the loop never looped back for a second attempt.
     assert.equal(outcome.attempts, 1);
@@ -2450,21 +2450,26 @@ test("monitored confirmation continuations advance two pending steps before veri
       { status: "needs-input", step: 1, confirmation: { action: "Save record", target: "record A", emptyFields: [], next } },
       { status: "needs-input", step: 2, confirmation: { action: "Save record", target: "record A", emptyFields: [], next } }
     ];
-    const seen = [];
+    const modelTurns = [];
+    const dispatched = [];
     const outcome = await runLoop(options, history, (question, h) => {
-      seen.push({ question, gate: [...(options.gateDeny || [])], hooksFile: options.hooksFile });
-      if (seen.length <= 2) {
-        appendExecutionResult(h, next, JSON.stringify(contracts[seen.length - 1]), `step-${seen.length}`);
-        return { content: `Confirmation step ${seen.length} is pending.`, stopReason: "confirmation" };
+      modelTurns.push(question);
+      appendExecutionResult(h, "agent browser run --goal 'Save the selected record'", JSON.stringify(contracts[0]), "initial-pending");
+      return { content: "A confirmation is pending.", stopReason: "confirmation" };
+    }, "", async (command, h, _denied, _retry, _patterns) => {
+      dispatched.push({ command, gate: [...(options.gateDeny || [])], hooksFile: options.hooksFile });
+      assert.equal(command, next, "the controller dispatch receives the exact next string");
+      if (dispatched.length === 1) {
+        appendExecutionResult(h, command, JSON.stringify(contracts[1]), "step-2");
+        return { content: "Confirmation step 2 is pending.", stopReason: "confirmation" };
       }
-      assert.match(question, /Run the next command now/);
-      assert.match(question, /agent browser run --session 's1'.*confirm=yes/);
-      appendExecutionResult(h, next, JSON.stringify({ status: "done", submitted: true, recordId: "record A" }), "done");
+      appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, recordId: "record A" }), "done");
       return "The record was deleted.";
     });
-    assert.equal(seen.length, 3, "both fresh confirmation stages are continued in one bounded round");
-    assert.deepEqual(seen.slice(1).map(call => call.gate), [[], []]);
-    assert.deepEqual(seen.map(call => call.hooksFile), ["fixed-hooks.json", "fixed-hooks.json", "fixed-hooks.json"], "normal before-hooks remain configured for every continuation");
+    assert.equal(modelTurns.length, 1, "exact continuations do not request another model decision");
+    assert.equal(dispatched.length, 2, "each fresh pending stage is dispatched once");
+    assert.deepEqual(dispatched.map(call => call.gate), [[], []]);
+    assert.deepEqual(dispatched.map(call => call.hooksFile), ["fixed-hooks.json", "fixed-hooks.json"], "normal before-hooks remain configured for every dispatch");
     assert.equal(outcome.stopped, "pass");
     assert.ok(outcome.metrics.rounds[0].verify, "verification occurs only after the explicit terminal result");
   });
@@ -2476,15 +2481,42 @@ test("a repeated identical pending confirmation stops without verification", asy
   await withAux4Bin(fake, async () => {
     const next = "agent browser run --session 's1' --goal 'Save the selected record' --field 'confirm=yes'";
     const pending = JSON.stringify({ status: "needs-input", confirmation: { action: "Save record", target: "record A", emptyFields: [], next } });
-    let calls = 0;
-    const outcome = await runLoop({ ...baseOptions(), request: "Save the selected record." }, history, (question, h) => {
-      calls++;
-      appendExecutionResult(h, next, pending, `pending-${calls}`);
+    let modelCalls = 0;
+    let dispatchCalls = 0;
+    const outcome = await runLoop({ ...baseOptions(), request: "Save the selected record." }, history, (_question, h) => {
+      modelCalls++;
+      appendExecutionResult(h, "records save", pending, "pending-initial");
+      return { content: "The same confirmation is still pending.", stopReason: "confirmation" };
+    }, "", async (command, h) => {
+      dispatchCalls++;
+      assert.equal(command, next);
+      appendExecutionResult(h, command, pending, `pending-${dispatchCalls}`);
       return { content: "The same confirmation is still pending.", stopReason: "confirmation" };
     });
-    assert.equal(calls, 2, "the exact next is tried once, then an unchanged contract is bounded");
+    assert.equal(modelCalls, 1);
+    assert.equal(dispatchCalls, 1, "the exact next is dispatched once, then an unchanged contract is bounded");
     assert.equal(outcome.stopped, "needs-confirmation");
     assert.equal(outcome.metrics.rounds[0].verify, undefined, "a pending action is never passed to the verifier as completed");
+    assert.match(outcome.content, /has not been submitted/);
+  });
+});
+
+test("a pending continuation stays blocked when the installed ai-agent lacks exact dispatch capability", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("no-dispatch-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const next = "records delete --recordId R-7 --field confirm=yes";
+    let modelCalls = 0;
+    const outcome = await runLoop({ ...baseOptions(), request: "Delete record R-7." }, history, (_question, h) => {
+      modelCalls++;
+      appendExecutionResult(h, "records delete --recordId R-7", JSON.stringify({
+        status: "needs-input", confirmation: { action: "Delete record", target: "record R-7", emptyFields: [], next }
+      }), "pending");
+      return { content: "Confirmation is pending.", stopReason: "confirmation" };
+    });
+    assert.equal(modelCalls, 1);
+    assert.equal(outcome.stopped, "needs-confirmation");
+    assert.equal(outcome.metrics.rounds[0].verify, undefined);
     assert.match(outcome.content, /has not been submitted/);
   });
 });
@@ -2495,18 +2527,21 @@ test("yielded unrequested actions ask, and yielded missing inputs never submit",
     const unrequestedHistory = tmpFile("unrequested-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
     const next = "agent browser run --session s1 --goal 'Save record' --field confirm=yes";
     let unrequestedCalls = 0;
+    let unrequestedDispatches = 0;
     const unrequested = await runLoop({ ...baseOptions(), request: "Look up the selected record." }, unrequestedHistory, (question, h) => {
       unrequestedCalls++;
       appendExecutionResult(h, "agent browser run --goal 'Save record'", JSON.stringify({
         status: "needs-input", confirmation: { action: "Save record", target: "record A", emptyFields: [], next }
       }), "unrequested");
       return { content: "Waiting for approval.", stopReason: "confirmation" };
-    });
+    }, "", async () => { unrequestedDispatches++; assert.fail("unrequested actions must not dispatch"); });
     assert.equal(unrequestedCalls, 1);
+    assert.equal(unrequestedDispatches, 0);
     assert.equal(unrequested.stopped, "needs-confirmation");
 
     const missingHistory = tmpFile("missing-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
     let missingCalls = 0;
+    let missingDispatches = 0;
     const missing = await runLoop({ ...baseOptions(), request: "Create a record." }, missingHistory, (question, h) => {
       missingCalls++;
       if (missingCalls === 1) {
@@ -2517,13 +2552,15 @@ test("yielded unrequested actions ask, and yielded missing inputs never submit",
       }
       assert.match(question, /Required fields still empty: Record name/);
       return "BLOCKED: the record name was not supplied or found.";
-    });
+    }, "", async () => { missingDispatches++; assert.fail("missing fields must not dispatch"); });
     assert.equal(missingCalls, 2);
+    assert.equal(missingDispatches, 0);
     assert.equal(missing.stopped, "blocked");
     assert.equal(extractAttemptLog(missingHistory).some(attempt => /confirm=yes/.test(attempt.command)), false);
 
     const readHistory = tmpFile("read-only-recovery-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
     let readCalls = 0;
+    let readDispatches = 0;
     const readOnlyRecovery = await runLoop({ ...baseOptions(), request: "Create a record." }, readHistory, (question, h) => {
       readCalls++;
       if (readCalls === 1) {
@@ -2534,14 +2571,16 @@ test("yielded unrequested actions ask, and yielded missing inputs never submit",
       }
       appendExecutionResult(h, "agent browser inspect --session s1", JSON.stringify({ status: "done", observations: { current: "No record name was shown." } }), "inspect-only");
       return "I inspected the current page, but it does not show a record name.";
-    });
+    }, "", async () => { readDispatches++; assert.fail("read-only recovery cannot dispatch a pending write"); });
     assert.equal(readCalls, 2);
+    assert.equal(readDispatches, 0);
     assert.equal(readOnlyRecovery.stopped, "needs-input", "inspection text is not an explicit cleared-field contract");
     assert.equal(extractAttemptLog(readHistory).some(attempt => /confirm=yes/.test(attempt.command)), false);
 
     const completedHistory = tmpFile("exact-continuation-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
     const exactNext = "records create --name Alpha --field confirm=yes";
     let completionCalls = 0;
+    let completionDispatches = 0;
     const completedRecovery = await runLoop({ ...baseOptions(), request: "Create a record named Alpha." }, completedHistory, (question, h) => {
       completionCalls++;
       if (completionCalls === 1) {
@@ -2553,8 +2592,9 @@ test("yielded unrequested actions ask, and yielded missing inputs never submit",
       assert.match(question, /Required fields still empty: Record name/);
       appendExecutionResult(h, exactNext, JSON.stringify({ status: "done", submitted: true, recordId: "record A" }), "exact-submit");
       return "Created the record.";
-    });
+    }, "", async () => { completionDispatches++; assert.fail("the unresolved required field blocks continuation dispatch"); });
     assert.equal(completionCalls, 2);
+    assert.equal(completionDispatches, 0);
     assert.equal(completedRecovery.stopped, "pass", "only the exact conclusive continuation clears the pending missing-input state");
     assert.ok(completedRecovery.metrics.rounds[0].verify);
   });
@@ -2566,12 +2606,14 @@ test("an irreversible action beyond the request stops and asks -- no retry (HARN
   await withAux4Bin(fake, async () => {
     const options = { ...baseOptions(), request: "Look up the shipping details for Jamie Fox." };
     let calls = 0;
+    let dispatches = 0;
     const outcome = await runLoop(options, history, (question, h) => {
       calls++;
       fs.writeFileSync(h, pendingConfirmFixture("Save", "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'"));
       return "It needs confirmation before saving.";
-    });
+    }, "", async () => { dispatches++; assert.fail("an unrequested change must not dispatch"); });
     assert.equal(calls, 1);
+    assert.equal(dispatches, 0);
     assert.equal(outcome.stopped, "needs-confirmation");
     assert.match(outcome.content, /Save/);
   });
@@ -2583,12 +2625,14 @@ test("an ambiguous case -- the request asks for a different change than the pend
   await withAux4Bin(fake, async () => {
     const options = { ...baseOptions(), request: "Send the shipping details to Jamie Fox." };
     let calls = 0;
+    let dispatches = 0;
     const outcome = await runLoop(options, history, (question, h) => {
       calls++;
       fs.writeFileSync(h, pendingConfirmFixture("Save", "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'"));
       return "It needs confirmation before saving.";
-    });
+    }, "", async () => { dispatches++; assert.fail("a different requested action must not dispatch"); });
     assert.equal(calls, 1);
+    assert.equal(dispatches, 0);
     assert.equal(outcome.stopped, "needs-confirmation");
   });
 });
@@ -2599,24 +2643,23 @@ test("the check-values hook keeps applying to the same-round confirm follow-up (
   await withAux4Bin(fake, async () => {
     const options = { ...baseOptions(), request: "Save the shipping details for Jamie Fox.", hooksSupported: true, hooksFile: "fixed-hooks.json" };
     const next = "agent browser run --session 's1' --goal 'g' --field 'confirm=yes'";
+    let modelCalls = 0;
     const seen = [];
-    await runLoop(options, history, (question, h) => {
-      seen.push({ hooksFile: options.hooksFile, gate: [...(options.gateDeny || [])] });
-      if (seen.length === 1) {
-        fs.writeFileSync(h, pendingConfirmFixture("Save", next));
-        return "needs confirmation";
-      }
-      const prior = JSON.parse(fs.readFileSync(h, "utf8")).messages;
-      prior.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: "c2", name: "executeAux4", args: { command: next } }] } });
-      prior.push({ role: "tool", tool_call_id: "c2", content: '{"status":"done"}' });
-      fs.writeFileSync(h, JSON.stringify({ messages: prior }));
+    await runLoop(options, history, (_question, h) => {
+      modelCalls++;
+      fs.writeFileSync(h, pendingConfirmFixture("Save", next));
+      return "needs confirmation";
+    }, "", async (command, h) => {
+      seen.push({ command, hooksFile: options.hooksFile, gate: [...(options.gateDeny || [])] });
+      appendExecutionResult(h, command, '{"status":"done","submitted":true}', "saved");
       return "saved";
     });
+    assert.equal(modelCalls, 1);
     // hooksFile (how the check-values before-hook is wired) is never touched by
     // this feature -- only gateDeny is opened for the one follow-up call.
+    assert.equal(seen[0].command, next);
     assert.equal(seen[0].hooksFile, "fixed-hooks.json");
-    assert.equal(seen[1].hooksFile, "fixed-hooks.json");
-    assert.deepEqual(seen[1].gate, []);
+    assert.deepEqual(seen[0].gate, []);
   });
 });
 
@@ -2859,6 +2902,7 @@ test("supplied data can clear a missing field before same-round confirmation",as
   await withAux4Bin(fake,async()=>{
     const next="agent forms run --session s1 --field confirm=yes";
     const questions=[];
+    let dispatches=0;
     const result=await runLoop({...baseOptions(),request:'Save the application using badge B7.'},history,(question,h)=>{
       questions.push(question);
       if(questions.length===1){
@@ -2867,17 +2911,17 @@ test("supplied data can clear a missing field before same-round confirmation",as
         data.messages[1].content=JSON.stringify(contract);fs.writeFileSync(h,JSON.stringify(data));
         return 'Waiting for a field.';
       }
-      const data=JSON.parse(fs.readFileSync(h,'utf8'));
-      const id='c'+questions.length;
-      const command=questions.length===2?'agent forms run --field badge=B7':next;
-      const content=questions.length===2?JSON.stringify({status:'needs-input',confirmation:{action:'Save',target:'Save',emptyFields:[],next}}):'{"status":"done"}';
-      data.messages.push({role:'assistant_with_tool',content:{tool_calls:[{id,name:'executeAux4',args:{command}}]}},{role:'tool',tool_call_id:id,content});
-      fs.writeFileSync(h,JSON.stringify(data));
-      return questions.length===2?'Ready to save.':'Saved.';
+      appendExecutionResult(h,'agent forms run --field badge=B7',JSON.stringify({status:'needs-input',confirmation:{action:'Save',target:'Save',emptyFields:[],next}}),'field-resolved');
+      return 'Ready to save.';
+    },"",async(command,h)=>{
+      dispatches++;
+      assert.equal(command,next);
+      appendExecutionResult(h,command,'{"status":"done","submitted":true}','saved');
+      return 'Saved.';
     });
-    assert.equal(questions.length,3);
+    assert.equal(questions.length,2);
+    assert.equal(dispatches,1);
     assert.match(questions[1],/badge B7/);
-    assert.match(questions[2],/Run the next command now/);
     assert.equal(result.stopped,'pass');
     assert.equal(result.attempts,1);
   });

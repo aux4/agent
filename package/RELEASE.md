@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.59
+
+- Dispatch validated pending-confirmation continuations through ai-agent's exact model-free `executeAux4` tool-call interface, retaining the normal hooks, policy, allow-list, and history checks. This requires aux4/ai-agent 1.3.28 or newer.
+
 ## 4.1.58
 
 - Yield the monitored agent run as soon as it emits a fresh valid pending-confirmation contract, then follow bounded exact continuations through normal hooks and verify only after the pending step completes.

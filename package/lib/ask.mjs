@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   runLoop, mergeDenyPolicy, addDenyPatterns, capRetryBudget, runAux4Monitored, activeDelegations, delegatedDenyPatterns,
-  detectAiAgentHooksSupport, writeCheckValuesHooksFile
+  detectAiAgentHooksSupport, detectAiAgentToolDispatchSupport, writeCheckValuesHooksFile
 } from "./agent-loop.mjs";
 
 // Flags arrive as `--name value` pairs; empty or missing values drop out.
@@ -52,6 +52,13 @@ export function buildAskArgs(options, history, question, deniedCommands = [], re
   return args;
 }
 
+export function buildContinuationArgs(options, history, command, deniedCommands = [], retry = false, targetPatterns = []) {
+  if (typeof command !== "string" || !command.trim()) throw new Error("A validated continuation command is required.");
+  const args = buildAskArgs(options, history, options.request || "", deniedCommands, retry, targetPatterns);
+  args.push("--toolCall", JSON.stringify({ name: "executeAux4", args: { command } }));
+  return args;
+}
+
 export async function main(argv) {
   const options = parseArgs(argv);
   options.delegations = activeDelegations();
@@ -64,6 +71,7 @@ export async function main(argv) {
   // one for the value-provenance check (agent-loop.mjs checkValuesHooksFile)
   // instead of the two-round confirmation gate -- same check, one round.
   options.hooksSupported = detectAiAgentHooksSupport();
+  options.toolDispatchSupported = detectAiAgentToolDispatchSupport();
   if (options.hooksSupported) {
     options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, options.request, options);
   }
@@ -71,14 +79,14 @@ export async function main(argv) {
     fs.mkdirSync(path.dirname(path.resolve(history)), {recursive:true});
     fs.writeFileSync(`${history}.request.txt`, String(options.request || ""));
   }
-  const execute = async (question, h, deniedCommands, retry = false, targetPatterns = []) => {
+  const runMonitored = async (args, h) => {
     const env = history && options.packageDir ? {
       AUX4_AGENT_FIELD_GUARD: process.env.AUX4_AGENT_FIELD_GUARD || path.resolve(options.packageDir,"lib/check-values.mjs"),
       AUX4_AGENT_REQUEST_FILE: options.authorityRequestFile,
       AUX4_AGENT_HISTORY_FILE: path.resolve(h),
       AUX4_AGENT_HISTORY_FILES: JSON.stringify([...new Set([...JSON.parse(process.env.AUX4_AGENT_HISTORY_FILES || "[]"),path.resolve(h)])])
     } : {};
-    const result = await runAux4Monitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h, {
+    const result = await runAux4Monitored(args, h, {
       env,
       yieldOnConfirmationContract: true
     });
@@ -106,7 +114,13 @@ export async function main(argv) {
     }
     return result.stdout.trim();
   };
-  const outcome = await runLoop(options, history, execute);
+  const execute = (question, h, deniedCommands, retry = false, targetPatterns = []) =>
+    runMonitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h);
+  const executeContinuation = options.toolDispatchSupported
+    ? (command, h, deniedCommands, retry = false, targetPatterns = []) =>
+      runMonitored(buildContinuationArgs(options, h, command, deniedCommands, retry, targetPatterns), h)
+    : null;
+  const outcome = await runLoop(options, history, execute, "", executeContinuation);
   process.stdout.write(`${outcome.content}\n`);
 }
 

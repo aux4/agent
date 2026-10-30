@@ -1816,6 +1816,7 @@ export function composeNeedsConfirmationAnswer(pending) {
 // assumed, by probing the installed ai-agent's own --help for `--hooks` --
 // an older ai-agent silently keeps using the gate.
 let hooksSupportCache = null;
+let toolDispatchSupportCache = null;
 
 export function detectAiAgentHooksSupport() {
   if (hooksSupportCache !== null) return hooksSupportCache;
@@ -1831,6 +1832,22 @@ export function detectAiAgentHooksSupport() {
 // Exposed for tests -- never call from production code outside this module.
 export function resetHooksSupportCacheForTests() {
   hooksSupportCache = null;
+  toolDispatchSupportCache = null;
+}
+
+// Exact continuation dispatch is safe only when the installed ai-agent can
+// invoke a controller-specified executeAux4 call through its bound tool stack.
+// Older versions keep the pending action blocked; they must never fall back to
+// asking a model to imitate this dispatch.
+export function detectAiAgentToolDispatchSupport() {
+  if (toolDispatchSupportCache !== null) return toolDispatchSupportCache;
+  try {
+    const result = runAux4(["ai", "agent", "ask", "--help"], { allowFailure: true });
+    toolDispatchSupportCache = result.ok && /--toolCall\b/.test(result.stdout);
+  } catch {
+    toolDispatchSupportCache = false;
+  }
+  return toolDispatchSupportCache;
 }
 
 export function checkValuesHooksFile(packageDir, requestFile = "", guardOptionsFile = "", scopedContinuationFile = "") {
@@ -3113,7 +3130,7 @@ export function incompleteNote(verdict) {
 // single conversation turn. `execute(question, history, denyCommands)` must
 // perform one real execution turn (a normal `aux4 ai agent ask` call against
 // the caller's own history/conversation) and return its stdout text.
-export async function runLoop(options, history, execute, recovery = "") {
+export async function runLoop(options, history, execute, recovery = "", executeContinuation = null) {
   const planStart = Date.now();
   const planHistory = phaseHistoryPath(history, "plan-run");
   const plan = buildPlan(options, planHistory);
@@ -3161,11 +3178,11 @@ export async function runLoop(options, history, execute, recovery = "") {
   };
   let innerStopReason = "";
   let lastExecutionPending = null;
-  const runExecution = async (...args) => {
+  const runWithExecutor = async (executor, ...args) => {
     const beforeRun = extractAttemptLog(history).length;
     confirmationYielded = false;
     lastExecutionPending = null;
-    const result = await execute(...args);
+    const result = await executor(...args);
     if (result && typeof result === "object" && !Array.isArray(result)) {
       innerStopReason = String(result.stopReason || "");
       if (innerStopReason === "confirmation") {
@@ -3176,6 +3193,8 @@ export async function runLoop(options, history, execute, recovery = "") {
     innerStopReason = "";
     return String(result ?? "");
   };
+  const runExecution = (...args) => runWithExecutor(execute, ...args);
+  const runContinuation = (...args) => runWithExecutor(executeContinuation, ...args);
   const stopAfterExecution = attempt => {
     if (!innerStopReason) return null;
     const reason = innerStopReason;
@@ -3370,6 +3389,10 @@ export async function runLoop(options, history, execute, recovery = "") {
         return done("needs-confirmation", attempt);
       }
 
+      if (typeof executeContinuation !== "function") {
+        return stopPending(pending, "No exact tool dispatcher is configured; the continuation was not delegated to a model and no success was assumed.");
+      }
+
       if (confirmationSteps >= confirmationStepLimit) {
         return stopPending(pending, "The bounded confirmation continuation limit was reached; no success was assumed.");
       }
@@ -3378,7 +3401,7 @@ export async function runLoop(options, history, execute, recovery = "") {
       const priorGate = options.gateDeny;
       options.gateDeny = [];
       try {
-        lastContent = await runExecution(composeRunNextQuestion(pending), history, deniedCommands, false, deniedPatterns);
+        lastContent = await runContinuation(pending.next, history, deniedCommands, false, deniedPatterns);
       } finally {
         options.gateDeny = priorGate;
       }

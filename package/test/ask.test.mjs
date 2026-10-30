@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseArgs, buildAskArgs } from "../lib/ask.mjs";
+import { parseArgs, buildAskArgs, buildContinuationArgs } from "../lib/ask.mjs";
 
 test("parseArgs reads --name value pairs and keeps empty values empty", () => {
   const o = parseArgs(["--configFile", "c.yaml", "--config", "", "--tools", "executeAux4", "--request", "do it"]);
@@ -31,4 +31,21 @@ test("buildAskArgs adds the delegated deny patterns to the policy", () => {
   const args = buildAskArgs({ packageDir: "/p", delegatedDeny: ["browser", "browser *"] }, "h.json", "q");
   const policy = JSON.parse(args[args.indexOf("--policy") + 1]);
   assert.deepEqual(policy.deny, [{ executeAux4: ["browser", "browser *"] }]);
+});
+
+test("buildContinuationArgs encodes the exact controller command for the tool-only ai-agent path", () => {
+  const options = {
+    configFile: "c.yaml", packageDir: "/pkg", request: "Delete the selected item.",
+    hooksFile: "/tmp/hooks.json", tools: "executeAux4", policy: '{"budget":{"calls":8}}'
+  };
+  const command = `agent browser run --session 's1' --goal 'Delete the selected item' --field 'confirm=yes'`;
+  const args = buildContinuationArgs(options, "h.json", command, [], false, ["other delete *"]);
+  assert.equal(args[args.indexOf("--question") + 1], options.request);
+  assert.equal(args[args.indexOf("--hooks") + 1], options.hooksFile);
+  assert.equal(args[args.indexOf("--tools") + 1], "executeAux4");
+  assert.deepEqual(JSON.parse(args[args.indexOf("--toolCall") + 1]), {
+    name: "executeAux4", args: { command }
+  });
+  const policy = JSON.parse(args[args.indexOf("--policy") + 1]);
+  assert.deepEqual(policy.deny, [{ executeAux4: ["other delete *"] }]);
 });

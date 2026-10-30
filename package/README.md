@@ -127,6 +127,8 @@ needs more pages.
    then choose controls only from that new read. Old descriptors and consumed values are omitted
    from the continuation prompt; the completed operation remains denied. This continuation is
    unavailable when the executor cannot enforce the pre-action read guard.
+
+Exact pending-confirmation continuations require aux4/ai-agent 1.3.28 or newer, which provides the internal `--toolCall` path. The runner checks for that capability and stops safely when it is unavailable; it does not ask a model to reconstruct the controller-supplied command.
 5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
    failure with nothing new tried), the requester declining a confirmation, or a reply beginning
    with the uppercase `BLOCKED` token (an optional colon is accepted). Generated replies are
