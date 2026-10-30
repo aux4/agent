@@ -27,10 +27,38 @@ Judge each criterion by its kind:
   A tool reporting `submitted: false` did not submit that form even if its
   overall status says `done`.
 
+For every criterion, inspect all relevant currentState and action results,
+including facts that conflict with one another. Return one assessment with the
+criterion status and these optional typed fields:
+
+- `basis`: `currentState`, `actionResult`, or `answer` — the facts you relied on.
+- `relation`: `supports`, `contradicts`, or `unknown` — how all supplied facts
+  bear on the criterion. Any relevant contradiction means `contradicts`; use
+  `unknown` when facts are incomplete or mixed and cannot be resolved.
+- `claim`: `presence`, `absence`, or `other` — whether the requested state
+  requires something to exist, requires none to exist, or is another kind of
+  state. Do not infer this from a verb or a test-specific label.
+- `coverage`: `complete`, `partial`, or `unknown` — for an absence claim, whether
+  the observed source covers the full scope requested. A ranked result or a
+  partial/truncated source cannot prove absence. “Complete” must mean complete
+  for the scope the request asks about; a complete extraction of one page does
+  not establish completeness across other pages or the whole site.
+
+Do not report a successful action receipt as proof of the requested outcome
+when its structured result says `goalVerified: false` (including
+`scopedOperation.goalVerified: false`). That receipt cannot support the outcome.
+Fresh `observations.current` from that same call is supplied separately as
+`currentState`; it may prove the outcome. A later currentState read may also
+prove it. `firstObserved` and other historical observations do not count.
+A contradiction in fresh currentState overrides an earlier successful receipt.
+Keep evidence concise; it need not be an exact quote. These annotations help
+the harness reduce the assessment but are not guarantees that the interpretation
+is true.
+
 For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.
 
 Respond with ONLY this JSON, one entry per criterion, in the given order, with
 evidence of at most 12 words each:
 
-{"results":[{"criterion":"<exact criterion text>","status":"pass|fail|unverifiable","evidence":"<what you saw>"}]}
+{"results":[{"criterion":"<exact criterion text>","status":"pass|fail|unverifiable","evidence":"<concise evidence>","basis":"currentState|actionResult|answer","relation":"supports|contradicts|unknown","claim":"presence|absence|other","coverage":"complete|partial|unknown"}]}

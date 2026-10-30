@@ -41,6 +41,7 @@ import {
   fallbackPlan,
   fallbackVerdict,
   runLoop,
+  runVerify,
   requireOwnObservation,
   verifyPayload,
   salvageVerdict,
@@ -2272,6 +2273,116 @@ test("failed writes cannot be certified as completed state changes", () => {
   assert.equal(applyExecutionProof(verdict,{stateCriteria:[]},[...reads,failed]).overall,"pass");
   assert.equal(applyExecutionProof(verdict,{stateCriteria:["No notification was sent."]},[...reads,failed]).overall,"pass");
   assert.equal(applyExecutionProof(verdict,plan,reads).overall,"pass");
+});
+
+test("scoped operation receipts and observations have separate outcome proof", () => {
+  const criterion = "The requested record is deleted.";
+  const plan = { stateCriteria: [criterion] };
+  const assessment = { overall: "pass", criteria: [{ criterion, status: "pass", evidence: "The action completed.", basis: "actionResult", relation: "supports", claim: "absence", coverage: "complete" }] };
+  const receipt = { command: "records delete --id r1", source: '{"status":"done","scopedOperation":{"status":"activated","goalVerified":false}}' };
+  assert.equal(isConclusiveAttempt(receipt), true, "substep completion semantics stay unchanged");
+  assert.equal(applyExecutionProof(assessment, plan, [receipt]).criteria[0].status, "unverifiable");
+
+  const observedInSameCall = { ...receipt, source: '{"status":"done","scopedOperation":{"status":"activated","goalVerified":false},"observations":{"current":"Record Alpha Deleted; Record Beta Active"}}' };
+  assert.equal(applyExecutionProof(assessment, plan, [observedInSameCall]).criteria[0].status, "unverifiable", "actionResult remains a receipt basis");
+  const sameCallCurrentState = { output: observedInSameCall.source, command: observedInSameCall.command };
+  const sameCallAssessment = { ...assessment, criteria: [{ ...assessment.criteria[0], basis: "currentState" }] };
+  assert.equal(applyExecutionProof(sameCallAssessment, plan, [observedInSameCall], sameCallCurrentState).criteria[0].status, "pass");
+  const staleObservation = { output: '{"scopedOperation":{"goalVerified":false},"observations":{"firstObserved":"Record Alpha active"}}', command: receipt.command };
+  assert.equal(applyExecutionProof(sameCallAssessment, plan, [receipt], staleObservation).criteria[0].status, "unverifiable");
+
+  const trueReceipt = { command: "records delete --id r1", source: '{"status":"done","deleted":true}' };
+  const contradicted = { ...assessment, criteria: [{ ...assessment.criteria[0], basis: "currentState", relation: "contradicts", claim: "absence", coverage: "partial", evidence: "The target remains in the current list." }] };
+  const result = applyExecutionProof(contradicted, plan, [trueReceipt], { output: '{"items":[{"id":"r1","status":"active"}]}' });
+  assert.equal(result.criteria[0].status, "fail");
+  const conflictingAnnotations = { ...assessment, criteria: [{ ...assessment.criteria[0], basis: "answer", relation: "contradicts", claim: "absence", coverage: "partial" }] };
+  assert.equal(applyExecutionProof(conflictingAnnotations, plan, [trueReceipt]).criteria[0].status, "fail");
+});
+
+test("absence needs complete coverage while an observed match proves presence", () => {
+  const absent = "The requested record is absent.";
+  const present = "The requested record is present.";
+  const plan = { stateCriteria: [absent, present] };
+  const verdict = {
+    overall: "pass",
+    criteria: [
+      { criterion: absent, status: "pass", evidence: "No match returned.", basis: "actionResult", relation: "supports", claim: "absence", coverage: "complete" },
+      { criterion: present, status: "pass", evidence: "Matching row observed.", basis: "actionResult", relation: "supports", claim: "presence", coverage: "complete" }
+    ]
+  };
+  const rankedNoMatch = { command: "records search", source: '{"provider":"ranked","answered":0.2,"candidates":12,"matches":[{"score":0.9,"text":"another record"}]}' };
+  assert.equal(applyExecutionProof({ overall: "pass", criteria: [verdict.criteria[0]] }, { stateCriteria: [absent] }, [rankedNoMatch]).criteria[0].status, "unverifiable");
+  const browserFindMiss = { command: "agent browser find", source: '{"question":"find the requested record","answered":false,"matches":[],"provider":"mock","blocks":0}' };
+  assert.equal(applyExecutionProof({ overall: "pass", criteria: [verdict.criteria[0]] }, { stateCriteria: [absent] }, [browserFindMiss]).criteria[0].status, "unverifiable");
+  const rankedMatch = { command: "records search", source: '{"provider":"ranked","answered":0.99,"candidates":12,"matches":[{"score":0.99,"text":"requested record"}]}' };
+  assert.equal(applyExecutionProof({ overall: "pass", criteria: [verdict.criteria[1]] }, { stateCriteria: [present] }, [rankedMatch]).criteria[0].status, "pass");
+
+  const completeScopedList = { command: "records list", source: '{"sourceMetadata":{"coverage":"complete","scope":"list"},"items":[]}' };
+  assert.equal(applyExecutionProof({ overall: "pass", criteria: [verdict.criteria[0]] }, { stateCriteria: [absent] }, [completeScopedList]).criteria[0].status, "pass");
+  const inspectPartial = { command: "agent browser inspect", source: '{"scope":"current-rendered-page","coverage":"partial-extracted-blocks","completeWithinScope":false,"blocks":[]}' };
+  assert.equal(applyExecutionProof({ overall: "pass", criteria: [verdict.criteria[0]] }, { stateCriteria: [absent] }, [inspectPartial]).criteria[0].status, "unverifiable");
+  const incidentalRecordField = { command: "records get", source: '{"id":"r1","truncated":true}' };
+  assert.equal(applyExecutionProof({ overall: "pass", criteria: [verdict.criteria[0]] }, { stateCriteria: [absent] }, [incidentalRecordField]).criteria[0].status, "pass");
+});
+
+test("read-only and no-change state assessments retain their pass path", () => {
+  const criterion = "No changes were made to the records.";
+  const verdict = { overall: "pass", criteria: [{ criterion, status: "pass", evidence: "No write action ran.", basis: "actionResult", relation: "supports", claim: "other" }] };
+  assert.equal(applyExecutionProof(verdict, { stateCriteria: [criterion] }, []).overall, "pass");
+  const readOnly = "The result lists the protected record.";
+  assert.equal(applyExecutionProof({ overall: "pass", criteria: [{ criterion: readOnly, status: "pass", evidence: "Present.", basis: "currentState", relation: "supports", claim: "presence" }] }, { stateCriteria: [readOnly] }, []).overall, "pass");
+});
+
+test("runVerify reuses one readback for every criterion and missing criteria stay fail-closed", async () => {
+  const absent = "The target record is absent from the records list.";
+  const present = "The protected record is present in the records list.";
+  const fake = makeFakeAux4(`
+const args=process.argv.slice(2), command=args.join(" ");
+if(command.includes("loop-verify.md")){
+  const q=args[args.indexOf("--question")+1]||"", payload=JSON.parse(q.slice(q.indexOf("{")));
+  const results=payload.criteria.map((c,i)=>({criterion:c.criterion,status:"pass",evidence:"Current facts assessed.",basis:c.kind==="state"?"currentState":"answer",relation:"supports",claim:i===0?"absence":i===1?"presence":"other",coverage:"complete"}));
+  process.stdout.write(JSON.stringify({results}));
+} else if(command==="records list") process.stdout.write('{"items":[{"name":"Protected"}],"complete":true}');
+`);
+  const criteria = [absent, present, COVERAGE_CRITERION, HONESTY_CRITERION, AGREEMENT_CRITERION];
+  const plan = { doneCriteria: [absent, present], stateCriteria: [absent, present] };
+  const attempts = [{ tool: "executeAux4", command: "records list", source: '{"items":[{"name":"Protected"}],"complete":true}', failed: false }];
+  await withAux4Bin(fake, async () => {
+    const result = runVerify(baseOptions(), plan, "done", attempts);
+    assert.equal(result.checks.length, 1);
+    assert.equal(result.checks[0], "records list");
+    assert.equal(result.criteria.length, criteria.length);
+    assert.deepEqual(result.criteria.slice(0, 2).map(c => c.basis), ["currentState", "currentState"]);
+    assert.deepEqual(result.criteria.slice(0, 2).map(c => c.status), ["pass", "pass"]);
+  });
+
+  const omitFake = makeFakeAux4(`
+const args=process.argv.slice(2), command=args.join(" ");
+if(command.includes("loop-verify.md")){
+  const q=args[args.indexOf("--question")+1]||"", payload=JSON.parse(q.slice(q.indexOf("{")));
+  const results=payload.criteria.filter(c=>c.criterion!=="The protected record is present in the records list.").map(c=>({criterion:c.criterion,status:"pass",evidence:"assessed",basis:c.kind==="state"?"currentState":"answer",relation:"supports",claim:"other"}));
+  process.stdout.write(JSON.stringify({results}));
+} else if(command==="records list") process.stdout.write('{"items":[{"name":"Protected"}],"complete":true}');
+`);
+  await withAux4Bin(omitFake, async () => {
+    const result = runVerify(baseOptions(), plan, "done", attempts);
+    assert.equal(result.criteria.find(c => c.criterion === present).status, "unverifiable");
+  });
+
+  const staleFake = makeFakeAux4(`
+const args=process.argv.slice(2), command=args.join(" ");
+if(command.includes("loop-verify.md")){
+  const q=args[args.indexOf("--question")+1]||"", payload=JSON.parse(q.slice(q.indexOf("{")));
+  const basis=payload.currentState?"currentState":"actionResult";
+  process.stdout.write(JSON.stringify({results:payload.criteria.map(c=>({criterion:c.criterion,status:"pass",evidence:"assessed",basis,relation:"supports",claim:"other"}))}));
+}
+`);
+  const earlierObservation = { tool: "executeAux4", command: "agent browser run --goal delete target", source: '{"status":"done","scopedOperation":{"goalVerified":false},"observations":{"current":"Target is still active."}}' };
+  const laterMutation = { tool: "executeAux4", command: "records update --id r1", source: '{"status":"done","updated":true}' };
+  await withAux4Bin(staleFake, async () => {
+    const result = runVerify(baseOptions(), plan, "done", [earlierObservation, laterMutation]);
+    assert.equal(result.criteria[0].status, "unverifiable", "an earlier current observation cannot be relabeled as fresh after a later mutation");
+  });
 });
 
 

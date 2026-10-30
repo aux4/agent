@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.49
+
+- Separate scoped-operation completion receipts from goal verification. Use fresh current observations to assess every state criterion, honor contradictions, and require complete source coverage before claiming absence.
+
 ## 4.1.48
 
 - Expose `agent browser inspect` as a deterministic page-read capability. State that completeness is limited to extracted blocks on the current rendered page and that ranked `find` matches are not an exhaustive result set.

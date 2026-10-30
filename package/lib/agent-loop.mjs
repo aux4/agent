@@ -585,24 +585,35 @@ function normalizeVerdict(raw, doneCriteria) {
     if (!criterion) continue;
     const status = ["pass", "fail", "unverifiable"].includes(r?.status) ? r.status : "unverifiable";
     const evidence = typeof r?.evidence === "string" ? r.evidence.trim() : "";
-    byCriterion.set(criterion, { criterion, status, evidence });
+    byCriterion.set(criterion, { criterion, status, evidence, ...normalizeAssessment(r) });
   }
   // Every fixed done-criterion must have a verdict; a criterion the verifier
   // silently dropped is treated as unverifiable, never as a pass.
   // Match by exact text first; small models often reword the criterion, so
   // fall back to position (the verifier is asked to answer in order).
   const ordered = results.filter(r => typeof r?.criterion === "string" || typeof r?.status === "string");
+  const knownLabels = new Set(doneCriteria);
   const criteria = doneCriteria.map((c, i) => {
     const exact = byCriterion.get(c);
     if (exact) return exact;
     const r = ordered[i];
-    if (r && ["pass", "fail", "unverifiable"].includes(r.status)) {
-      return { criterion: c, status: r.status, evidence: typeof r.evidence === "string" ? r.evidence.trim() : "" };
+    const returnedLabel = typeof r?.criterion === "string" ? r.criterion.trim() : "";
+    if (r && !knownLabels.has(returnedLabel) && ["pass", "fail", "unverifiable"].includes(r.status)) {
+      return { criterion: c, status: r.status, evidence: typeof r.evidence === "string" ? r.evidence.trim() : "", ...normalizeAssessment(r) };
     }
     return { criterion: c, status: "unverifiable", evidence: "the verifier did not report on this outcome" };
   });
   const overall = criteria.every(c => c.status === "pass") ? "pass" : "fail";
   return { overall, criteria };
+}
+
+function normalizeAssessment(result) {
+  const out = {};
+  if (["currentState", "actionResult", "answer"].includes(result?.basis)) out.basis = result.basis;
+  if (["supports", "contradicts", "unknown"].includes(result?.relation)) out.relation = result.relation;
+  if (["complete", "partial", "unknown"].includes(result?.coverage)) out.coverage = result.coverage;
+  if (["presence", "absence", "other"].includes(result?.claim)) out.claim = result.claim;
+  return out;
 }
 
 export function fallbackVerdict(doneCriteria, reason) {
@@ -1272,6 +1283,43 @@ function observedChange(attempt) {
   return isConclusiveAttempt(attempt) || parseJSONLoose(attempt.source ?? attempt.result ?? "", null)?.submitted === true;
 }
 
+function parseAttemptResult(attempt) {
+  try { return JSON.parse(String(attempt?.source ?? attempt?.result ?? "")); }
+  catch { return null; }
+}
+
+function goalNotVerified(result) {
+  return result?.goalVerified === false || result?.scopedOperation?.goalVerified === false;
+}
+
+function hasFreshObservation(result) {
+  return typeof result?.observations?.current === "string" && result.observations.current.trim().length > 0;
+}
+
+// Recognize source envelopes rather than recursively treating arbitrary API
+// record fields named "partial" or "truncated" as transport metadata.
+function hasExplicitIncompleteSourceMetadata(value) {
+  if (!value || typeof value !== "object") return false;
+  const inspectEnvelope = Object.hasOwn(value, "completeWithinScope") || Object.hasOwn(value, "extractionContract")
+    || Object.hasOwn(value, "truncatedBlockCount") || Object.hasOwn(value, "truncatedControls");
+  if (inspectEnvelope) {
+    if (value.completeWithinScope === false || value.truncated === true
+      || Number(value.truncatedBlockCount || 0) > 0 || Number(value.truncatedControls || 0) > 0
+      || (typeof value.coverage === "string" && /^(partial|truncated|ranked|unknown)(?:-|$)/i.test(value.coverage))
+      || (Array.isArray(value.blocks) && value.blocks.some(block => block?.truncated === true))) return true;
+  }
+  const metadata = value.sourceMetadata;
+  if (metadata && typeof metadata === "object"
+    && (metadata.partial === true || metadata.truncated === true || metadata.ranked === true
+      || /^(partial|truncated|ranked|unknown)(?:-|$)/i.test(String(metadata.coverage || "")))) return true;
+  const rankedFindEnvelope = Array.isArray(value.matches) && typeof value.provider === "string"
+    && Object.hasOwn(value, "answered") && Object.hasOwn(value, "question");
+  if (rankedFindEnvelope) return true;
+  const rankedEnvelope = (Array.isArray(value.matches) || Array.isArray(value.blocks))
+    && (Object.hasOwn(value, "provider") || Object.hasOwn(value, "answered") || Object.hasOwn(value, "candidates"));
+  return rankedEnvelope && (value.matches || value.blocks || []).some(item => typeof item?.score === "number");
+}
+
 export function executionProofContent(content, verdict, attempts) {
   if (!verdict?.executionEvidenceMissing || attempts.some(observedChange)) return content;
   return "The requested change was not completed. The recorded attempts to change state failed, were denied, or remained unexecuted.";
@@ -1280,14 +1328,57 @@ export function executionProofContent(content, verdict, attempts) {
 // State-changing outcomes cannot be confirmed solely from failed or
 // unexecuted writes. Read-only/absence criteria and already-satisfied tasks
 // with no failed write attempt retain their normal verification.
-export function applyExecutionProof(verdict, plan, attempts) {
-  const state = new Set((plan.stateCriteria || []).filter(text => !NO_CHANGE_CRITERION.test(text) && !/^\s*(?:no|none|nothing|without)\b/i.test(text)
+export function applyExecutionProof(verdict, plan, attempts, currentState = null) {
+  const state = new Set(plan.stateCriteria || []);
+  const changeState = new Set([...state].filter(text => !NO_CHANGE_CRITERION.test(text) && !/^\s*(?:no|none|nothing|without)\b/i.test(text)
     && (CHANGE_VERB.test(text) || CHANGE_RESULT_WORD.test(text))));
-  if (!state.size || !attempts.some(a => !isConclusiveAttempt(a) && isChangeCommand(a.command))
-    || attempts.some(observedChange)) return verdict;
-  return {...verdict, overall:"fail", executionEvidenceMissing:true, criteria:verdict.criteria.map(criterion => state.has(criterion.criterion)
-    ? {...criterion,status:"unverifiable",evidence:"No successful state-changing action was observed. Failed, denied, or unexecuted calls cannot establish that the requested change happened."}
-    : criterion)};
+  if (!state.size) return verdict;
+  let changed = false;
+  const criteria = verdict.criteria.map(criterion => {
+    if (!state.has(criterion.criterion)) return criterion;
+    let next = criterion;
+    if (criterion.relation === "contradicts") {
+      next = { ...next, status: "fail", evidence: criterion.evidence || "A supplied current fact contradicts this outcome." };
+    } else if (criterion.relation === "unknown") {
+      next = { ...next, status: "unverifiable", evidence: criterion.evidence || "The supplied facts do not establish this outcome." };
+    }
+    if (criterion.basis === "answer" && criterion.relation !== "contradicts" && criterion.status === "pass") {
+      next = { ...next, status: "unverifiable", evidence: criterion.evidence || "An answer alone cannot establish current state." };
+    }
+    if (criterion.claim === "absence" && criterion.relation === "supports" && criterion.coverage !== "complete") {
+      next = { ...next, status: "unverifiable", evidence: criterion.evidence || "Coverage is not complete for this absence claim." };
+    }
+    let source = null;
+    if (criterion.basis === "currentState" && (currentState?.source || currentState?.output)) {
+      try { source = JSON.parse(String(currentState.source || currentState.output)); } catch { source = null; }
+    } else if (criterion.basis === "actionResult") {
+      source = attempts.map(parseAttemptResult).find(result => result && hasExplicitIncompleteSourceMetadata(result));
+    }
+    if (criterion.claim === "absence" && criterion.relation === "supports" && hasExplicitIncompleteSourceMetadata(source)) {
+      next = { ...next, status: "unverifiable", evidence: criterion.evidence || "Structured source metadata marks this result partial, truncated, or ranked." };
+    }
+    if (criterion.basis === "currentState" && criterion.status === "pass" && goalNotVerified(source) && !hasFreshObservation(source)) {
+      next = { ...next, status: "unverifiable", evidence: criterion.evidence || "The operation receipt has no fresh current observation." };
+    }
+    if (criterion.basis === "actionResult" && criterion.relation === "supports" && criterion.status === "pass"
+      && attempts.some(a => goalNotVerified(parseAttemptResult(a)))) {
+      next = { ...next, status: "unverifiable", evidence: criterion.evidence || "The operation receipt says its goal was not verified." };
+    }
+    // Contradiction has precedence over any other typed annotation.
+    if (criterion.relation === "contradicts") {
+      next = { ...next, status: "fail", evidence: criterion.evidence || "A supplied current fact contradicts this outcome." };
+    }
+    if (next !== criterion) changed = true;
+    return next;
+  });
+  const missingWriteProof = changeState.size > 0 && attempts.some(a => !isConclusiveAttempt(a) && isChangeCommand(a.command)) && !attempts.some(observedChange);
+  if (!changed && !missingWriteProof) return verdict;
+  if (missingWriteProof) {
+    return { ...verdict, overall: "fail", executionEvidenceMissing: true, criteria: criteria.map(criterion => changeState.has(criterion.criterion) && criterion.status === "pass"
+      ? { ...criterion, status: "unverifiable", evidence: "No successful state-changing action was observed. Failed, denied, or unexecuted calls cannot establish that the requested change happened." }
+      : criterion) };
+  }
+  return { ...verdict, overall: criteria.every(c => c.status === "pass") ? "pass" : "fail", criteria };
 }
 
 export function applyProvenance(verdict, attempts, request = "") {
@@ -1561,8 +1652,23 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
       if (r.ok) readNow = { command, output: r.output };
     }
   }
-  if (readNow) payload.currentState = { readJustNowWith: readNow.command, result: readNow.output };
-  const stateFirst = hasState && readNow
+  const latestAttempt = attempts.at(-1);
+  const sameCallObservation = !readNow && latestAttempt && !latestAttempt.failed && isConclusiveAttempt(latestAttempt) ? (() => {
+    const attempt = latestAttempt;
+    const result = parseAttemptResult(attempt);
+    return goalNotVerified(result) && hasFreshObservation(result) ? attempt : null;
+  })() : null;
+  const currentState = readNow || (sameCallObservation
+    ? {
+      command: sameCallObservation.command,
+      output: JSON.stringify({ observations: { current: parseAttemptResult(sameCallObservation).observations.current } }),
+      source: String(sameCallObservation.source ?? sameCallObservation.result ?? "")
+    }
+    : null);
+  if (currentState) payload.currentState = sameCallObservation
+    ? { observedWith: "same-call observations.current", command: currentState.command, result: currentState.output }
+    : { readJustNowWith: currentState.command, result: currentState.output };
+  const stateFirst = hasState && currentState
     ? "Judge the state criteria from currentState, which was read just now, after the work. Then "
     : hasState ? "No later read can show the current state, so judge the state criteria from the actions' own results. Then " : "";
   const question = `${stateFirst}${stateFirst ? "r" : "R"}espond with ONLY the JSON verdict object described in your instructions.\n\n${JSON.stringify(payload)}`;
@@ -1600,8 +1706,10 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   // own-observation rule only applies when there is one.
   // When nothing can re-read the state (only the action's own result shows
   // it), the verifier's judgement from the recorded results stands.
-  const observed = verifyHistory && !noReadPossible ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria, attempts) : verdict;
-  return { ...applyExecutionProof(applyProvenance(observed, attempts, options.request), plan, attempts), checks: checks.map(c => c.command) };
+  const observed = verifyHistory && !noReadPossible && !sameCallObservation
+    ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria, attempts)
+    : verdict;
+  return { ...applyExecutionProof(applyProvenance(observed, attempts, options.request), plan, attempts, currentState), checks: checks.map(c => c.command) };
 }
 
 export function verdictLogPath(historyFile) {
