@@ -388,12 +388,12 @@ test("a submitted browser workflow is bound to its resource and operation across
     fs.writeFileSync(fake, `#!/usr/bin/env node\nconsole.log(JSON.stringify({allow:true,reason:'A distinct requested operation is allowed.'}));\n`, { mode: 0o755 });
     process.env.AUX4_BIN = fake;
     const options = { configFile: "/local.yaml", packageDir: PACKAGE_DIR };
-    const origin = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11'";
+    const origin = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11' --field 'Reference=R-11'";
     const next = "agent browser run --session s-before --goal 'Save record R-11' --field 'confirm=yes'";
     const submitted = "agent browser run --session s-before --goal \"Save record R-11\" --field \"confirm=yes\"";
     const attempts = [
       { command: origin, completed: true, failed: false, source: JSON.stringify({ status: "needs-input", confirmation: {
-        action: "Save record", target: "record R-11", emptyFields: [], next
+        action: "Save record", target: "Save — form \"Record details\"", emptyFields: [], next
       } }) },
       { command: submitted, completed: true, failed: false, source: JSON.stringify({
         status: "incomplete", submitted: true, session: "s-after", finalUrl: "https://example.test/records/#/record/R-11"
@@ -403,14 +403,69 @@ test("a submitted browser workflow is bound to its resource and operation across
     const blocked = authorizeAction(options, sameOperationNewSession, attempts, "Save record R-11.");
     assert.equal(blocked.allow, false);
     assert.match(blocked.reason, /already submitted/);
+    assert.equal(authorizeAction(options, submitted, attempts, "Save record R-11.").allow, false,
+      "replaying the exact session confirmation does not require restating fields from the originating step");
+    const sameSessionChangedField = "agent browser run --session s-after --goal 'Save record R-11' --field 'Reference=R-12' --field 'confirm=yes'";
+    assert.equal(authorizeAction(options, sameSessionChangedField, attempts, "Save record R-11.").allow, true,
+      "explicit changed values on a known session override inherited prior values");
 
-    const sameResourceFreshSession = "agent browser run --url 'https://example.test/records/#/record/R-11' --session s-unrelated --goal 'Save record R-11' --field \"confirm=yes\"";
+    const sameResourceFreshSession = "agent browser run --url 'https://example.test/records/#/record/R-11' --session s-unrelated --goal 'Save record R-11' --field 'Reference=R-11' --field \"confirm=yes\"";
     assert.equal(authorizeAction(options, sameResourceFreshSession, attempts, "Save record R-11.").allow, false,
       "a fresh transient session does not make the same resource and operation new");
 
-    const differentFragment = "agent browser run --url 'https://example.test/records/#/record/R-12' --session s-new --goal 'Save record R-11' --field 'confirm=yes'";
+    const sameResourceNewInputs = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11' --field 'Reference=R-11' --field 'comment=updated' --field 'confirm=yes'";
+    assert.equal(authorizeAction(options, sameResourceNewInputs, attempts, "Save record R-11.").allow, true,
+      "a materially changed field value is not classified as a replay; normal authorization still decides it");
+
+    const differentAction = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Delete record R-11' --field 'Reference=R-11' --field 'confirm=yes'";
+    assert.equal(authorizeAction(options, differentAction, attempts, "Save record R-11.").allow, true,
+      "a different operation goal is not classified as a replay; this mock allow is not user-authority evidence");
+
+    const changedDomAttempts = [...attempts, {
+      command: "agent browser inspect --session s-after", completed: true, failed: false,
+      source: JSON.stringify({ status: "ok", session: "s-after", url: "https://example.test/records/#/record/R-11",
+        controls: [{ role: "button", label: "Save updated record" }] })
+    }];
+    assert.equal(authorizeAction(options, sameResourceFreshSession, changedDomAttempts, "Save record R-11.").allow, false,
+      "later DOM descriptors do not reclassify a submitted operation as new");
+
+    const pendingOnly = [{ command: origin, completed: true, failed: false, source: JSON.stringify({ status: "needs-input", confirmation: {
+      action: "Save record", target: "Save — form \"Record details\"", emptyFields: [], next
+    } }) }];
+    const pendingContinuation = authorizeAction(options, submitted, pendingOnly, "Save record R-11.");
+    assert.equal(pendingContinuation.allow, true, "the first confirmation continuation remains allowed before submission");
+
+    const differentFragment = "agent browser run --url 'https://example.test/records/#/record/R-12' --session s-new --goal 'Save record R-11' --field 'Reference=R-11' --field 'confirm=yes'";
     const distinct = authorizeAction(options, differentFragment, attempts, "Save record R-11.");
     assert.equal(distinct.allow, true, "the same goal and fields on a different fragment resource is a distinct operation");
+    const oldSessionDifferentResource = "agent browser run --url 'https://example.test/records/#/record/R-12' --session s-after --goal 'Save record R-11' --field 'Reference=R-11' --field 'confirm=yes'";
+    assert.equal(authorizeAction(options, oldSessionDifferentResource, attempts, "Save record R-11.").allow, true,
+      "an old session cannot override an explicitly different resource");
+
+    const dataOrigin = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11' --data '{\"a\":1,\"b\":2}'";
+    const dataNext = "agent browser run --session data-before --goal 'Save record R-11' --field 'confirm=yes'";
+    const dataAttempts = [
+      { command: dataOrigin, completed: true, failed: false, source: JSON.stringify({ status: "needs-input", confirmation: {
+        action: "Save record", target: "Save — form \"Record details\"", emptyFields: [], next: dataNext
+      } }) },
+      { command: dataNext, completed: true, failed: false, source: JSON.stringify({ status: "incomplete", submitted: true,
+        session: "data-after", finalUrl: "https://example.test/records/#/record/R-11" }) }
+    ];
+    const sameData = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11' --data '{\"a\":1,\"b\":2}'";
+    assert.equal(authorizeAction(options, sameData, dataAttempts, "Save record R-11.").allow, false,
+      "the exact submitted data remains part of replay identity");
+    const largeDataOrigin = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11' --data '{\"id\":9007199254740992}'";
+    const largeDataNext = "agent browser run --session large-before --goal 'Save record R-11' --field 'confirm=yes'";
+    const largeDataAttempts = [
+      { command: largeDataOrigin, completed: true, failed: false, source: JSON.stringify({ status: "needs-input", confirmation: {
+        action: "Save record", target: "Save — form \"Record details\"", emptyFields: [], next: largeDataNext
+      } }) },
+      { command: largeDataNext, completed: true, failed: false, source: JSON.stringify({ status: "incomplete", submitted: true,
+        session: "large-after", finalUrl: "https://example.test/records/#/record/R-11" }) }
+    ];
+    const distinctLargeId = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11' --data '{\"id\":9007199254740993}'";
+    assert.equal(authorizeAction(options, distinctLargeId, largeDataAttempts, "Save record R-11.").allow, true,
+      "different data values remain a distinct operation without lossy JSON normalization");
   } finally {
     if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
     fs.rmSync(dir, { recursive: true, force: true });

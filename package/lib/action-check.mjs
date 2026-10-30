@@ -61,6 +61,7 @@ function browserRunParts(command) {
 
 function submittedBrowserWorkflows(attempts) {
   const sessions = new Map();
+  const sessionOperations = new Map();
   const workflows = [];
   for (let index = 0; index < attempts.length; index++) {
     const attempt = attempts[index];
@@ -95,38 +96,42 @@ function submittedBrowserWorkflows(attempts) {
     const goal = completedParts.goal || originParts?.goal || String(result.goal || "").trim();
     const fields = completedParts.fields.length ? completedParts.fields : originParts?.fields || [];
     const data = completedParts.data ?? originParts?.data ?? null;
-    let target = typeof result.target === "string" ? result.target.trim() : "";
-    if (!target && origin) {
-      const originResult = parseJSONLoose(String(origin.source ?? origin.result ?? ""), null);
-      target = typeof originResult?.confirmation?.target === "string" ? originResult.confirmation.target.trim() : "";
+    // A UI target is often a descriptive label (for example a form title) and
+    // is not repeated in a later CLI invocation. The exact resource, original
+    // goal, and entered non-confirmation values identify the submitted
+    // operation; requiring that presentation label in the command misses a
+    // restart of the same operation.
+    const identity = resource && goal ? { resource, goal, fields, data } : null;
+    const operationSessions = [result.session, completedParts.session]
+      .filter(value => typeof value === "string" && value.trim());
+    if (identity) {
+      for (const session of operationSessions) {
+        sessions.set(session, identity.resource);
+        sessionOperations.set(session, identity);
+      }
     }
-    const identity = resource && goal && target ? { resource, goal, fields, data, target } : null;
-    const session = String(result.session || completedParts.session || "").trim();
-    if (session && identity) sessions.set(session, identity.resource);
     workflows.push({ identity });
   }
-  return { workflows, sessions };
+  return { workflows, sessions, sessionOperations };
 }
 
 function submittedWorkflowReplay(command, attempts) {
   const proposed = browserRunParts(command);
-  const { workflows, sessions } = submittedBrowserWorkflows(attempts);
+  const { workflows, sessions, sessionOperations } = submittedBrowserWorkflows(attempts);
   if (!proposed) return false;
   const resource = proposed.resource || sessions.get(proposed.session) || "";
   if (!resource || !proposed.goal) return false;
+  const sessionIdentity = proposed.session && sessionOperations.get(proposed.session);
+  const inheritedSessionValues = sessionIdentity?.goal === proposed.goal;
+  const fields = proposed.fields.length || !inheritedSessionValues ? proposed.fields : sessionIdentity.fields;
+  const data = proposed.data !== null || !inheritedSessionValues ? proposed.data : sessionIdentity.data;
   return workflows.some(workflow => {
     const prior = workflow.identity;
     if (!prior || prior.resource !== resource || prior.goal !== proposed.goal) return false;
-    const proposedEvidence = `${proposed.goal} ${JSON.stringify(proposed.fields)} ${JSON.stringify(proposed.data)}`
-      .replace(/\s+/g, " ").toLowerCase();
-    const target = prior.target.replace(/\s+/g, " ").toLowerCase();
-    if (!target || !proposedEvidence.includes(target)) return false;
-    // Require the same entered values to avoid blocking a distinct operation
-    // on the same page. When no values are present, the exact target and goal
-    // are the operation identity available from the recorded contract.
-    if (!proposed.fields.length && proposed.data === null) return true;
-    return JSON.stringify(prior.fields) === JSON.stringify(proposed.fields)
-      && JSON.stringify(prior.data) === JSON.stringify(proposed.data);
+    // The goal distinguishes a different requested action; exact field/data
+    // equality distinguishes a different operation on the same resource.
+    return JSON.stringify(prior.fields) === JSON.stringify(fields)
+      && JSON.stringify(prior.data) === JSON.stringify(data);
   });
 }
 
