@@ -1507,6 +1507,62 @@ test("typed browser-find facts ignore ranking/session jitter, order, and previou
   ), false, "nonbrowser score fields remain factual");
 });
 
+test("browser pageEvidence ignores ranking jitter but preserves newly surfaced page facts", () => {
+  const command = 'agent browser find --url https://example.test/orders --question "find the requested record"';
+  const result = (session, page2Matches) => ({
+    command,
+    source: JSON.stringify({
+      question: "find the requested record", answered: false, session, url: "https://example.test/orders",
+      matches: [{ text: "Page one global leader", score: 0.91, location: { url: "https://example.test/orders?page=1" } }],
+      pageEvidence: {
+        coverage: "ranked-top-k", complete: false, limitPerPage: 2,
+        pages: [
+          { page: 1, url: "https://example.test/orders?page=1", matches: [
+            { text: "Page one global leader", score: 0.91, location: { url: "https://example.test/orders?page=1" } },
+            { text: "Page one alternate", score: 0.42, location: { url: "https://example.test/orders?page=1#b" } }
+          ] },
+          { page: 2, url: "https://example.test/orders?page=2", matches: page2Matches }
+        ]
+      }
+    })
+  });
+  const prior = [result("s1", [
+    { text: "Page two candidate A", score: 0.21, location: { url: "https://example.test/orders?page=2#a" } },
+    { text: "Page two candidate B", score: 0.17, location: { url: "https://example.test/orders?page=2#b" } }
+  ])];
+  const jitter = [result("s2", [
+    { text: "Page two candidate B", score: 0.89, location: { url: "https://example.test/orders?page=2#b" } },
+    { text: "Page two candidate A", score: 0.77, location: { url: "https://example.test/orders?page=2#a" } }
+  ])];
+  assert.equal(sameReadEvidence(jitter, prior), true, "score and candidate-order jitter is not new evidence");
+
+  const reversedPages = JSON.parse(jitter[0].source);
+  reversedPages.pageEvidence.pages.reverse();
+  assert.equal(sameReadEvidence([{ ...jitter[0], source: JSON.stringify(reversedPages) }], prior), true,
+    "page ordering is canonicalized by page number while page and URL facts remain attached");
+
+  assert.equal(sameReadEvidence([result("s4", [
+    { text: "Page two candidate A", score: 0.99, location: { url: "https://example.test/orders?page=2#a" } }
+  ])], prior), true, "a candidate subset already present in pageEvidence is not new evidence");
+
+  const newCandidate = [result("s3", [
+    { text: "Page two candidate A", score: 0.23, location: { url: "https://example.test/orders?page=2#a" } },
+    { text: "Page two candidate B", score: 0.14, location: { url: "https://example.test/orders?page=2#b" } },
+    { text: "Page two newly surfaced record", score: 0.09, location: { url: "https://example.test/orders?page=2#new" } }
+  ])];
+  assert.equal(sameReadEvidence(newCandidate, prior), false, "new per-page candidate identity/content is progress");
+
+  const newlyVisitedEmptyPage = JSON.parse(prior[0].source);
+  newlyVisitedEmptyPage.pageEvidence.pages.push({ page: 3, url: "https://example.test/orders?page=3", matches: [] });
+  assert.equal(sameReadEvidence([{ ...prior[0], source: JSON.stringify(newlyVisitedEmptyPage) }], prior), false,
+    "a newly visited page remains a fact even when its bounded rank result is empty");
+
+  const malformed = JSON.parse(prior[0].source);
+  malformed.pageEvidence.pages.push(null);
+  assert.equal(sameReadEvidence([{ ...prior[0], source: JSON.stringify(malformed) }], prior), false,
+    "malformed optional page evidence is preserved safely and does not throw");
+});
+
 test("fact comparison preserves browser-find source URLs and nested fact locators", () => {
   const prior = [{
     command: 'agent browser find --url https://example.test/a --question "find the assigned id" --session s1',
