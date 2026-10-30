@@ -975,7 +975,7 @@ test("fail/unverifiable drift with unchanged facts stops after one retry", async
       executions++;
       appendExecutionResult(h,
         'agent browser find --url https://example.test/page --question "lookup the required value" --session s' + executions,
-        JSON.stringify({ answered: false, question: "lookup the required value", url: `https://example.test/page?read=${executions}`, session: `s${executions}`, matches: [{ text: "Directory", location: { url: "https://example.test/page/directory" } }] }),
+        JSON.stringify({ answered: false, question: "lookup the required value", url: "https://example.test/page", session: `s${executions}`, matches: [{ text: "Directory", location: { url: "https://example.test/page/directory" } }] }),
         `read-${executions}`);
       return "The lookup did not return the requested value.";
     });
@@ -996,7 +996,7 @@ test("a distinct read source gets one opportunity, but repeating it with metadat
       const url = executions === 1 ? "https://example.test/page" : "https://alternate.example.test/page";
       appendExecutionResult(h,
         `agent browser find --url ${url} --question "lookup the required value" --session s${executions}`,
-        JSON.stringify({ answered: false, question: "lookup the required value", url: `${url}?read=${executions}`, session: `s${executions}`, matches: [{ text: "Directory", location: { url: "https://example.test/page/directory" } }] }),
+        JSON.stringify({ answered: false, question: "lookup the required value", url, session: `s${executions}`, matches: [{ text: "Directory", location: { url: "https://example.test/page/directory" } }] }),
         `read-${executions}`);
       return "The lookup did not return the requested value.";
     });
@@ -1016,7 +1016,7 @@ test("a newly observed required value permits another retry; a duplicate of that
       const value = executions === 1 ? "The directory has no matching entry." : "Employee ID E-17 is assigned.";
       appendExecutionResult(h,
         'agent browser find --url https://example.test/page --question "lookup the required value" --session s' + executions,
-        JSON.stringify({ answered: executions > 1, question: "lookup the required value", session: `s${executions}`, matches: [{ text: value, location: { url: "https://example.test/page/directory" } }] }),
+        JSON.stringify({ answered: executions > 1, question: "lookup the required value", url: "https://example.test/page", session: `s${executions}`, matches: [{ text: value, location: { url: "https://example.test/page/directory" } }] }),
         `read-${executions}`);
       return value;
     });
@@ -1404,24 +1404,86 @@ test("sameReadEvidence ignores query/session metadata but notices changed facts"
   ), false);
 });
 
-test("fact comparison ignores only browser envelope locators and keeps fact-bearing nested locators", () => {
+test("typed browser-find facts ignore ranking/session jitter, order, and previously seen subsets", () => {
+  const command = 'agent browser find --url https://example.test/orders --question "find the requested order"';
+  const rowA = (session, score = 0.02) => ({
+    text: "rec-41 | Customer A | open | Cancel rec-41",
+    score,
+    session: "record-session-41",
+    location: { url: "https://example.test/orders/rec-41", selector: "#row-41", ref: 4 },
+    actions: [{
+      label: "Cancel rec-41",
+      href: "/orders/rec-41/cancel",
+      target: { selector: "#row-41", recordId: "rec-41" },
+      next: `aux4 agent browser run --session '${session}' --goal 'cancel rec-41' --target '{"selector":"#row-41","recordId":"rec-41"}'`
+    }]
+  });
+  const rowB = (score = 0.03) => ({
+    text: "rec-52 | Customer B | open",
+    score,
+    location: { url: "https://example.test/orders/rec-52", selector: "#row-52", ref: 5 }
+  });
+  const attempt = (matches, session, answerScore) => ({
+    command,
+    source: JSON.stringify({
+      question: "find the requested order", answered: false, answerScore, session,
+      sessionClosed: session === "closed", url: "https://example.test/orders",
+      rankCalls: 3, usage: { input: 12 }, wallMs: 4, blocks: 10,
+      matches
+    })
+  });
+  const prior = [attempt([rowA("s1"), rowB()], "s1", 0.21)];
+  const jitterAndPermutation = [attempt([rowB(0.98), rowA("s2", 0.77)], "s2", 0.89)];
+  assert.equal(sameReadEvidence(jitterAndPermutation, prior), true);
+  assert.equal(sameReadFacts(jitterAndPermutation, prior), true);
+
+  const subset = [attempt([rowA("s3", 0.11)], "s3", 0.09)];
+  assert.equal(sameReadFacts(subset, prior), true, "a subset of rows and actions already observed is not new evidence");
+
+  const newRow = [attempt([rowA("s4"), rowB(), { text: "rec-99 | Customer C", score: 0.02, location: { url: "https://example.test/orders/rec-99", selector: "#row-99" } }], "s4", 0.31)];
+  assert.equal(sameReadFacts(newRow, prior), false, "a newly observed row is progress");
+
+  const newActionTarget = [attempt([{ ...rowA("s5"), actions: [{
+    label: "Cancel rec-41", href: "/orders/rec-41/cancel",
+    target: { selector: "#row-41-confirm", recordId: "rec-41" },
+    next: "aux4 agent browser run --session 's5' --goal 'cancel rec-41' --target '{\"selector\":\"#row-41-confirm\",\"recordId\":\"rec-41\"}'"
+  }] }], "s5", 0.32)];
+  assert.equal(sameReadFacts(newActionTarget, prior), false, "a different observed action target is progress");
+
+  const changedNestedUrl = [attempt([{ ...rowA("s6"), location: { url: "https://example.test/other-record", selector: "#row-41", ref: 4 } }], "s6", 0.2)];
+  assert.equal(sameReadFacts(changedNestedUrl, prior), false, "nested factual URLs remain significant");
+  const changedRecordSession = [attempt([{ ...rowA("s7"), session: "record-session-42" }], "s7", 0.2)];
+  assert.equal(sameReadFacts(changedRecordSession, prior), false, "nested record session fields remain factual");
+  assert.equal(sameReadEvidence(
+    [{ command: "records list", source: JSON.stringify({ score: 0.2, session: "record-session" }) }],
+    [{ command: "records list", source: JSON.stringify({ score: 0.3, session: "record-session" }) }]
+  ), false, "nonbrowser score fields remain factual");
+});
+
+test("fact comparison preserves browser-find source URLs and nested fact locators", () => {
   const prior = [{
     command: 'agent browser find --url https://example.test/a --question "find the assigned id" --session s1',
     source: JSON.stringify({ answered: false, question: "find the assigned id", url: "https://example.test/a", session: "s1", timestamp: "2026-01-01T00:00:00Z", matches: [{ text: "Directory", location: { url: "https://example.test/a/records" }, timestamp: "2025-12-01" }] })
   }];
   const locatorOnly = [{
     command: 'agent browser find --url https://example.test/a --question "find the assigned id" --session s2',
-    source: JSON.stringify({ answered: false, question: "find the assigned id", url: "https://example.test/b", session: "s2", timestamp: "2026-01-02T00:00:00Z", matches: [{ text: "Directory", location: { url: "https://example.test/a/records" }, timestamp: "2025-12-01" }] })
+    source: JSON.stringify({ answered: false, question: "find the assigned id", url: "https://example.test/a", session: "s2", timestamp: "2026-01-02T00:00:00Z", matches: [{ text: "Directory", location: { url: "https://example.test/a/records" }, timestamp: "2025-12-01" }] })
   }];
   assert.equal(sameReadFacts(locatorOnly, prior), true);
   assert.equal(hasNewReadSource(locatorOnly, prior), false, "session and question changes are not new sources");
+
+  const changedResultSource = [{
+    ...locatorOnly[0],
+    source: JSON.stringify({ answered: false, question: "find the assigned id", url: "https://example.test/b", session: "s2", timestamp: "2026-01-02T00:00:00Z", matches: [{ text: "Directory", location: { url: "https://example.test/a/records" }, timestamp: "2025-12-01" }] })
+  }];
+  assert.equal(sameReadFacts(changedResultSource, prior), false, "the result URL identifies the observed source");
 
   const changedSource = [{
     ...locatorOnly[0],
     command: 'agent browser find --url https://different.example.test/directory --question "find the assigned id" --session s3'
   }];
   assert.equal(hasNewReadSource(changedSource, prior), true, "unrelated source URLs remain distinct");
-  assert.equal(sameReadFacts(changedSource, prior), true, "same facts from another locator are not new facts");
+  assert.equal(sameReadFacts(changedSource, prior), true, "same returned URL and facts remain comparable despite a different command locator");
   assert.equal(hasNewReadSource([{
     ...prior[0], command: 'agent browser inspect --url https://example.test/a --offset 2'
   }], [{
@@ -1543,27 +1605,45 @@ setTimeout(() => {}, 10000);
   }
 });
 
-test("runAux4Monitored stops when an identical action repeats with only transient result changes", async () => {
+test("runAux4Monitored refuses jittered browser-find repetitions through persisted tool history", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-transient-watch-"));
   const bin = path.join(dir, "aux4");
   const history = path.join(dir, "history.json");
-  const command = 'agent browser find --url http://127.0.0.1:7400/orders --question "Is there an order for Zoe Nolan?"';
+  const command = 'agent browser find --url https://example.test/orders --question "find the requested order"';
   const messages = [];
   for (let i = 0; i < 3; i++) {
     const id = `find-${i}`;
     messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
+    const rowA = {
+      text: "rec-41 | Customer A | open | Cancel rec-41",
+      score: [0.11, 0.98, 0.32][i],
+      location: { url: "https://example.test/orders/rec-41", selector: "#row-41", ref: 4 },
+      actions: [{
+        label: "Cancel rec-41", href: "/orders/rec-41/cancel",
+        target: { selector: "#row-41", recordId: "rec-41" },
+        next: `aux4 agent browser run --session 's${i}' --goal 'cancel rec-41' --target '{"selector":"#row-41","recordId":"rec-41"}'`
+      }]
+    };
+    const rowB = { text: "rec-52 | Customer B | open", score: [0.23, 0.04, 0.78][i], location: { url: "https://example.test/orders/rec-52", selector: "#row-52", ref: 5 } };
+    const matches = i === 0 ? [rowA, rowB] : i === 1 ? [rowB, rowA] : [rowB];
     messages.push({
       role: "tool",
       tool_call_id: id,
       name: "executeAux4",
       content: JSON.stringify({
-        question: "Is there an order for Zoe Nolan?",
+        question: "find the requested order",
         answered: false,
         answerScore: [0.27, 0.29, 0.28][i],
         session: `session-${i}`,
-        url: "http://127.0.0.1:7400/orders",
-        title: "Dojo bench",
-        granularity: "block"
+        sessionClosed: i === 2,
+        url: "https://example.test/orders",
+        title: "Records",
+        granularity: "block",
+        rankCalls: i + 1,
+        usage: { input: 100 + i },
+        wallMs: i + 1,
+        blocks: 10,
+        matches
       })
     });
   }
@@ -1590,12 +1670,18 @@ test("runAux4Monitored keeps an identical action when the result shows new evide
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-new-evidence-watch-"));
   const bin = path.join(dir, "aux4");
   const history = path.join(dir, "history.json");
-  const command = "orders search --customer Zoe";
+  const command = 'agent browser find --url https://example.test/orders --question "find the requested order"';
   const messages = [];
   for (let i = 0; i < 3; i++) {
     const id = `search-${i}`;
     messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
-    messages.push({ role: "tool", tool_call_id: id, name: "executeAux4", content: JSON.stringify({ found: i === 2, count: i === 2 ? 1 : 0 }) });
+    const rowA = { text: "rec-41 | Customer A", score: 0.1 + i, location: { url: "https://example.test/orders/rec-41", selector: "#row-41" } };
+    const rowB = { text: "rec-52 | Customer B", score: 0.9 - i, location: { url: "https://example.test/orders/rec-52", selector: "#row-52" } };
+    const matches = i === 0 ? [rowA] : [rowA, rowB];
+    messages.push({ role: "tool", tool_call_id: id, name: "executeAux4", content: JSON.stringify({
+      question: "find the requested order", answered: false, url: "https://example.test/orders",
+      answerScore: 0.1 + i, session: `s${i}`, matches
+    }) });
   }
   fs.writeFileSync(history, JSON.stringify({ messages: [] }));
   fs.writeFileSync(bin, `#!/usr/bin/env node

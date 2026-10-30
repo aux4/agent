@@ -229,10 +229,42 @@ function repeatsWithoutNewResult(attempts, count = 3) {
   const recent = attempts.slice(-count);
   const command = recent[0]?.command;
   if (!command || recent.some(attempt => attempt.command !== command || !attempt.source)) return false;
+  const findFacts = recent.map(browserFindFacts);
+  if (findFacts.every(Boolean)) return repeatsWithoutNewBrowserFindFacts(attempts, count, command);
   // Ignore transient request/session metadata so a fresh session ID or score
   // cannot make an unchanged answer look like new progress.
   const evidence = recent.map(readEvidenceKey);
   return Boolean(evidence[0]) && evidence.every(key => key === evidence[0]);
+}
+
+function repeatsWithoutNewBrowserFindFacts(attempts, count, command) {
+  const recent = attempts.slice(-count);
+  const earlier = attempts.slice(0, -count).filter(attempt => attempt.command === command).map(browserFindFacts).filter(Boolean);
+  const seen = new Map();
+  const add = fact => {
+    let byBase = seen.get(fact.scope);
+    if (!byBase) seen.set(fact.scope, byBase = new Map());
+    let rows = byBase.get(fact.baseKey);
+    if (!rows) byBase.set(fact.baseKey, rows = new Set());
+    for (const row of fact.rows) rows.add(row);
+  };
+  for (const fact of earlier) add(fact);
+
+  const recentFacts = recent.map(browserFindFacts);
+  let start = 0;
+  // The first observation is the baseline when this is the first repeated
+  // window; only later calls can demonstrate a repeat without new facts.
+  if (!earlier.length && recentFacts[0]) {
+    add(recentFacts[0]);
+    start = 1;
+  }
+  for (const fact of recentFacts.slice(start)) {
+    const rows = seen.get(fact.scope)?.get(fact.baseKey);
+    if (!rows) return false;
+    if (fact.rows.some(row => !rows.has(row))) return false;
+    add(fact);
+  }
+  return true;
 }
 
 // Run an execution turn while watching its persisted tool history. Once the
@@ -2505,6 +2537,103 @@ const EPHEMERAL_EVIDENCE_KEYS = new Set([
   "duration", "elapsed", "elapsedms", "runtime"
 ]);
 
+const BROWSER_FIND_RANKING_KEYS = new Set([
+  "session", "sessionclosed", "answerscore", "rankcalls", "usage", "wallms",
+  "timestamp", "observedat", "queriedat", "fetchedat", "checkedat"
+]);
+
+function canonicalEvidenceValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalEvidenceValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalEvidenceValue(value[key])]));
+}
+
+function normalizeFindContinuation(command) {
+  const words = commandWords(command);
+  if (!words) return command;
+  let changed = false;
+  for (let index = 0; index < words.length; index++) {
+    if (words[index] === "--session" && index + 1 < words.length) {
+      words[index + 1] = "<session>";
+      changed = true;
+    } else if (words[index].startsWith("--session=")) {
+      words[index] = "--session=<session>";
+      changed = true;
+    }
+  }
+  return changed ? JSON.stringify(words) : command;
+}
+
+function normalizeFindAction(action) {
+  if (!action || typeof action !== "object" || Array.isArray(action)) return canonicalEvidenceValue(action);
+  const normalized = {};
+  for (const key of Object.keys(action).sort()) {
+    normalized[key] = key === "next" && typeof action[key] === "string"
+      ? normalizeFindContinuation(action[key])
+      : canonicalEvidenceValue(action[key]);
+  }
+  return normalized;
+}
+
+function normalizeFindActionList(actions) {
+  return actions.map(normalizeFindAction).sort(compareCanonicalEvidence);
+}
+
+function compareCanonicalEvidence(a, b) {
+  const left = JSON.stringify(a);
+  const right = JSON.stringify(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function browserFindPayload(attempt) {
+  const words = commandWords(attempt?.command);
+  if (!words || words.slice(0, 3).map(word => word.toLowerCase()).join(" ") !== "agent browser find") return null;
+  let data;
+  try { data = JSON.parse(String(attempt?.source ?? attempt?.result ?? "")); } catch { return null; }
+  if (!data || typeof data !== "object" || Array.isArray(data)
+    || typeof data.answered !== "boolean" || typeof data.question !== "string"
+    || typeof data.url !== "string" || !Array.isArray(data.matches)
+    || !data.matches.every(match => match && typeof match === "object" && !Array.isArray(match) && typeof match.text === "string")) return null;
+  return data;
+}
+
+function normalizeBrowserFind(data) {
+  const normalized = {};
+  for (const key of Object.keys(data).sort()) {
+    if (BROWSER_FIND_RANKING_KEYS.has(key.toLowerCase())) continue;
+    if (key === "matches") {
+      normalized.matches = data.matches.map(match => {
+        const row = {};
+        for (const matchKey of Object.keys(match).sort()) {
+          if (matchKey === "score") continue;
+          row[matchKey] = matchKey === "actions" && Array.isArray(match.actions)
+            ? normalizeFindActionList(match.actions)
+            : canonicalEvidenceValue(match[matchKey]);
+        }
+        return row;
+      }).sort(compareCanonicalEvidence);
+    } else if (key === "actions" && Array.isArray(data.actions)) {
+      normalized.actions = normalizeFindActionList(data.actions);
+    } else {
+      normalized[key] = canonicalEvidenceValue(data[key]);
+    }
+  }
+  return normalized;
+}
+
+function browserFindFacts(attempt) {
+  const data = browserFindPayload(attempt);
+  if (!data) return null;
+  const normalized = normalizeBrowserFind(data);
+  const rows = normalized.matches.map(match => JSON.stringify(match));
+  const { matches: _matches, ...base } = normalized;
+  return {
+    scope: JSON.stringify([data.url, data.question]),
+    baseKey: JSON.stringify(base),
+    rows
+  };
+}
+
 function stableEvidence(value) {
   if (Array.isArray(value)) return value.map(stableEvidence);
   if (!value || typeof value !== "object") return value;
@@ -2516,6 +2645,8 @@ function stableEvidence(value) {
 function readEvidenceKey(attempt) {
   const raw = String(attempt?.source ?? attempt?.result ?? "").trim();
   if (!raw) return "";
+  const browserFind = browserFindPayload(attempt);
+  if (browserFind) return JSON.stringify(normalizeBrowserFind(browserFind));
   try {
     return JSON.stringify(stableEvidence(JSON.parse(raw)));
   } catch {
@@ -2574,11 +2705,21 @@ export function sameReadFacts(current, previous) {
   const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
   const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
   if (!priorReads.length || !currentReads.length) return false;
-  const prior = new Set(priorReads.map(readFactsKey).filter(Boolean));
-  return prior.size > 0 && currentReads.every(attempt => {
+  const priorBrowser = priorReads.map(attempt => ({ attempt, facts: browserFindFacts(attempt) })).filter(item => item.facts);
+  const priorOther = new Set(priorReads.filter(attempt => !browserFindFacts(attempt)).map(readFactsKey).filter(Boolean));
+  return currentReads.every(attempt => {
+    const facts = browserFindFacts(attempt);
+    if (facts) return browserFindContained(facts, priorBrowser);
     const key = readFactsKey(attempt);
-    return key && prior.has(key);
+    return key && priorOther.has(key);
   });
+}
+
+function browserFindContained(facts, priorBrowser) {
+  const matching = priorBrowser.filter(item => item.facts.scope === facts.scope && item.facts.baseKey === facts.baseKey);
+  if (!matching.length) return false;
+  const rows = new Set(matching.flatMap(item => item.facts.rows));
+  return facts.rows.every(row => rows.has(row));
 }
 
 export function hasNewReadSource(current, previous) {
@@ -2627,10 +2768,13 @@ export function sameReadEvidence(current, previous) {
   const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
   const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
   if (!priorReads.length || !currentReads.length) return false;
-  const prior = new Set(priorReads.map(readEvidenceKey).filter(Boolean));
-  return prior.size > 0 && currentReads.every(a => {
-    const key = readEvidenceKey(a);
-    return key && prior.has(key);
+  const priorBrowser = priorReads.map(attempt => ({ attempt, facts: browserFindFacts(attempt) })).filter(item => item.facts);
+  const priorOther = new Set(priorReads.filter(attempt => !browserFindFacts(attempt)).map(readEvidenceKey).filter(Boolean));
+  return currentReads.every(attempt => {
+    const facts = browserFindFacts(attempt);
+    if (facts) return browserFindContained(facts, priorBrowser);
+    const key = readEvidenceKey(attempt);
+    return key && priorOther.has(key);
   });
 }
 
