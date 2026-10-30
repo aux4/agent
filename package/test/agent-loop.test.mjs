@@ -1075,13 +1075,40 @@ console.log(JSON.stringify([]));
       { command: "aux4 mail", description: "The mail command group." }
     ]);
     assert.match(text, /records events \(group; complete child paths: records events list, records events update\)/);
-    assert.doesNotMatch(text, /- records \(group/);
+    assert.match(text, /records \(group; complete child paths: records events, records search\)/);
     assert.match(text, /records events update Parameters: --recordId <arg>, --begin, --finish\./);
     assert.match(text, /mail \(group; complete child paths: mail send\)/);
   } finally {
     if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("command references retain direct ancestor leaves alongside nested group leaves", async () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+const command = args.slice(0, -1).join(' ');
+if (command === 'google gmail') console.log('gmail\\n  list\\n  List messages.\\n    --query <arg>\\n      Search query.\\n  get\\n  Read a message.\\n    --messageId <arg>\\n      Message identifier.\\n  labels\\n  Manage labels.\\n' + 'verbose ancestor documentation\\n'.repeat(180));
+else if (command === 'google gmail labels') console.log('labels\\n  list\\n  List labels.\\n    --includeSystem\\n      Include system labels.\\n');
+else console.log('help for ' + command);
+`);
+  await withAux4Bin(fake, async () => {
+    const text = describeFoundCommands([
+      { command: "aux4 google gmail", description: "The Gmail command group." },
+      { command: "aux4 google gmail list", description: "List messages." },
+      { command: "aux4 google gmail get", description: "Read a message." },
+      { command: "aux4 google gmail labels list", description: "List labels." }
+    ]);
+    assert.match(text, /google gmail labels \(group; complete child paths: google gmail labels list\)/);
+    assert.match(text, /google gmail \(group; complete child paths: google gmail list, google gmail get, google gmail labels\)/);
+    assert.match(text, /google gmail list Parameters: --query <arg>/);
+    assert.match(text, /google gmail get Parameters: --messageId <arg>/);
+    assert.match(text, /google gmail labels list Parameters: --includeSystem/);
+    assert.ok(text.indexOf("google gmail labels (group") < text.indexOf("google gmail (group"));
+    const listedPaths = [...text.matchAll(/^\s*- .*complete child paths: (.*)\)$/gm)]
+      .flatMap(([, paths]) => paths.split(", "));
+    assert.deepEqual([...new Set(listedPaths)], listedPaths);
+    assert.ok(text.length < 6500, `command reference exceeded bounded context: ${text.length}`);
+  });
 });
 
 test("findCommands stops after an unavailable search instead of repeating a cold-index failure", () => {

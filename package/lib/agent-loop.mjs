@@ -2039,9 +2039,9 @@ export function describeFoundCommands(found) {
     "Installed aux4 command reference (exact syntax from --help). Pass the shown command path and flags to executeAux4; it adds the aux4 binary. Use these flags directly without another help lookup. Group headings are not actions: run a complete listed child path before adding flags:"
   ];
 
-  // Search may return a group rather than the leaf command that completes the
-  // request. Prefer the exact, deepest matched group so its child commands are
-  // visible before broad ancestor help consumes the prompt budget.
+  // Search may return both a group and leaves owned directly by that group.
+  // Keep matched ancestors as well as nested groups: an ancestor can own
+  // useful direct commands that are absent from its nested group's help.
   const groupCandidates = [];
   for (const f of found) {
     const parts = String(f.command || "").trim().split(/\s+/);
@@ -2054,12 +2054,13 @@ export function describeFoundCommands(found) {
     if (group && !groupCandidates.includes(group)) groupCandidates.push(group);
   }
 
-  const deepestGroups = groupCandidates.filter(group =>
-    !groupCandidates.some(other => other !== group && other.startsWith(`${group} `)));
-  deepestGroups.sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length
+  // More specific groups get the first share of the bounded help budget, but
+  // ancestors remain eligible for their distinct direct child commands.
+  const relevantGroups = [...groupCandidates];
+  relevantGroups.sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length
     || groupCandidates.indexOf(a) - groupCandidates.indexOf(b));
   const references = [];
-  for (const group of deepestGroups.slice(0, MAX_HELP_OUTPUTS)) {
+  for (const group of relevantGroups.slice(0, MAX_HELP_OUTPUTS)) {
     const groupHelp = commandHelp(group, HELP_GROUP_OUTPUT_LIMIT * 3);
     if (!groupHelp) continue;
     const helpLines = groupHelp.split(/\r?\n/);
