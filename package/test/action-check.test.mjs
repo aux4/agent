@@ -160,3 +160,24 @@ const fs=require('fs');const file=${JSON.stringify(counter)};const n=fs.existsSy
     }
   } finally {if(original===undefined)delete process.env.AUX4_BIN;else process.env.AUX4_BIN=original;fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+
+test("an unchanged registered goal may inspect, while added fields, flags and substituted URLs still need verification", () => {
+  const original=process.env.AUX4_BIN;
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"faithful-goal-"));
+  const fake=path.join(dir,"aux4");
+  fs.writeFileSync(fake,`#!/bin/sh
+printf '%s' '{"allow":false,"reason":"needs normal verification"}'
+`,{mode:0o755});
+  process.env.AUX4_BIN=fake;
+  try {
+    const options={configFile:"/local.yaml",packageDir:"/agent",delegatedPrefixes:["agent forms"]};
+    const request="Submit the application at https://example.test/apply for Morgan using the assigned category.";
+    const command='agent forms run --url https://example.test/apply --goal "'+request+'"';
+    const help="run\n  --goal <arg>";
+    assert.equal(authorizeAction(options,command,[],request,"",help).forwarded,true);
+    assert.equal(authorizeAction(options,command+' --field "Name=Morgan"',[],request,"",help).allow,false);
+    assert.equal(authorizeAction(options,command+' --playbook anything',[],request,"",help).allow,false);
+    assert.equal(authorizeAction(options,command.replace('--url https://example.test/apply','--url https://example.test/other'),[],request,"",help).allow,false);
+  } finally {if(original===undefined)delete process.env.AUX4_BIN;else process.env.AUX4_BIN=original;fs.rmSync(dir,{recursive:true,force:true});}
+});

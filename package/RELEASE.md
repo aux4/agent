@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.45
+
+- Preserve explicit enable/disable directions before authorization.
+- Allow registered delegates to inspect an unchanged original goal without adding data, controls, or substituted explicit URLs.
+
 ## 4.1.44
 
 - Suppress false success claims when completion lacks execution evidence, while recognizing a recorded submission followed by a later incomplete step.

@@ -2278,3 +2278,13 @@ test("an unexecuted change cannot leak a false success claim into the final answ
   const submitted={command:"agent browser run",source:'{"status":"needs-input","submitted":true}'};
   assert.equal(executionProofContent("A change was saved; a later step needs input.",verdict,[submitted]),"A change was saved; a later step needs input.");
 });
+
+
+test("explicit boolean directions cannot be reversed and negative control labels are respected", () => {
+  assert.equal(unsourcedFieldValues(["Release notices=unchecked"],[],"Enable Release notices.")[0].directionMismatch,true);
+  assert.deepEqual(unsourcedFieldValues(["Release notices=checked"],[],"Enable Release notices."),[]);
+  assert.equal(unsourcedFieldValues(["Promotional mail=checked"],[],"Disable Promotional mail.")[0].directionMismatch,true);
+  assert.deepEqual(unsourcedFieldValues(["No promotional mail=checked"],[],"Disable promotional mail."),[]);
+  assert.deepEqual(unsourcedFieldValues(["Updates=checked"],[],"Do not disable Updates."),[]);
+  assert.deepEqual(unsourcedFieldValues(["Security alerts=checked","Marketing=unchecked"],[],"Enable Security alerts and disable Marketing."),[]);
+});

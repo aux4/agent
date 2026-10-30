@@ -65,6 +65,26 @@ export function unsourcedActionIds(command, attempts = [], request = "", referen
   return missing;
 }
 
+function faithfullyForwardedGoal(words, request, reference) {
+  if (!/^\s*--goal\b/m.test(reference)) return false;
+  const start=words.findIndex(word=>word.startsWith("--"));
+  if(start<0)return false;
+  const route=new Map();
+  for(let i=start;i<words.length;i++) {
+    const flag=words[i].match(/^--(url|goal)(?:=(.*))?$/);
+    if(!flag || route.has(flag[1]))return false;
+    const value=flag[2] ?? words[++i];
+    if(value===undefined || value.startsWith("--"))return false;
+    route.set(flag[1],value);
+  }
+  if(route.get("goal")?.trim()!==request.trim())return false;
+  const explicit=[...request.matchAll(/https?:\/\/[^\s"'<>]+/g)].map(match=>match[0].replace(/[),.;!?]+$/,""));
+  if(explicit.length) {
+    try {if(!route.has("url") || !explicit.some(value=>new URL(value).href===new URL(route.get("url")).href))return false;}catch{return false;}
+  }
+  return true;
+}
+
 export function authorizeAction(options, command, attempts = [], request = "", history = "", commandReference = undefined) {
   if (!isChangeCommand(command) || /(?:^|\s)--help(?:\s|$)/.test(command)) return { allow: true, skipped: true };
   // A delegate may inspect targets the parent has not seen. Still validate
@@ -132,7 +152,7 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   if(delegatedGoal) {
     const unknownFields=unsourcedFieldValues([...new Set(candidateFields.map(({label,value})=>`${label}=${value}`))],attempts,request);
     if(unknownFields.length){
-      const verdict={allow:false,delegated:true,reason: unknownFields.some(entry => entry.preserved) ? "The proposed fields change a value the request explicitly says to preserve. Keep its observed value unchanged." : `The value ${unknownFields.map(entry=>entry.label+"="+entry.value).join(", ")} is not established by the request or independent factual evidence. Available options, page labels and staged values do not establish an assigned record value. Look up the actual value or report it missing.`};
+      const verdict={allow:false,delegated:true,reason: unknownFields.some(entry => entry.directionMismatch) ? "The proposed boolean value reverses an explicit enable/disable instruction. Preserve the requested direction." : unknownFields.some(entry => entry.preserved) ? "The proposed fields change a value the request explicitly says to preserve. Keep its observed value unchanged." : `The value ${unknownFields.map(entry=>entry.label+"="+entry.value).join(", ")} is not established by the request or independent factual evidence. Available options, page labels and staged values do not establish an assigned record value. Look up the actual value or report it missing.`};
       if(auditBase)fs.writeFileSync(`${auditBase}.verdict.json`,JSON.stringify(verdict,null,2));
       return verdict;
     }
@@ -141,6 +161,11 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   if (unknownIds.length) {
     const verdict = { allow: false, reason: `The target identifier ${unknownIds.map(item => item.value).join(", ")} is not established by the request or successful tool evidence. Look up the named target before changing it.` };
     if (auditBase) fs.writeFileSync(`${auditBase}.verdict.json`, JSON.stringify(verdict, null, 2));
+    return verdict;
+  }
+  if (delegatedGoal && !confirming && !candidateFields.length && faithfullyForwardedGoal(unprefixed,request,payload.commandReference)) {
+    const verdict={allow:true,delegated:true,forwarded:true,reason:"The original request is forwarded unchanged, without added data or action controls. The registered capability owns inspection and guards its concrete writes."};
+    if(auditBase)fs.writeFileSync(`${auditBase}.verdict.json`,JSON.stringify(verdict,null,2));
     return verdict;
   }
   const validDecision = value => value && typeof value.allow === "boolean" && (value.reason === undefined || typeof value.reason === "string");

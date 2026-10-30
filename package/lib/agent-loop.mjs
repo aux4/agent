@@ -1149,6 +1149,25 @@ function changesPreservedField(entry, attempts, request) {
   return false;
 }
 
+// Enforce unambiguous explicit boolean directions before model judgment.
+// Ambiguous/mixed directives retain normal semantic scope verification.
+function explicitChoiceDirection(label, request) {
+  const expected = new Set();
+  for (const clause of String(request).split(/[.!?;\n]/)) {
+    const directives = [...clause.matchAll(/\b(enable|disable|activate|deactivate|subscribe|unsubscribe|check|uncheck|turn\s+on|turn\s+off|opt\s+in|opt\s+out)\b/gi)];
+    for (let i=0;i<directives.length;i++) {
+      const directive=directives[i];
+      const segment=directives.length===1 ? clause : clause.slice(directive.index,directives[i+1]?.index || clause.length);
+      if (!labelNamedIn(label,new Set(sourceTokens(segment)))) continue;
+      let enabled=/^(?:enable|activate|subscribe|check|turn\s+on|opt\s+in)$/i.test(directive[0]);
+      if (/(?:\bdo\s+not|\bdon't|\bnever|\bnot)\s*$/i.test(clause.slice(0,directive.index))) enabled=!enabled;
+      if (/^\s*(?:disable|unsubscribe|uncheck|no\b|not\b|don't\b|do not\b|opt[ -]?out)/i.test(label)) enabled=!enabled;
+      expected.add(enabled);
+    }
+  }
+  return expected.size===1 ? [...expected][0] : null;
+}
+
 // Same provenance check as unsourcedValues, but for a call that has NOT run
 // yet -- the hooks path (see "Hooks integration" below) checks the pending
 // confirmation's own --field values against everything that happened before
@@ -1175,7 +1194,12 @@ export function unsourcedFieldValues(fields, attempts, request = "") {
     }
     // A yes/no answer for a choice the request itself names ("subscribe to
     // product updates" -> Subscribe=yes) states the request's intent, not data.
-    if (isChoiceAnswer(entry.value) && labelNamedIn(entry.label, requestTokens)) continue;
+    if (isChoiceAnswer(entry.value) && labelNamedIn(entry.label, requestTokens)) {
+      const direction=explicitChoiceDirection(entry.label,request);
+      const selected=/^(yes|true|on|checked|y)$/i.test(entry.value.trim());
+      if (direction!==null && direction!==selected) found.push({...entry,directionMismatch:true});
+      continue;
+    }
     if (explicitOpenChoice(entry.label,entry.value,attempts,request)) continue;
     const missing = tokens(entry.value).filter(t => !seen.has(t));
     if (isPlaceholder(entry.value) || missing.length) found.push(entry);
