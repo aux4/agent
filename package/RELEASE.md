@@ -1,5 +1,9 @@
 # Release notes
 
+## Unreleased
+
+- After a blocked response following a successful read, allow one schema-constrained reassessment to select a documented read-only lookup when the caller's permissions allow it. Dispatch at most one exact lookup through the normal checks; otherwise stop without guessing.
+
 ## 4.1.65
 
 - Offer one schema-guided recovery after a malformed provider tool exchange; stop if the follow-up remains unusable. Prevent replay of a submitted browser workflow while its outcome is unknown.
