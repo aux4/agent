@@ -3,6 +3,7 @@
 ## 4.1.61
 
 - Check a proposed change against the requested resource and effect, not just compatible values; require email identity values in consequential command arguments to come from the request or a successful read.
+- Handle a fresh pending confirmation before attempting recovery from an earlier action-guard denial, including when recovery itself yields the confirmation.
 
 ## 4.1.60
 
