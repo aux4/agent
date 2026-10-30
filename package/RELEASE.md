@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.47
+
+- Give authorization checks explicit observed values and unchanged-value comparisons from independent unambiguous evidence.
+
 ## 4.1.46
 
 - Clarify authorization of explicit open choices and resubmitted unchanged field values.

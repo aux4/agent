@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { isChangeCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, isConclusiveAttempt } from "./agent-loop.mjs";
+import { isChangeCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, observedFieldValue, isConclusiveAttempt } from "./agent-loop.mjs";
 export { actionCheckFiles, actionCheckStats } from "./agent-loop.mjs";
 
 // Read the installed command's contract; do not assume every --to is email
@@ -134,7 +134,10 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     return { command: a.command, result, suppliedFields: enteredValues(a.command) };
   });
   const payload = { request, proposedAction: command, delegatedGoal, confirming,
-    proposedFields: [...staged].map(([label, value]) => ({label, value})),
+    proposedFields: [...staged].map(([label, value]) => {
+      const observed=observedFieldValue(label,attempts);
+      return {label,value,...(observed!==null ? {observedValue:observed,unchanged:value===observed} : {})};
+    }),
     explicitlyPermittedChoices: candidateFields.filter(entry=>explicitOpenChoice(entry.label,entry.value,attempts,request)), successfulActionsAndResults: evidence,
     commandReference: commandReference ?? actionCommandHelp(command) };
   let auditBase = "";

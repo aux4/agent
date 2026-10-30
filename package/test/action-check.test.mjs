@@ -101,7 +101,7 @@ const fs=require('fs');const args=process.argv.slice(2);const payload=JSON.parse
     const result=authorizeAction(options,'agent forms run --session s7 --field confirm=yes',prior,request,'','run\n --field <value>');
     assert.equal(result.allow,false);assert.equal(result.delegated,true);assert.notEqual(result.skipped,true);
     const payload=JSON.parse(fs.readFileSync(log,'utf8'));assert.equal(payload.delegatedGoal,true);assert.equal(payload.confirming,true);
-    assert.deepEqual(payload.proposedFields.sort((a,b)=>a.label.localeCompare(b.label)),[{label:'Category',value:'Gold'},{label:'Region',value:'West'}]);
+    assert.deepEqual(payload.proposedFields.sort((a,b)=>a.label.localeCompare(b.label)),[{label:'Category',value:'Gold',observedValue:'Gold',unchanged:true},{label:'Region',value:'West',observedValue:'West',unchanged:true}]);
     assert.equal(payload.request,request);
   }finally{if(original===undefined)delete process.env.AUX4_BIN;else process.env.AUX4_BIN=original;fs.rmSync(dir,{recursive:true,force:true});}
 });

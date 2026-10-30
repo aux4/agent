@@ -1130,8 +1130,13 @@ export function explicitOpenChoice(label,value,attempts,request) {
 function changesPreservedField(entry, attempts, request) {
   const clauses = [...request.matchAll(/\b(?:preserve|retain)\b([^.!?;]*)|\b(?:keep|leave|maintain)\b([^.!?;]*(?:unchanged|as is|intact|the same))[^.!?;]*/gi)];
   if (!clauses.some(match => labelNamedIn(entry.label, new Set(sourceTokens(match[1] || match[2]))))) return false;
+  const observed=observedFieldValue(entry.label,attempts);
+  return observed!==null && observed!==entry.value;
+}
+
+export function observedFieldValue(labelText, attempts) {
   const keyOf = text => String(text).replace(/[^a-z0-9]/gi, "").toLowerCase();
-  const label = keyOf(entry.label);
+  const label = keyOf(labelText);
   for (const attempt of [...attempts].reverse()) {
     if (attempt.failed || attempt.completed === false || enteredValues(attempt.command).length || /(?:^|\s)(?:--help|-h)(?:\s|$)/.test(attempt.command || "")) continue;
     const values = new Set();
@@ -1143,10 +1148,10 @@ function changesPreservedField(entry, attempts, request) {
       }
     };
     walk(parseJSONLoose(fieldEvidenceText(attempt.source ?? attempt.result, attempt.command), null));
-    if (values.size === 1) return !values.has(entry.value);
-    if (values.size > 1) return false;
+    if (values.size === 1) return [...values][0];
+    if (values.size > 1) return null;
   }
-  return false;
+  return null;
 }
 
 // Enforce unambiguous explicit boolean directions before model judgment.

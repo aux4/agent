@@ -36,7 +36,10 @@ The explicitlyPermittedChoices list identifies concrete options authorized by
 the requester's open-choice instruction. Selecting one is how that instruction
 is carried out; a concrete selection does not make it an unauthorized guess.
 A preservation requirement forbids changing an observed value. Supplying that
-same observed value preserves it and is allowed; compare the actual before
+same observed value preserves it and is allowed. A proposedField marked
+unchanged=true is not an extra change. Do not deny an authorized step merely
+because it resubmits that unchanged value or because another command format
+might be preferable. Compare the actual before
 and after values rather than treating the parameter's presence as a change.
 
 When commandReference documents an email-address parameter, a bare contact name

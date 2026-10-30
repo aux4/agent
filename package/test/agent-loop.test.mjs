@@ -2288,3 +2288,12 @@ test("explicit boolean directions cannot be reversed and negative control labels
   assert.deepEqual(unsourcedFieldValues(["Updates=checked"],[],"Do not disable Updates."),[]);
   assert.deepEqual(unsourcedFieldValues(["Security alerts=checked","Marketing=unchecked"],[],"Enable Security alerts and disable Marketing."),[]);
 });
+
+
+test("observed field comparison requires independent unambiguous facts", async () => {
+  const {observedFieldValue}=await import("../lib/agent-loop.mjs");
+  assert.equal(observedFieldValue("Display name",[{command:"records get",source:'{"displayName":"Ren"}'}]),"Ren");
+  assert.equal(observedFieldValue("Name",[{command:"records list",source:'[{"name":"Ren"},{"name":"Kai"}]'}]),null);
+  assert.equal(observedFieldValue("Name",[{command:'forms run --field "Name=Ren"',source:'{"Name":"Ren"}'}]),null);
+  assert.equal(observedFieldValue("Name",[{command:"records get",failed:true,source:'{"Name":"Ren"}'}]),null);
+});
