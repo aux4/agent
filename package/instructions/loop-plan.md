@@ -39,7 +39,7 @@ Produce exactly one JSON object:
   does not establish their address or record ID. Find those facts from the
   relevant records before planning to use them in a change.
 
-- `lookFor` (array, 1 to 4 short phrases of 2 to 6 words): the kinds of
+- `lookFor` (array, up to 4 short phrases of 2 to 6 words): the kinds of
   command the work needs, including each distinct read and write operation,
   each as what it does to what, in plain words, e.g. "read email in the inbox",
   "send an email reply", "fill and submit a form on a web page", "cancel a
@@ -48,6 +48,12 @@ Produce exactly one JSON object:
   from the request, and no tool names.
   Include the lookup needed for any missing identifier or destination, even
   when the requester did not explicitly say to look it up.
+  When an already registered goal capability is supplied with the request,
+  omit operations it covers from this discovery list. Still include every
+  additional read or write needed from a different source or service. A page
+  capability does not provide facts stored elsewhere. If it covers all the
+  work, use an empty array. The outcome criteria and steps still cover the
+  entire request.
 
 Keep every string short: one plain sentence each.
 

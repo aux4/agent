@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.42
+
+- Keep registered page delegation while discovering other capabilities needed by the plan, including independent prerequisite reads.
+- Tell planning which operations the registered capability already covers, avoiding both hidden dependencies and redundant command references.
+
 ## 4.1.41
 
 - Enforce explicitly preserved field values and reject already completed exact writes before model judgment.

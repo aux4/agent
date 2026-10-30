@@ -1457,7 +1457,7 @@ test("a capability with a goal-level agent is delegated: its low-level commands 
   const delegations = activeDelegations(new Set(["main", "agent", "agent:browser", "browser"]));
   assert.equal(delegations.length, 1);
   assert.match(delegations[0].note, /executeAux4 with command "agent browser run --url/);
-  assert.match(delegations[0].note, /Reuse the returned session id/);
+  assert.match(delegations[0].note, /Reuse a returned live session id/);
   assert.match(delegations[0].note, /the "agent browser" command group is available/);
   assert.match(delegations[0].note, /For any task performed on a web page, use executeAux4/);
   assert.deepEqual(delegatedDenyPatterns(delegations), ["browser", "browser *", "aux4 browser", "aux4 browser *"]);
@@ -2233,4 +2233,20 @@ test("explicitly preserved fields cannot be overwritten using identity text", ()
   assert.deepEqual(unsourcedFieldValues(["Name=Rowan Lee"], attempts, "Update the phone for Rowan. Preserve the name."), []);
   assert.equal(unsourcedFieldValues(["Postal code=44002"], attempts, "44002 is my reference. Keep postal code unchanged.")[0].preserved, true);
   assert.deepEqual(unsourcedFieldValues(["Postal code=44002"], attempts, "Change postal code to 44002."), []);
+});
+
+
+test("page delegation retains discovery of independent prerequisite capabilities", async () => {
+  const fake = makeFakeAux4(`
+const args=process.argv.slice(2);
+if(args.includes('pkger'))console.log(JSON.stringify([{command:'aux4 directory read',description:'Read directory entries'},{command:'aux4 forms click',description:'Click a control'},{command:'aux4 agent forms run',description:'Act on a form'}]));
+else if(args.includes('--help'))console.log(args.join(' '));
+`);
+  await withAux4Bin(fake, async () => {
+    const reference=executionCommandReference('Fill the page https://example.test/application using a directory entry.',{lookFor:['read directory entries']},[{via:'agent:forms',group:'forms',urlTasks:true,entrypoints:['run','find']}]);
+    assert.match(reference,/agent forms run/);
+    assert.match(reference,/directory read/);
+    assert.doesNotMatch(reference,/forms click/);
+    assert.ok(reference.indexOf('agent forms run') < reference.indexOf('directory read'));
+  });
 });

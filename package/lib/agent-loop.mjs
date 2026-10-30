@@ -148,10 +148,12 @@ const HELPER_TIMEOUT_MS = 90000;
 
 export function buildPlan(options, planHistory = "") {
   if (planHistory) fs.rmSync(planHistory, { force: true });
+  const delegate = preferredDelegation(options.request, options.delegations || []);
+  const capability = delegate ? `\n\nAlready registered goal capability: ${delegate.planningScope || delegate.note || delegate.via}. In lookFor, name only additional capabilities outside this scope; use an empty array when it covers all the work.` : "";
   const result = askOnce(options, {
     instructions: planInstructionsPath(options.packageDir),
     history: planHistory,
-    question: `Request:\n${options.request}\n\nRespond with ONLY the JSON plan object described in your instructions. No prose, no code fences.`,
+    question: `Request:\n${options.request}${capability}\n\nRespond with ONLY the JSON plan object described in your instructions. No prose, no code fences.`,
     extraArgs: ["--tools", PLAN_TOOLS]
   });
   const parsed = parseJSONLoose(result.stdout, null);
@@ -2001,6 +2003,19 @@ export function executionCommandReference(request, plan, delegations = []) {
     const help = commandHelp(command, HELP_OUTPUT_LIMIT);
     lines.push(`- ${group} ${child}${help ? `\n${help}` : " --help"}`);
   }
+  // A registered delegate covers its own domain, not prerequisite facts in
+  // another service. Discover the remaining planned capabilities instead of
+  // hiding them merely because the request also contains a page URL.
+  const queries = Array.isArray(plan?.lookFor) ? plan.lookFor.filter(Boolean) : [];
+  if (queries.length) {
+    const covered = delegations.flatMap(item => [item.via, item.group].filter(Boolean).map(value => value.replace(/:/g, " ")));
+    const supplemental = findCommands(queries).filter(item => {
+      const command = item.command.replace(/^aux4\s+/, "");
+      return !covered.some(prefix => command === prefix || command.startsWith(`${prefix} `));
+    });
+    const reference = describeFoundCommands(supplemental);
+    if (reference) lines.push("Additional installed capabilities for the other planned operations (the registered goal capability still owns its page work):\n" + reference);
+  }
   return lines.join("\n");
 }
 
@@ -2047,8 +2062,9 @@ export const DELEGATIONS = [
     via: "agent:browser",
     group: "browser",
     urlTasks: true,
+    planningScope: "Inspect and complete tasks on the provided web pages, including page content, controls, forms, navigation and saving requested page changes. This does not supply facts stored in separate services",
     entrypoints: ["run", "find"],
-    note: "Web pages: the \"agent browser\" command group is available to you; the raw \"browser\" command group is not. For any task performed on a web page, use executeAux4 with command \"agent browser run --url <page> --goal \\\"<requested outcome>\\\"\" to complete the task, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to gather information. The supplied URL is a browser destination for page work, not a request to call its API directly. Pass all provided values as repeated --field \"Label=value\" flags. Let one run inspect, fill, save/submit, and report the result; do not split it into atomic clicks or fills unless it returns a blocker or asks for missing input. Reuse the returned session id for any follow-up. For a web change, identify the target from observed page data and name only requested fields. A click is not proof of a saved or deleted result: verify the resulting state once before claiming success. Use observed links, forms and commands; never guess routes, identifiers or API methods. If a run is incomplete, take a materially different evidence-based step."
+    note: "Web pages: the \"agent browser\" command group is available to you; the raw \"browser\" command group is not. For any task performed on a web page, use executeAux4 with command \"agent browser run --url <page> --goal \\\"<requested outcome>\\\"\" to complete the task, or \"agent browser find --url <page> --question \\\"<what to find>\\\"\" to gather information. The supplied URL is a browser destination for page work, not a request to call its API directly. Pass all provided values as repeated --field \"Label=value\" flags. Let one run inspect, fill, save/submit, and report the result; do not split it into atomic clicks or fills unless it returns a blocker or asks for missing input. Reuse a returned live session id for follow-up; when sessionClosed is true or session is absent, reopen an observed source URL. For a web change, identify the target from observed page data and name only requested fields. A click is not proof of a saved or deleted result: verify the resulting state once before claiming success. Use observed links, forms and commands; never guess routes, identifiers or API methods. If a run is incomplete, take a materially different evidence-based step."
   }
 ];
 
