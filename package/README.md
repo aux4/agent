@@ -102,7 +102,10 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    command help, and the controller checks that command against the caller's existing permissions
    before running it through the normal hooks. It does not repeat a prior successful lookup or
    guess a value. If the reference, permission rules, or result cannot support a suitable lookup,
-   the task remains blocked for the missing information.
+   the task remains blocked for the missing information. When the lookup returns an unambiguous
+   record reference instead of the fact itself, the next normal agent turn may follow a documented
+   read-only detail command with that returned reference, then continue the original task. Existing
+   permissions, hooks, and budgets still apply; ambiguous results remain blocked.
 
 For web-page reads, the registered browser capability includes `agent browser inspect` for the
 ordered content blocks emitted from the current rendered page. Its completeness is limited to the

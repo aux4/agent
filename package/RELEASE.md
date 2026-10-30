@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.67
+
+- After a bounded lookup returns an unambiguous record reference, direct the next ordinary task attempt to use the documented detail-read capability and continue the original request under the existing policy and tool budgets. Preserve BLOCKED for empty or ambiguous results.
+
 ## 4.1.66
 
 - After a blocked response following a successful read, allow one schema-constrained reassessment to select a documented read-only lookup when the caller's permissions allow it. Dispatch at most one exact lookup through the normal checks; otherwise stop without guessing.
