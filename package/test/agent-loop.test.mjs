@@ -1561,6 +1561,17 @@ test("browser pageEvidence ignores ranking jitter but preserves newly surfaced p
   malformed.pageEvidence.pages.push(null);
   assert.equal(sameReadEvidence([{ ...prior[0], source: JSON.stringify(malformed) }], prior), false,
     "malformed optional page evidence is preserved safely and does not throw");
+
+  for (const unknownShape of [
+    "unexpected evidence shape",
+    ["unexpected evidence shape"],
+    { coverage: "ranked-top-k", pages: "not-an-array" }
+  ]) {
+    const changedMalformedEvidence = JSON.parse(prior[0].source);
+    changedMalformedEvidence.pageEvidence = unknownShape;
+    assert.equal(sameReadEvidence([{ ...prior[0], source: JSON.stringify(changedMalformedEvidence) }], prior), false,
+      "changed primitive, array, or non-array-pages evidence remains visible to repeat comparison");
+  }
 });
 
 test("fact comparison preserves browser-find source URLs and nested fact locators", () => {

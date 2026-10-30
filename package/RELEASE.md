@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.55
+
+- Retain bounded per-page ranked browser-find candidates alongside the unchanged global top-K, and normalize their score/order jitter while preserving newly surfaced page facts.
+
 ## 4.1.54
 
 - Keep supplemental preset search results on the discovered service route, and include bounded live help from public ancestor groups so agents can discover relevant sibling commands.

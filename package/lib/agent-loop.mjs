@@ -2661,8 +2661,8 @@ function normalizeBrowserPageEvidence(evidence) {
       normalized[key] = canonicalEvidenceValue(evidence[key]);
       continue;
     }
-    // Keep page order and page/URL facts, but normalize the per-page ranked
-    // candidate order and omit score-only jitter just as for global matches.
+    // Canonicalize page order by the explicit page number, retaining page/URL
+    // facts while normalizing candidate order and score-only jitter.
     normalized.pages = evidence.pages.map(page => {
       if (!page || typeof page !== "object" || Array.isArray(page)) return canonicalEvidenceValue(page);
       const row = {};
@@ -2727,22 +2727,33 @@ function browserFindFacts(attempt) {
   const rows = normalized.matches.map(match => JSON.stringify(match));
   if (Array.isArray(normalized.pageEvidence?.pages)) {
     for (const page of normalized.pageEvidence.pages) {
-      if (!page || typeof page !== "object" || !Array.isArray(page.matches)) continue;
+      if (!page || typeof page !== "object" || Array.isArray(page)
+        || !Array.isArray(page.matches)
+        || !page.matches.every(match => match && typeof match === "object" && !Array.isArray(match) && typeof match.text === "string")) continue;
       for (const match of page.matches) {
         rows.push(JSON.stringify({ pageEvidence: { page: page.page, url: page.url, match } }));
       }
     }
   }
   const { matches: _matches, pageEvidence: _pageEvidence, ...base } = normalized;
-  if (_pageEvidence && typeof _pageEvidence === "object" && !Array.isArray(_pageEvidence)) {
-    const { pages, ...pageEvidenceMetadata } = _pageEvidence;
-    base.pageEvidence = {
-      ...pageEvidenceMetadata,
-      ...(Array.isArray(pages) ? { pages: pages.map(page => {
-        if (!page || typeof page !== "object" || Array.isArray(page)) return page;
-        return Object.fromEntries(Object.keys(page).sort().filter(key => key !== "matches").map(key => [key, page[key]]));
-      }) } : {})
-    };
+  if (_pageEvidence !== undefined) {
+    if (_pageEvidence && typeof _pageEvidence === "object" && !Array.isArray(_pageEvidence)
+      && Array.isArray(_pageEvidence.pages)) {
+      const { pages, ...pageEvidenceMetadata } = _pageEvidence;
+      base.pageEvidence = {
+        ...pageEvidenceMetadata,
+        pages: pages.map(page => {
+          if (!page || typeof page !== "object" || Array.isArray(page)
+            || !Array.isArray(page.matches)
+            || !page.matches.every(match => match && typeof match === "object" && !Array.isArray(match) && typeof match.text === "string")) return page;
+          return Object.fromEntries(Object.keys(page).sort().filter(key => key !== "matches").map(key => [key, page[key]]));
+        })
+      };
+    } else {
+      // Unknown shapes are evidence too. Keep them byte-for-byte in the
+      // canonical base instead of silently treating them as absent.
+      base.pageEvidence = _pageEvidence;
+    }
   }
   return {
     scope: JSON.stringify([data.url, data.question]),
