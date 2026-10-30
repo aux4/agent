@@ -2465,6 +2465,109 @@ test("a clearly requested irreversible action is confirmed in the SAME round -- 
   });
 });
 
+test("a yielded pending confirmation takes priority over unresolved-action recovery", async () => {
+  const request = "Save record R-7.";
+  const next = "records save --recordId R-7 --field confirm=yes";
+  const history = tmpFile("pending-before-guard-recovery.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  const fake = makeFakeAux4(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) {
+  process.stdout.write(JSON.stringify({ goal: "Save the requested record", doneCriteria: ["record R-7 is saved"], steps: [] }));
+} else if (command.includes("loop-verify.md")) {
+  const historyAt = args.indexOf("--history");
+  if (historyAt >= 0) fs.writeFileSync(args[historyAt + 1], JSON.stringify({ messages: [
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "verify-read", name: "executeAux4", args: { command: "records get --recordId R-7" } }] } },
+    { role: "tool", tool_call_id: "verify-read", name: "executeAux4", content: "record R-7 saved" }
+  ] }));
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status: "pass", evidence: "current record read" })) }));
+} else {
+  const file = args[args.indexOf("--history") + 1];
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  data.messages.push(
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "guard-denied", name: "executeAux4", args: { command: "records update --recordId unknown" } }] } },
+    { role: "tool", tool_call_id: "guard-denied", name: "executeAux4", content: "Blocked by hook: ACTION_CHECK_EVIDENCE_REQUIRED: read the selected record first." },
+    { role: "assistant_with_tool", content: { tool_calls: [{ id: "pending", name: "executeAux4", args: { command: "agent browser run --goal 'Save record R-7'" } }] } },
+    { role: "tool", tool_call_id: "pending", name: "executeAux4", content: ${JSON.stringify(JSON.stringify({ status: "needs-input", confirmation: { action: "Save record R-7", target: "record R-7", emptyFields: [], next } }))} }
+  );
+  fs.writeFileSync(file, JSON.stringify(data));
+  // If the monitor did not yield at the pending contract, this must never land.
+  setTimeout(() => {
+    const current = JSON.parse(fs.readFileSync(file, "utf8"));
+    current.messages.push(
+      { role: "assistant_with_tool", content: { tool_calls: [{ id: "late-mutation", name: "executeAux4", args: { command: "records delete --recordId R-8" } }] } },
+      { role: "tool", tool_call_id: "late-mutation", name: "executeAux4", content: "deleted" }
+    );
+    fs.writeFileSync(file, JSON.stringify(current));
+  }, 500);
+  process.stdout.write("A confirmation is pending.\\n");
+  setInterval(() => {}, 10000);
+}
+`);
+
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions({ request, toolDispatchSupported: true }) };
+    let modelTurns = 0;
+    const dispatched = [];
+    const outcome = await runLoop(options, history, async (question, file) => {
+      modelTurns++;
+      assert.equal(modelTurns, 1, "the model recovery turn must not run before the pending contract is handled");
+      const monitored = await runAux4Monitored(["--history", file], file, {
+        pollInterval: 25,
+        yieldOnConfirmationContract: true
+      });
+      assert.equal(monitored.confirmationPending, true);
+      return { content: monitored.stdout.trim(), stopReason: "confirmation" };
+    }, "", async (command, file, _denied, _retry, _patterns) => {
+      dispatched.push({ command, gate: [...(options.gateDeny || [])] });
+      assert.equal(command, next, "only the exact validated next command may be dispatched");
+      appendExecutionResult(file, command, JSON.stringify({ status: "done", submitted: true, recordId: "R-7" }), "exact-next");
+      return "Saved record R-7.";
+    });
+
+    assert.equal(modelTurns, 1);
+    assert.deepEqual(dispatched, [{ command: next, gate: [] }]);
+    const attempts = extractAttemptLog(history);
+    assert.deepEqual(attempts.map(attempt => attempt.command), [
+      "records update --recordId unknown",
+      "agent browser run --goal 'Save record R-7'",
+      next
+    ], "no recovery-generated command or post-yield mutation may run");
+    assert.equal(outcome.stopped, "pass");
+  });
+});
+
+test("a completed execute handles only its fresh unrequested pending contract before guard recovery", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const request = "Look up the selected record.";
+  const next = "agent browser run --session 's1' --goal 'Save the record' --field 'confirm=yes'";
+  const history = tmpFile("completed-pending-before-guard-recovery.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let modelTurns = 0;
+    let dispatches = 0;
+    const outcome = await runLoop(baseOptions({ request, toolDispatchSupported: true }), history, (_question, file) => {
+      modelTurns++;
+      const data = JSON.parse(pendingConfirmFixture("Save the record", next, "agent browser run --goal 'Save the record'"));
+      data.messages.unshift(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "guard-denied", name: "executeAux4", args: { command: "records update --recordId unknown" } }] } },
+        { role: "tool", tool_call_id: "guard-denied", name: "executeAux4", content: "Blocked by hook: ACTION_CHECK_EVIDENCE_REQUIRED: read the selected record first." }
+      );
+      fs.writeFileSync(file, JSON.stringify(data));
+      return "A confirmation is pending.";
+    }, "", async () => {
+      dispatches++;
+      assert.fail("an unrequested pending action must not dispatch");
+    });
+
+    assert.equal(modelTurns, 1, "the guard-recovery model turn must not replace the fresh pending contract");
+    assert.equal(dispatches, 0);
+    assert.equal(outcome.stopped, "needs-confirmation");
+  });
+});
+
 test("monitored confirmation continuations advance two pending steps before verification", async () => {
   const fake = planVerifyFake({ verifyStatus: "pass" });
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));

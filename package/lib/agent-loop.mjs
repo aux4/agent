@@ -3343,8 +3343,12 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     // A guard's refusal is a request to correct one proposed action. The model
     // may phrase that as ordinary prose rather than the BLOCKED marker, so
     // recover from the unresolved tool result itself before paying for verify.
-    const pendingGuard = unresolvedActionGuard(extractAttemptLog(history).slice(before));
-    if (!pushedPastBlocked && pendingGuard) {
+    // A fresh confirmation yield takes priority: this recovery turn could
+    // propose a different action before the validated `next` is handled.
+    const freshRoundAttempts = extractAttemptLog(history).slice(before);
+    const pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(freshRoundAttempts);
+    const pendingGuard = unresolvedActionGuard(freshRoundAttempts);
+    if (!pushedPastBlocked && !pendingBeforeGuardRecovery && !confirmationYielded && pendingGuard) {
       pushedPastBlocked = true;
       lastContent = await runExecution("The last proposed change was stopped before it ran. That does not establish that the request needs user input. An unrelated question or documentation call did not resolve the missing evidence. Read the guard's reason and obtain the missing evidence with an actual available lookup before asking the requester; if that lookup cannot establish it, report what is missing. Preserve every exclusion and do not repeat a successful change.\n\nUnresolved guard and available lookup contract:\n" + String(pendingGuard.source ?? pendingGuard.result ?? "").slice(0, 5000), history, deniedCommands, false, deniedPatterns);
       if (String(lastContent || "").trim()) lastAnswer = lastContent;
@@ -3353,7 +3357,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       if (innerStop) return innerStop;
     }
 
-    if (!yieldedPending && isBlocked(lastContent)) {
+    if (!pendingBeforeGuardRecovery && !confirmationYielded && isBlocked(lastContent)) {
       const currentLog = extractAttemptLog(history);
       const offered = allowedCommandsOffered(currentLog);
       if (pushedPastBlocked || !offered) return done("blocked", attempt);
