@@ -16,6 +16,7 @@ import {
   fieldEvidenceText,
   availableFieldChoices,
   applyProvenance,
+  applyExecutionProof,
   activeDelegations,
   delegatedDenyPatterns,
   addDenyPatterns,
@@ -2249,4 +2250,19 @@ else if(args.includes('--help'))console.log(args.join(' '));
     assert.doesNotMatch(reference,/forms click/);
     assert.ok(reference.indexOf('agent forms run') < reference.indexOf('directory read'));
   });
+});
+
+
+test("failed writes cannot be certified as completed state changes", () => {
+  const criterion="The notification was sent.";
+  const verdict={overall:"pass",criteria:[{criterion,status:"pass",evidence:"The assistant said it was sent."}]};
+  const plan={stateCriteria:[criterion]};
+  const reads=[{command:"messages list",source:'{"items":[{"id":"r7"}]}'}];
+  const failed={command:"messages send --to recipient@example.test",failed:true,source:"Blocked by hook: ACTION_CHECK_SCOPE_DENIED"};
+  assert.equal(applyExecutionProof(verdict,plan,[...reads,failed]).overall,"fail");
+  assert.equal(applyExecutionProof(verdict,plan,[...reads,{...failed,failed:false,completed:false}]).overall,"fail");
+  assert.equal(applyExecutionProof(verdict,plan,[...reads,failed,{command:"messages send --to recipient@example.test",source:'{"id":"sent7"}'}]).overall,"pass");
+  assert.equal(applyExecutionProof(verdict,{stateCriteria:[]},[...reads,failed]).overall,"pass");
+  assert.equal(applyExecutionProof(verdict,{stateCriteria:["No notification was sent."]},[...reads,failed]).overall,"pass");
+  assert.equal(applyExecutionProof(verdict,plan,reads).overall,"pass");
 });

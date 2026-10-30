@@ -44,5 +44,7 @@ zone, using the known UTC offset or a named zone rather than an ambiguous
 zone-less machine timestamp. Treat explicitly requested creative message wording as
 allowed; do not require its exact prose to appear in earlier results.
 
-Respond with only one JSON object, with a boolean allow and a short reason:
-{"allow":true,"reason":"target and change are supported"}
+Respond with only one valid JSON object. Give a brief evidence summary first
+(one sentence, at most 160 characters, without quoting the action or message),
+then the final boolean allow. Do not output a reasoning transcript.
+{"reason":"target and change are supported","allow":true}

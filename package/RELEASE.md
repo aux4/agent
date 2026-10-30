@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.43
+
+- Give malformed authorization replies one bounded re-evaluation while honoring valid denials; record both checks and require a valid boolean decision.
+- Reject completion claims for state-changing criteria supported only by failed or unexecuted changes.
+
 ## 4.1.42
 
 - Keep registered page delegation while discovering other capabilities needed by the plan, including independent prerequisite reads.

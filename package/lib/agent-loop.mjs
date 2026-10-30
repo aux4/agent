@@ -1238,6 +1238,19 @@ export function composeNotConfirmedQuestion(unsourced) {
 
 export const PROVENANCE_CRITERION = "every value entered or sent came from the request or a tool result";
 
+// State-changing outcomes cannot be confirmed solely from failed or
+// unexecuted writes. Read-only/absence criteria and already-satisfied tasks
+// with no failed write attempt retain their normal verification.
+export function applyExecutionProof(verdict, plan, attempts) {
+  const state = new Set((plan.stateCriteria || []).filter(text => !NO_CHANGE_CRITERION.test(text) && !/^\s*(?:no|none|nothing|without)\b/i.test(text)
+    && (CHANGE_VERB.test(text) || CHANGE_RESULT_WORD.test(text))));
+  if (!state.size || !attempts.some(a => !isConclusiveAttempt(a) && isChangeCommand(a.command))
+    || attempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command))) return verdict;
+  return {...verdict, overall:"fail", criteria:verdict.criteria.map(criterion => state.has(criterion.criterion)
+    ? {...criterion,status:"unverifiable",evidence:"No successful state-changing action was observed. Failed, denied, or unexecuted calls cannot establish that the requested change happened."}
+    : criterion)};
+}
+
 export function applyProvenance(verdict, attempts, request = "") {
   const unsourced = unsourcedValues(attempts, request);
   if (!unsourced.length) return verdict;
@@ -1549,7 +1562,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   // When nothing can re-read the state (only the action's own result shows
   // it), the verifier's judgement from the recorded results stands.
   const observed = verifyHistory && !noReadPossible ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria, attempts) : verdict;
-  return { ...applyProvenance(observed, attempts, options.request), checks: checks.map(c => c.command) };
+  return { ...applyExecutionProof(applyProvenance(observed, attempts, options.request), plan, attempts), checks: checks.map(c => c.command) };
 }
 
 export function verdictLogPath(historyFile) {

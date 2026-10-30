@@ -143,9 +143,22 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     if (auditBase) fs.writeFileSync(`${auditBase}.verdict.json`, JSON.stringify(verdict, null, 2));
     return verdict;
   }
-  const result = runAux4(args, { allowFailure: true, timeout: 45000 });
-  const parsed = result.ok ? parseJSONLoose(result.stdout, null) : null;
-  const verdict = { allow: parsed?.allow === true, reason: String(parsed?.reason || "The proposed change could not be verified against the request and evidence.").slice(0, 500) };
+  const validDecision = value => value && typeof value.allow === "boolean" && (value.reason === undefined || typeof value.reason === "string");
+  let result = runAux4(args, { allowFailure: true, timeout: 45000 });
+  let parsed = result.ok ? parseJSONLoose(result.stdout, null) : null;
+  let formatRecovery = false;
+  // A malformed response is not a decision. Re-evaluate once with the same
+  // facts and a corrected response contract; never retry a valid denial.
+  if (result.ok && !validDecision(parsed)) {
+    const repair = [...args];
+    if (auditBase) repair[repair.indexOf("--history") + 1] = `${auditBase}.format-repair.history.json`;
+    repair[repair.indexOf("--question") + 1] = JSON.stringify({...payload, responseContract:"The previous response was not valid decision JSON. Re-evaluate the original request and evidence. Return only one valid JSON object: a brief reason first and the final boolean allow last. Do not quote action text or output a reasoning transcript."});
+    result = runAux4(repair, {allowFailure:true,timeout:45000});
+    parsed = result.ok ? parseJSONLoose(result.stdout,null) : null;
+    formatRecovery = true;
+  }
+  const valid = validDecision(parsed);
+  const verdict = { allow: Boolean(valid && parsed.allow), reason: valid ? String(parsed.reason || (parsed.allow ? "Authorized by the action check." : "Denied by the action check.")).slice(0,500) : "The authorization check did not return a valid decision. This action was not run; more factual lookups cannot repair the check's output format.", ...(formatRecovery ? {formatRecovery:true} : {}), ...(!valid ? {protocolError:true} : {}) };
   if (auditBase) fs.writeFileSync(`${auditBase}.verdict.json`, JSON.stringify(verdict, null, 2));
   return { ...verdict, ...(delegatedGoal ? {delegated: true} : {}) };
 }

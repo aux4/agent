@@ -134,3 +134,29 @@ printf '%s' '{"allow":true,"reason":"Allowed"}'
     fs.rmSync(dir, {recursive:true, force:true});
   }
 });
+
+
+test("malformed guard replies get one bounded re-evaluation and valid denials are never retried", () => {
+  const original=process.env.AUX4_BIN;
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"guard-format-"));
+  const fake=path.join(dir,"aux4"),counter=path.join(dir,"counter");
+  const options={configFile:"/local.yaml",packageDir:"/agent"};
+  try {
+    process.env.AUX4_BIN=fake;
+    for (const replies of [
+      ['{broken','{"reason":"authorized target","allow":true}'],
+      ['{"reason":"excluded target","allow":false}'],
+      ['{"allow":"true"}']
+    ]) {
+      fs.rmSync(counter,{force:true});
+      fs.writeFileSync(fake,`#!/usr/bin/env node
+const fs=require('fs');const file=${JSON.stringify(counter)};const n=fs.existsSync(file)?Number(fs.readFileSync(file)):0;fs.writeFileSync(file,String(n+1));const replies=${JSON.stringify(replies)};console.log(replies[Math.min(n,replies.length-1)]);
+`,{mode:0o755});
+      const verdict=authorizeAction(options,"records update --id r7",[],"Update r7",path.join(dir,"run"),"update");
+      assert.equal(verdict.allow,replies.length===2);
+      assert.equal(Number(fs.readFileSync(counter)),replies[0].includes('excluded')?1:2);
+      if(replies.length===2)assert.equal(verdict.formatRecovery,true);
+      if(replies[0]==='{"allow":"true"}')assert.equal(verdict.protocolError,true);
+    }
+  } finally {if(original===undefined)delete process.env.AUX4_BIN;else process.env.AUX4_BIN=original;fs.rmSync(dir,{recursive:true,force:true});}
+});
