@@ -2196,7 +2196,7 @@ function parseFindResults(output) {
 export function findCommands(queries) {
   const lists = [];
   let searchFailed = false;
-  const search = (query, serviceSearch = false) => {
+  const search = (query, serviceSearch = false, servicePrefix = "") => {
     if (!query || searchFailed) return;
     const result = runAux4(["aux4", "pkger", "find", "--query", query, "--limit", String(FIND_LIMIT)], { allowFailure: true, timeout: FIND_TIMEOUT_MS });
     // A cold/stale index can make the first search exceed its bounded wait.
@@ -2209,7 +2209,8 @@ export function findCommands(queries) {
     if (!Array.isArray(list)) return;
     lists.push(list
       .map(item => ({ command: String(item?.command || "").trim(), description: String(item?.description || ""), serviceSearch }))
-      .filter(item => item.command && !/^aux4 (ai agent|agent ask|aux4 pkger)(\s|$)/.test(item.command)));
+      .filter(item => item.command && !/^aux4 (ai agent|agent ask|aux4 pkger)(\s|$)/.test(item.command)
+        && (!servicePrefix || item.command === servicePrefix || item.command.startsWith(`${servicePrefix} `))));
   };
   const cleanQueries = queries.map(findQuery).filter(Boolean);
   for (const query of cleanQueries) {
@@ -2225,7 +2226,12 @@ export function findCommands(queries) {
     .map(item => item.command.match(/^aux4 mock preset\s+(.+)$/)?.[1]?.trim())
     .filter(service => service && !/\b(?:auth|oauth|credentials?)\b/i.test(service))))].slice(0, MAX_PRESET_LOOKUPS);
   const taskTerms = compactFindTerms([cleanQueries[0], cleanQueries.at(-1)].filter(Boolean).join(" "));
-  for (const service of presetServices) search(findQuery(`${service} ${taskTerms}`), true);
+  for (const service of presetServices) {
+    // The full task terms can match unrelated packages (e.g. Gmail commands
+    // in a Calendar request). Promote only commands on the discovered service
+    // route; other search results remain eligible through their own queries.
+    search(findQuery(`${service} ${taskTerms}`), true, `aux4 ${service}`);
+  }
 
   // A command that ranks well for several distinct task phrases is a better
   // lead than unrelated first-place results from each query. Reciprocal rank
@@ -2261,6 +2267,24 @@ function commandHelp(command, limit = HELP_OUTPUT_LIMIT) {
   // binary itself. Keep the package-provided command path out of shell parsing.
   const result = runAux4([...parts.slice(1), "--help"], { allowFailure: true, timeout: HELP_TIMEOUT_MS });
   return result.ok ? String(result.stdout || "").trim().slice(0, limit) : "";
+}
+
+function groupChildrenFromHelp(groupHelp) {
+  const helpLines = String(groupHelp || "").split(/\r?\n/);
+  const children = [];
+  for (let i = 0; i < helpLines.length; i++) {
+    const name = helpLines[i].match(/^ {2}([a-zA-Z][a-zA-Z0-9:_-]*)\s*$/)?.[1];
+    if (!name) continue;
+    const nextLine = (helpLines[i + 1] || "").trim();
+    const description = nextLine.startsWith("--") ? "" : nextLine.slice(0, 100);
+    const flags = [];
+    for (let j = i + 1; j < helpLines.length && !/^ {2}[a-zA-Z][a-zA-Z0-9:_-]*\s*$/.test(helpLines[j]); j++) {
+      const flag = helpLines[j].match(/^ {4}(--[a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([^\n]+))?$/);
+      if (flag) flags.push(`${flag[1]}${flag[2] === "<arg>" ? " <arg>" : ""}`);
+    }
+    children.push({ name, description, flags });
+  }
+  return children;
 }
 
 // Show the command path expected by executeAux4. pkger find returns shell
@@ -2302,29 +2326,35 @@ export function describeFoundCommands(found) {
     if (group && !groupCandidates.includes(group)) groupCandidates.push(group);
   }
 
-  // More specific groups get the first share of the bounded help budget, but
-  // ancestors remain eligible for their distinct direct child commands.
-  const relevantGroups = [...groupCandidates];
+  // Search often returns a deep leaf but not its public parent service group.
+  // Probe only prefixes of returned paths, and keep a prefix only when live
+  // help confirms it has children. This exposes sibling commands without
+  // guessing profile routes or reading package prose.
+  const ancestorCandidates = [];
+  for (const f of found) {
+    const parts = String(f.command || "").trim().split(/\s+/);
+    if (parts[0] !== "aux4") continue;
+    for (let length = parts.length - 1; length >= 2; length--) {
+      const ancestor = parts.slice(0, length).join(" ");
+      if (!groupCandidates.includes(ancestor) && !ancestorCandidates.includes(ancestor)) {
+        ancestorCandidates.push(ancestor);
+      }
+    }
+  }
+
+  // More specific groups get the first share of the bounded help budget. The
+  // ancestor probes are likewise bounded by MAX_HELP_OUTPUTS and the shared
+  // reference character limit below.
+  const relevantGroups = [...new Set([...groupCandidates, ...ancestorCandidates])];
+  const candidateOrder = new Map(relevantGroups.map((group, index) => [group, index]));
   relevantGroups.sort((a, b) => b.split(/\s+/).length - a.split(/\s+/).length
-    || groupCandidates.indexOf(a) - groupCandidates.indexOf(b));
+    || candidateOrder.get(a) - candidateOrder.get(b));
   const references = [];
   for (const group of relevantGroups.slice(0, MAX_HELP_OUTPUTS)) {
     const groupHelp = commandHelp(group, HELP_GROUP_OUTPUT_LIMIT * 3);
     if (!groupHelp) continue;
-    const helpLines = groupHelp.split(/\r?\n/);
-    const children = [];
-    for (let i = 0; i < helpLines.length; i++) {
-      const name = helpLines[i].match(/^ {2}([a-zA-Z][a-zA-Z0-9:_-]*)\s*$/)?.[1];
-      if (!name) continue;
-      const nextLine = (helpLines[i + 1] || "").trim();
-      const description = nextLine.startsWith("--") ? "" : nextLine.slice(0, 100);
-      const flags = [];
-      for (let j = i + 1; j < helpLines.length && !/^ {2}[a-zA-Z][a-zA-Z0-9:_-]*\s*$/.test(helpLines[j]); j++) {
-        const flag = helpLines[j].match(/^ {4}(--[a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([^\n]+))?$/);
-        if (flag) flags.push(`${flag[1]}${flag[2] === "<arg>" ? " <arg>" : ""}`);
-      }
-      children.push({ name, description, flags });
-    }
+    const children = groupChildrenFromHelp(groupHelp);
+    if (!children.length) continue;
     const commandPath = group.replace(/^aux4\s+/, "");
     const paths = [...new Set(children.map(child => `${commandPath} ${child.name}`))];
     const heading = paths.length

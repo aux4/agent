@@ -1266,6 +1266,29 @@ console.log(JSON.stringify(out));
   }
 });
 
+test("findCommands does not promote another service from a preset service search", () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+const q = args[args.indexOf('--query') + 1] || '';
+let out = [];
+if (q === 'check calendar for time') out = [
+  {command:'aux4 mock preset google calendar',description:'Calendar fixture.'},
+  {command:'aux4 google calendar events list',description:'List calendar events.'},
+  {command:'aux4 google calendar freebusy',description:'Query availability.'}
+];
+else if (q.startsWith('google calendar ')) out = [
+  {command:'aux4 google gmail send',description:'Send an email.'},
+  ...Array.from({length:14}, (_, i) => ({command:'aux4 google gmail unrelated-' + i,description:'Unrelated Gmail operation.'})),
+  {command:'aux4 google calendar events list',description:'List calendar events.'}
+];
+console.log(JSON.stringify(out));`);
+  return withAux4Bin(fake, async () => {
+    const found = findCommands(["check calendar for time", "send a reply"]);
+    assert.ok(found.some(item => item.command === "aux4 google calendar events list"));
+    assert.ok(found.some(item => item.command === "aux4 google calendar freebusy"));
+    assert.equal(found.some(item => item.command.startsWith("aux4 google gmail")), false);
+  });
+});
+
 test("findCommands parses pkger find's colored text output", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-text-"));
   const bin = path.join(dir, "aux4");
@@ -1351,6 +1374,24 @@ else console.log('help for ' + command);
     const listedPaths = [...text.matchAll(/^\s*- .*complete child paths: (.*)\)$/gm)]
       .flatMap(([, paths]) => paths.split(", "));
     assert.deepEqual([...new Set(listedPaths)], listedPaths);
+    assert.ok(text.length < 6500, `command reference exceeded bounded context: ${text.length}`);
+  });
+});
+
+test("command references probe actual ancestors to expose useful sibling commands", async () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+const command = args.slice(0, -1).join(' ');
+if (command === 'google calendar events') console.log('events\\n  list\\n  List calendar events.\\n');
+else if (command === 'google calendar') console.log('calendar\\n  calendars\\n  List calendars.\\n  events\\n  Manage calendar events.\\n  freebusy\\n  Query free/busy information.\\n');
+else if (command === 'google') console.log('google\\n  calendar\\n  Calendar tools.\\n  gmail\\n  Gmail tools.\\n');
+else console.log('help for ' + command);`);
+  await withAux4Bin(fake, async () => {
+    const text = describeFoundCommands([
+      { command: "aux4 google calendar events list", description: "List calendar events." }
+    ]);
+    assert.match(text, /google calendar \(group; complete child paths: google calendar calendars, google calendar events, google calendar freebusy\)/);
+    assert.match(text, /google calendar freebusy: Query free\/busy information/);
+    assert.match(text, /google calendar events \(group; complete child paths: google calendar events list\)/);
     assert.ok(text.length < 6500, `command reference exceeded bounded context: ${text.length}`);
   });
 });

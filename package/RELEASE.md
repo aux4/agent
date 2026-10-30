@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.54
+
+- Keep supplemental preset search results on the discovered service route, and include bounded live help from public ancestor groups so agents can discover relevant sibling commands.
+
 ## 4.1.53
 
 - Add concise, bounded verifier evidence to failed or unconfirmed outcome summaries while preserving verified partial facts and suppressing unsupported executor claims.
