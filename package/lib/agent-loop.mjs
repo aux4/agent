@@ -2841,8 +2841,16 @@ export function lookupQueries(request, plan) {
   return [...new Set(queries.map(query => String(query || "").trim()).filter(Boolean))].slice(0, MAX_LOOKUP_QUERIES);
 }
 
-export function describeFoundCommands(found) {
+export function describeFoundCommands(found, commandCatalog = null) {
   if (!found.length) return "";
+  const addCatalogPath = value => {
+    if (!(commandCatalog instanceof Set)) return;
+    const words = commandWords(value);
+    if (!words?.length) return;
+    const route = words[0] === "aux4" ? words.slice(1) : words;
+    if (!route.length || route.some(word => !/^[a-zA-Z0-9:_-]+$/.test(word))) return;
+    commandCatalog.add(route.join(" "));
+  };
   let remaining = HELP_TOTAL_LIMIT;
   let helped = 0;
   const describedGroups = new Set();
@@ -2906,6 +2914,7 @@ export function describeFoundCommands(found) {
     remaining -= index.length;
     describedGroups.add(group);
     references.push({ commandPath, groupHelp, children });
+    for (const child of children) addCatalogPath(`${commandPath} ${child.name}`);
     helped++;
   }
   // Reserve the command index for EVERY matched group before spending the
@@ -2951,6 +2960,7 @@ export function describeFoundCommands(found) {
       lines.push(`- ${commandPath}\n${clipped.split("\n").map(line => `  ${line}`).join("\n")}`);
       remaining -= clipped.length;
       helped++;
+      if (!groupChildrenFromHelp(help).length && !/\bcommand group\b/i.test(f.description || "")) addCatalogPath(commandPath);
     } else {
       const description = f.description ? ` -- ${f.description.split("\n")[0].slice(0, 100)}` : "";
       lines.push(`- executeAux4 {"command": "${commandPath} --help"}${description}`);
@@ -2968,9 +2978,9 @@ export function preferredDelegation(request, delegations = []) {
     (!(d.requestWords || []).length || d.requestWords.some(word => terms.has(word)))) || null;
 }
 
-export function executionCommandReference(request, plan, delegations = []) {
+export function executionCommandReference(request, plan, delegations = [], commandCatalog = null) {
   const delegate = preferredDelegation(request, delegations);
-  if (!delegate) return describeFoundCommands(findCommands(lookupQueries(request, plan)));
+  if (!delegate) return describeFoundCommands(findCommands(lookupQueries(request, plan)), commandCatalog);
   const group = delegate.via.replace(/:/g, " ");
   const lines = [
     "Registered goal-level capability for this page task. Use it to inspect and complete the requested outcome; discover additional commands if another part of the request needs them:",
@@ -2980,6 +2990,7 @@ export function executionCommandReference(request, plan, delegations = []) {
     const command = `aux4 ${group} ${child}`;
     const help = commandHelp(command, HELP_OUTPUT_LIMIT);
     lines.push(`- ${group} ${child}${help ? `\n${help}` : " --help"}`);
+    if (help && !groupChildrenFromHelp(help).length) commandCatalog?.add?.(`${group} ${child}`);
   }
   // A registered delegate covers its own domain, not prerequisite facts in
   // another service. Discover the remaining planned capabilities instead of
@@ -2991,10 +3002,187 @@ export function executionCommandReference(request, plan, delegations = []) {
       const command = item.command.replace(/^aux4\s+/, "");
       return !covered.some(prefix => command === prefix || command.startsWith(`${prefix} `));
     });
-    const reference = describeFoundCommands(supplemental);
+    const reference = describeFoundCommands(supplemental, commandCatalog);
     if (reference) lines.push("Additional installed capabilities for the other planned operations (the registered goal capability still owns its page work):\n" + reference);
   }
   return lines.join("\n");
+}
+
+function catalogLeafPaths(commands) {
+  const result = [];
+  for (const command of commands || []) {
+    const words = commandWords(command);
+    if (!words?.length) continue;
+    const route = words[0] === "aux4" ? words.slice(1) : words;
+    if (!route.length || route.some(word => !/^[a-zA-Z0-9:_-]+$/.test(word))) continue;
+    const path = route.join(" ");
+    if (!isReadCommand(path)) continue;
+    // Only leaf paths with current, exact help count as available capabilities.
+    // A group label is never elevated into an executable read merely because it
+    // contains a read verb.
+    const help = commandHelp(`aux4 ${path}`);
+    if (!help || groupChildrenFromHelp(help).length) continue;
+    if (!result.includes(path)) result.push(path);
+  }
+  return result;
+}
+
+const READ_RECOVERY_EXECUTION_DENIES = [
+  "* --command *", "* --command=*", "* --execute *", "* --execute=*",
+  "* --run *", "* --run=*", "* --then *", "* --then=*", "* --help*",
+  "*;*", "*&*", "*|*", "*`*", "*$(*", "*${*", "*<*", "*>*", "*\n*", "*\r*"
+];
+
+function permissionPatternShape(rawPattern) {
+  if (typeof rawPattern !== "string" || rawPattern.startsWith("file:")) return null;
+  let pattern = rawPattern;
+  let form = "stripped";
+  if (pattern.startsWith("aux4:")) pattern = pattern.slice(5);
+  else if (pattern.startsWith("aux4 ")) form = "full";
+  const stars = [...pattern.matchAll(/\*/g)].map(match => match.index);
+  if (!stars.length) return { form, exact: pattern };
+  if (stars.length !== 1 || stars[0] !== pattern.length - 1) return null;
+  return { form, prefix: pattern.slice(0, -1) };
+}
+
+function permissionAllowsPathAndArgs(allow, command, form) {
+  const fullCommand = form === "full" ? `aux4 ${command}` : command;
+  const argumentPrefix = `${fullCommand} `;
+  return allow.some(raw => {
+    const shape = permissionPatternShape(raw);
+    if (!shape || shape.form !== form) return false;
+    if (shape.exact !== undefined) return false;
+    // A single trailing glob whose literal prefix is contained in this
+    // command-plus-space prefix covers all argument suffixes. Interior or
+    // multiple globs are deliberately unsupported, so we fail closed instead
+    // of approximating the caller's permission language.
+    return argumentPrefix.startsWith(shape.prefix);
+  });
+}
+
+function permissionAllowsExactPath(allow, command, form) {
+  const fullCommand = form === "full" ? `aux4 ${command}` : command;
+  return allow.some(raw => {
+    const shape = permissionPatternShape(raw);
+    if (!shape || shape.form !== form) return false;
+    return shape.exact === fullCommand
+      || (shape.prefix !== undefined && fullCommand.startsWith(shape.prefix));
+  });
+}
+
+function buildReadOnlyLookupPermissions(permissionsJSON, catalogCommands) {
+  let permissions;
+  try {
+    permissions = permissionsJSON
+      ? (typeof permissionsJSON === "string" ? JSON.parse(permissionsJSON) : structuredClone(permissionsJSON))
+      : {};
+  } catch { return null; }
+  if (!permissions || typeof permissions !== "object" || Array.isArray(permissions)) return null;
+  const allow = permissions.allow === undefined ? ["*"] : permissions.allow;
+  if (!Array.isArray(allow) || allow.some(pattern => typeof pattern !== "string")) return null;
+  for (const key of ["deny", "ask"]) {
+    if (permissions[key] !== undefined && (!Array.isArray(permissions[key]) || permissions[key].some(pattern => typeof pattern !== "string"))) return null;
+  }
+  const narrowed = [];
+  const availableCommands = [];
+  for (const command of catalogLeafPaths(catalogCommands)) {
+    let commandAvailable = false;
+    for (const form of ["stripped", "full"]) {
+      if (permissionAllowsExactPath(allow, command, form)) {
+        narrowed.push(form === "full" ? `aux4 ${command}` : command);
+        commandAvailable = true;
+      }
+      if (permissionAllowsPathAndArgs(allow, command, form)) {
+        narrowed.push(`${form === "full" ? `aux4 ${command}` : command} *`);
+        commandAvailable = true;
+      }
+    }
+    if (commandAvailable) availableCommands.push(command);
+  }
+  if (!narrowed.length) return null;
+  permissions.allow = [...new Set(narrowed)];
+  permissions.deny = [...(permissions.deny || []), ...READ_RECOVERY_EXECUTION_DENIES];
+  return { permissions: JSON.stringify(permissions), commands: availableCommands };
+}
+
+export function buildReadOnlyLookupRestrictions(permissionsJSON, catalogCommands) {
+  return buildReadOnlyLookupPermissions(permissionsJSON, catalogCommands);
+}
+
+export function parseReadOnlyLookupProposal(content, catalogCommands) {
+  let proposal;
+  try { proposal = JSON.parse(String(content || "").trim()); } catch { return null; }
+  if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)
+    || Object.keys(proposal).some(key => key !== "lookupCommand")
+    || typeof proposal.lookupCommand !== "string") return null;
+  const command = proposal.lookupCommand.trim();
+  const words = commandWords(command);
+  if (!words?.length || !isSingleCommandLine(command) || !isReadCommand(command) || isChangeCommand(command)) return null;
+  const pathWords = words[0] === "aux4" ? words.slice(1) : words;
+  const commands = catalogLeafPaths(catalogCommands)
+    .map(value => commandWords(value))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const matchedLeaf = commands.find(candidate => candidate.every((word, index) => pathWords[index] === word));
+  if (!matchedLeaf) return null;
+  const args = pathWords.slice(matchedLeaf.length);
+  const leafHelp = commandHelp("aux4 " + matchedLeaf.join(" "));
+  if (!leafHelp) return null;
+  const documentedFlags = new Set([...leafHelp.matchAll(/--([a-zA-Z][a-zA-Z0-9_-]*)/g)].map(match => "--" + match[1]));
+  const unsafeSelectors = new Set(["action", "operation", "method", "verb", "mode", "command", "cmd", "script", "shell", "payload", "data", "body"]);
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (!token.startsWith("--")) return null;
+    const equals = token.indexOf("=");
+    const flag = equals < 0 ? token : token.slice(0, equals);
+    const name = flag.slice(2).replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+    const selector = name.split(/[-_]/).some(part => unsafeSelectors.has(part));
+    if (!documentedFlags.has(flag) || flag === "--help" || selector
+      || EXECUTION_VALUE_FLAGS.has(flag) || CHANGE_VERB.test(name.replace(/[-_]/g, " "))) return null;
+    if (equals < 0 && i + 1 < args.length && !args[i + 1].startsWith("--")) i++;
+  }
+  return { command, path: matchedLeaf.join(" ") };
+}
+
+export function composeMissingFactLookupQuestion(request, commandReference) {
+  return [
+    "The previous response is blocked on a factual detail. Reassess it using the original request, the installed command reference below, and every tool result already in this conversation.",
+    `Original request: ${request}`,
+    "The earlier successful read may be unrelated. If and only if the reference documents a read-only leaf command whose help supports finding this exact fact, and no relevant lookup already returned no match or multiple plausible matches, make exactly one bounded lookup using identifying details already supplied by the requester or supported by successful evidence.",
+    "Do not repeat or reword a relevant empty lookup. Do not guess an address, identifier, preference, or person. If the missing item is a user choice, the read-only capability is unsuitable, a prior relevant lookup was empty, or the result is ambiguous, return BLOCKED and name what is needed.",
+    "Do not execute a tool. Return ONLY JSON of the form {\"lookupCommand\":\"<one complete command>\"} for exactly one suitable documented read-only leaf, or return BLOCKED with what is missing. Do not include prose, extra fields, shell syntax, help commands, or any write/action path. The controller will validate and dispatch at most that one exact command through the usual policy and hook checks.",
+    "Installed command reference:",
+    commandReference || "(No installed command reference was found.)"
+  ].join("\n\n");
+}
+
+function hasSuccessfulReadLookup(attempts) {
+  return attempts.some(attempt => attempt?.tool === "executeAux4"
+    && attempt.completed === true && !attempt.failed
+    && isReadCommand(attempt.command)
+    && !/(?:^|\s)--help(?:\s|$)/.test(attempt.command || ""));
+}
+
+function hasUsableSuccessfulReadLookup(attempts) {
+  return attempts.some(attempt => attempt?.tool === "executeAux4"
+    && attempt.completed === true && !attempt.failed
+    && isReadCommand(attempt.command)
+    && !/(?:^|\s)--help(?:\s|$)/.test(attempt.command || "")
+    && !isFailedResult(attempt.source ?? attempt.result)
+    && hasFreshReadEvidence(attempt.source ?? attempt.result));
+}
+
+function toolsAllowExecuteAux4(tools) {
+  if (!tools) return true;
+  const names = Array.isArray(tools) ? tools : String(tools).split(",");
+  return names.some(name => String(name).trim() === "executeAux4");
+}
+
+function normalizedReadCommandKey(command) {
+  const words = commandWords(command);
+  if (!words) return "";
+  if (words[0] === "aux4") words.shift();
+  return JSON.stringify(words);
 }
 
 export function composeExecuteQuestion(request, plan, recovery = "", foundCommands = "", delegationNote = "") {
@@ -3664,6 +3852,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
   const planHistory = phaseHistoryPath(history, "plan-run");
   const plan = buildPlan(options, planHistory);
   savePlan(history, { ...plan, ms: Date.now() - planStart });
+  const commandCatalog = new Set();
+  const commandReference = executionCommandReference(options.request, plan, options.delegations, commandCatalog);
   const metrics = { plan: { ...historyStats(planHistory), ms: Date.now() - planStart }, rounds: [] };
   const previousActionChecks = new Set(actionCheckFiles(history));
   const scopedContinuationFile = history ? path.resolve(`${history}.scoped-continuation.json`) : "";
@@ -3691,6 +3881,16 @@ export async function runLoop(options, history, execute, recovery = "", executeC
   // One controller-level repair per user turn, even when verification causes
   // another outer attempt. This shares the existing retry/tool budgets.
   let protocolRecoveryUsed = false;
+  // A blocked answer after a successful read gets one chance to reassess
+  // whether the documented catalog can supply a missing fact. Semantic
+  // relevance remains the executor's task reasoning; the controller only
+  // bounds and restricts this recovery.
+  let missingFactRecoveryUsed = false;
+  // If the only eligible recovery occurs in the last ordinary outer attempt,
+  // a successful novel read earns one normal continuation slot. It does not
+  // change tool, time, or caller-policy budgets and cannot be earned twice.
+  let missingFactContinuationCredit = 0;
+  const maxOuterAttempts = () => RETRY_BUDGET + 1 + missingFactContinuationCredit;
   const done = (stopped, attempt, note = "") => {
     if (scopedContinuationFile) fs.rmSync(scopedContinuationFile, { force: true });
     metrics.stopped = stopped;
@@ -3755,14 +3955,14 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     return null;
   };
 
-  for (let attempt = 1; attempt <= RETRY_BUDGET + 1; attempt++) {
+  for (let attempt = 1; attempt <= maxOuterAttempts(); attempt++) {
     yieldedPending = null;
     const executeStart = Date.now();
     // The two-step note describes the fallback gate only; with tool-call hooks
     // nothing is held, and telling the agent otherwise sends it round in circles.
     const notes = [...(options.delegations || []).map(d => d.note), ...(options.hooksSupported ? [] : [CONFIRM_NOTE])].join("\n");
     const questionBase = nextQuestion ? nextQuestion : attempt === 1
-      ? composeExecuteQuestion(options.request, plan, recovery, executionCommandReference(options.request, plan, options.delegations), notes)
+      ? composeExecuteQuestion(options.request, plan, recovery, commandReference, notes)
       : onlyAnswerFailed(plan, priorVerdict, extractAttemptLog(history))
         ? composeRewriteQuestion(priorVerdict)
         : composeDiagnoseQuestion(plan, priorVerdict, extractAttemptLog(history), options.request, lookFirst);
@@ -3888,6 +4088,88 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       submittedThisRound = repairAttempts.find(hasSubmittedEffect) || submittedThisRound;
     }
 
+    const blockedAttempts = extractAttemptLog(history);
+    const blockedRoundAttempts = blockedAttempts.slice(before);
+    const missingFactRecoveryBlocked = Boolean(
+      missingFactRecoveryUsed
+      || pushedPastBlocked
+      || !isBlocked(lastContent)
+      || yieldedPending
+      || pendingBeforeGuardRecovery
+      || confirmationYielded
+      || submittedThisRound
+      || unresolvedActionGuard(blockedAttempts)
+      || pendingConfirmation(blockedRoundAttempts, { allowSubmitted: true })
+      || blockedRoundAttempts.some(attempt => attempt.declined)
+      || missingParameterHints(blockedRoundAttempts).length
+      || allowedCommandsOffered(blockedAttempts)
+      || !hasSuccessfulReadLookup(blockedAttempts)
+      || blockedRoundAttempts.some(attempt => attempt.tool === "askUser")
+      || !toolsAllowExecuteAux4(options.tools)
+      || typeof executeContinuation !== "function"
+    );
+    if (!missingFactRecoveryBlocked) {
+      const readOnly = buildReadOnlyLookupRestrictions(options.permissions, commandCatalog);
+      if (readOnly) {
+        missingFactRecoveryUsed = true;
+        const priorTools = options.tools;
+        let proposalContent = "";
+        try {
+          // Planning calls already use this one read-only tool because the
+          // agent CLI has no empty-tool-list mode (an empty list means all tools).
+          options.tools = PLAN_TOOLS;
+          proposalContent = await runExecution(
+            composeMissingFactLookupQuestion(options.request, commandReference),
+            history,
+            deniedCommands,
+            false,
+            deniedPatterns
+          );
+        } finally {
+          options.tools = priorTools;
+        }
+        const proposalStop = stopAfterExecution(attempt);
+        if (proposalStop) return proposalStop;
+        const proposal = parseReadOnlyLookupProposal(proposalContent, readOnly.commands);
+        if (!proposal) {
+          return done("blocked", attempt, "The bounded recovery did not produce one validated read-only lookup command; no command was run.");
+        }
+        const priorCommands = new Set(blockedAttempts
+          .filter(entry => entry.tool === "executeAux4" && !entry.failed && isReadCommand(entry.command))
+          .map(entry => normalizedReadCommandKey(entry.command)));
+        if (priorCommands.has(normalizedReadCommandKey(proposal.command))) {
+          return done("blocked", attempt, "The proposed read-only command repeats an earlier lookup; no repeated lookup was run.");
+        }
+
+        const priorPermissions = options.permissions;
+        const recoveryStart = extractAttemptLog(history).length;
+        try {
+          options.tools = "executeAux4";
+          options.permissions = readOnly.permissions;
+          lastContent = await runContinuation(proposal.command, history, deniedCommands, false, deniedPatterns);
+        } finally {
+          options.tools = priorTools;
+          options.permissions = priorPermissions;
+        }
+        if (String(lastContent || "").trim()) lastAnswer = lastContent;
+        round.execute = {
+          ...historyStats(history, messagesBefore, usageBefore),
+          ms: Date.now() - executeStart,
+          pushed: "missing-fact-read-recovery"
+        };
+        const innerStop = stopAfterExecution(attempt);
+        if (innerStop) return innerStop;
+        const recoveryAttempts = extractAttemptLog(history).slice(recoveryStart);
+        if (confirmationYielded || yieldedPending) {
+          return done("blocked", attempt, "The proposed read-only lookup unexpectedly returned a pending confirmation; no continuation was authorized.");
+        }
+        if (unresolvedActionGuard(recoveryAttempts) || isBlocked(lastContent) || !hasUsableSuccessfulReadLookup(recoveryAttempts)) {
+          return done("blocked", attempt, "The single bounded read-only lookup did not produce a usable result; no further lookup will be attempted.");
+        }
+        if (attempt === RETRY_BUDGET + 1) missingFactContinuationCredit = 1;
+      }
+    }
+
     if (!pendingBeforeGuardRecovery && !submittedThisRound && !confirmationYielded && isBlocked(lastContent)) {
       const currentLog = extractAttemptLog(history);
       const offered = allowedCommandsOffered(currentLog);
@@ -3920,7 +4202,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         continue;
       }
       nextQuestion = composeNotConfirmedQuestion(unsourced);
-      if (attempt > RETRY_BUDGET) { lastVerdict = applyProvenance({ overall: "fail", criteria: [] }, attempts, options.request); return done("budget", attempt, incompleteNote(lastVerdict)); }
+      if (attempt >= maxOuterAttempts()) { lastVerdict = applyProvenance({ overall: "fail", criteria: [] }, attempts, options.request); return done("budget", attempt, incompleteNote(lastVerdict)); }
       continue;
     }
 
@@ -4136,7 +4418,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       && !changedState && !newFacts && !newSource && !newNonReadEvidence && !newFailureEvidence) {
       return done("no-progress", attempt, incompleteNote(lastVerdict));
     }
-    if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
+    if (attempt >= maxOuterAttempts()) return done("budget", attempt, incompleteNote(lastVerdict));
 
     priorVerdict = lastVerdict;
     if (scopedContinuation) {
@@ -4155,5 +4437,5 @@ export async function runLoop(options, history, execute, recovery = "", executeC
 
   // Unreachable in practice (the loop above always returns), but keep a safe
   // fallback so the function never resolves to undefined.
-  return done("budget", RETRY_BUDGET + 1);
+  return done("budget", maxOuterAttempts());
 }

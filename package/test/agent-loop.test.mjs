@@ -25,6 +25,9 @@ import {
   describeFoundCommands,
   preferredDelegation,
   executionCommandReference,
+  buildReadOnlyLookupRestrictions,
+  parseReadOnlyLookupProposal,
+  composeMissingFactLookupQuestion,
   extractAttemptLog,
   changeDenyPatterns,
   summarizeAttemptLog,
@@ -349,6 +352,32 @@ if (command.includes("loop-plan.md")) {
 `);
 }
 
+function lookupPlanVerifyFake({ includeRead = true, verifyStatus = "pass" } = {}) {
+  const resultLine = includeRead ? "aux4 records list  (List records)\n" : "aux4 records create  (Create record)\n";
+  const groupHelp = includeRead
+    ? "records\n  list\n    --query <value>\n    --action <value>\n  create\n    --name <value>"
+    : "records\n  create\n    --name <value>";
+  return makeFakeAux4([
+    "const args = process.argv.slice(2);",
+    "const joined = args.join(' ');",
+    "if (joined.includes('loop-plan.md')) {",
+    "  process.stdout.write(JSON.stringify({ goal: 'find and use one supported fact', doneCriteria: ['the outcome holds'], steps: [], lookFor: ['records matching the supplied detail'] }));",
+    "} else if (joined.includes('loop-verify.md')) {",
+    "  const question = args[args.indexOf('--question') + 1] || '';",
+    "  const payload = JSON.parse(question.slice(question.indexOf('{')));",
+    "  const status = Array.isArray(" + JSON.stringify(verifyStatus) + ") ? " + JSON.stringify(verifyStatus) + "[Number((args[args.indexOf('--history') + 1].match(/\\.verify-(\\d+)\\.json$/) || [])[1] || 1) - 1] || 'fail' : " + JSON.stringify(verifyStatus) + ";",
+    "  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({ criterion: c.criterion, status, evidence: 'checked' })) }));",
+    "} else if (args.includes('pkger')) {",
+    "  process.stdout.write(" + JSON.stringify(resultLine) + ");",
+    "} else if (args.at(-1) === '--help') {",
+    "  const route = args.slice(0, -1).join(' ');",
+    "  if (route === 'records') process.stdout.write(" + JSON.stringify(groupHelp) + ");",
+    "  else if (route === 'records list') process.stdout.write('List records\\n    --query <value>\\n    --action <value>');",
+    "  else if (route === 'records create') process.stdout.write('Create record\\n    --name <value>');",
+    "}"
+  ].join("\n"));
+}
+
 function statusSequenceFake(statuses) {
   return makeFakeAux4(`
 const fs = require("node:fs");
@@ -380,6 +409,15 @@ function appendExecutionResult(history, command, source, id) {
   data.messages.push(
     { role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } },
     { role: "tool", tool_call_id: id, name: "executeAux4", content: source }
+  );
+  fs.writeFileSync(history, JSON.stringify(data));
+}
+
+function appendNamedToolResult(history, name, args, source, id) {
+  const data = JSON.parse(fs.readFileSync(history, "utf8"));
+  data.messages.push(
+    { role: "assistant_with_tool", content: { tool_calls: [{ id, name, args }] } },
+    { role: "tool", tool_call_id: id, name, content: source }
   );
   fs.writeFileSync(history, JSON.stringify(data));
 }
@@ -4009,6 +4047,161 @@ test("a non-interactive question after a guard still gets same-round lookup reco
     });
     assert.equal(calls,2);assert.equal(result.attempts,1);assert.equal(result.stopped,'pass');
   });
+});
+
+test("missing-fact recovery proposes with planner tools, dispatches one exact read through continuation, then resumes verification", async () => {
+  const fake = lookupPlanVerifyFake();
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  const policy = '{"budget":{"calls":2},"allow":["records *"],"deny":["records locked *"],"ask":["records review *"]}';
+  const options = baseOptions({
+    request: "Find the record related to the supplied reference and confirm the outcome.",
+    tools: ["executeAux4", "mcp__example__read"],
+    permissions: policy,
+    policy
+  });
+  await withAux4Bin(fake, async () => {
+    let executionCalls = 0;
+    let proposalCalls = 0;
+    let continuationCalls = 0;
+    const result = await runLoop(options, history, (question, h) => {
+      executionCalls++;
+      if (executionCalls === 1) {
+        appendExecutionResult(h, "records get --id r7", "{\"record\":{\"id\":\"r7\"}}", "initial-read");
+        return "BLOCKED: I need one more fact to identify the requested record.";
+      }
+      proposalCalls++;
+      assert.match(question, /lookupCommand/);
+      assert.equal(options.tools, "currentDateTime", "the proposal turn cannot call executeAux4");
+      assert.equal(options.permissions, policy, "static permissions remain the caller's during proposal");
+      assert.equal(options.policy, policy);
+      return '{"lookupCommand":"records list --query supplied-reference"}';
+    }, "", (command, h) => {
+      continuationCalls++;
+      assert.equal(command, "records list --query supplied-reference");
+      assert.deepEqual(options.tools, "executeAux4");
+      const narrowed = JSON.parse(options.permissions);
+      assert.deepEqual(narrowed.allow, ["records list", "records list *"]);
+      assert.deepEqual(narrowed.deny.slice(0, 1), ["records locked *"]);
+      assert.deepEqual(narrowed.ask, ["records review *"]);
+      assert.equal(options.policy, policy, "caller policy is never replaced");
+      appendExecutionResult(h, command, '{"records":[{"id":"r7"}]}', "recovery-read");
+      return "The lookup returned one matching record.";
+    });
+    assert.equal(result.stopped, "pass");
+    assert.equal(executionCalls, 2, "one original execution and one proposal-only turn");
+    assert.equal(proposalCalls, 1);
+    assert.equal(continuationCalls, 1, "exactly one forced lookup is dispatched");
+    assert.deepEqual(options.tools, ["executeAux4", "mcp__example__read"]);
+    assert.equal(options.permissions, policy);
+    assert.equal(options.policy, policy);
+    const attempts = extractAttemptLog(history);
+    assert.deepEqual(attempts.filter(a => a.tool === "executeAux4").map(a => a.command), [
+      "records get --id r7",
+      "records list --query supplied-reference"
+    ]);
+  });
+});
+
+test("a successful lookup on the last ordinary attempt earns one normal continuation before the existing budget stop", async () => {
+  const fake = lookupPlanVerifyFake({ verifyStatus: ["fail", "fail", "fail", "pass"] });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  const options = baseOptions({ permissions: '{"allow":["records *"]}' });
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    let continuations = 0;
+    const result = await runLoop(options, history, (question, h) => {
+      executions++;
+      if (executions === 1) {
+        appendExecutionResult(h, "records get --id r7", '{"record":{"id":"r7"}}', "prior-1");
+        return "The first check did not establish completion.";
+      }
+      if (executions === 2) {
+        appendExecutionResult(h, "records search --query earlier", '{"records":[{"id":"r8"}]}', "prior-2");
+        return "The second check did not establish completion.";
+      }
+      if (executions === 3) return "BLOCKED: one factual detail is still missing.";
+      if (executions === 4) {
+        assert.match(question, /lookupCommand/);
+        assert.equal(options.tools, "currentDateTime");
+        return '{"lookupCommand":"records list --query target-reference"}';
+      }
+      assert.equal(executions, 5, "only one extra ordinary attempt is permitted");
+      assert.equal(options.tools, undefined);
+      assert.equal(options.permissions, '{"allow":["records *"]}');
+      return "Continue the request using the lookup result.";
+    }, "", (command, h) => {
+      continuations++;
+      assert.equal(command, "records list --query target-reference");
+      appendExecutionResult(h, command, '{"records":[{"id":"r9"}]}', "last-read");
+      return "One matching record was found.";
+    });
+    assert.equal(result.stopped, "budget", "the verifier still fails and the caller's ordinary retry budget is not widened");
+    assert.equal(result.attempts, 4);
+    assert.equal(executions, 5);
+    assert.equal(continuations, 1);
+  });
+});
+
+test("read-only recovery proposal rejects unknown or mutating arguments but permits ordinary query values", async () => {
+  const fake = lookupPlanVerifyFake();
+  await withAux4Bin(fake, async () => {
+    const catalog = ["records list"];
+    assert.deepEqual(parseReadOnlyLookupProposal('{"lookupCommand":"records list --query \'delete this record\'"}', catalog), {
+      command: "records list --query 'delete this record'",
+      path: "records list"
+    });
+    for (const proposal of [
+      '{"lookupCommand":"records list --action delete"}',
+      '{"lookupCommand":"records list --submit"}',
+      '{"lookupCommand":"records list --query value --not-in-help"}',
+      '{"lookupCommand":"records create --name value"}',
+      '{"lookupCommand":"records list --query value; records delete"}',
+      '{"lookupCommand":"records list --query \"$(records delete)\""}',
+      '{"lookupCommand":"records list --query `records delete`"}'
+    ]) assert.equal(parseReadOnlyLookupProposal(proposal, catalog), null, proposal);
+  });
+});
+
+test("read-only recovery intersects only help-backed leaves and fails closed on unsupported allow patterns", async () => {
+  const fake = lookupPlanVerifyFake();
+  await withAux4Bin(fake, async () => {
+    const restricted = buildReadOnlyLookupRestrictions(
+      '{"allow":["records *"],"deny":["records locked *"],"ask":["records review *"]}',
+      ["records", "records list", "records create"]
+    );
+    assert.ok(restricted);
+    assert.deepEqual(restricted.commands, ["records list"]);
+    const rules = JSON.parse(restricted.permissions);
+    assert.deepEqual(rules.allow, ["records list", "records list *"]);
+    assert.equal(rules.deny.includes("records locked *"), true);
+    assert.equal(rules.ask.includes("records review *"), true);
+    assert.equal(rules.deny.includes("*;*"), true);
+    assert.equal(buildReadOnlyLookupRestrictions('{"allow":["records list --query *"]}', ["records list"]), null,
+      "complex caller patterns that cannot be proven to contain a whole read route fail closed");
+  });
+});
+
+test("missing-fact lookup does not start when the reference has no read leaf or the user was asked", async () => {
+  for (const { includeRead, addAsk } of [{ includeRead: false, addAsk: false }, { includeRead: true, addAsk: true }]) {
+    const fake = lookupPlanVerifyFake({ includeRead });
+    const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    await withAux4Bin(fake, async () => {
+      let continuationCalls = 0;
+      let calls = 0;
+      const result = await runLoop(baseOptions({ permissions: '{"allow":["records *"]}' }), history, (question, h) => {
+        calls++;
+        if (calls === 1) {
+          appendExecutionResult(h, "records get --id r7", '{"record":{"id":"r7"}}', "initial-read");
+          if (addAsk) appendNamedToolResult(h, "askUser", { question: "Which record do you mean?" }, "Non-interactive session.", "ask");
+          return "BLOCKED: The requested fact is not established.";
+        }
+        assert.doesNotMatch(question, /lookupCommand/);
+        return "BLOCKED: A user choice or another input is required.";
+      }, "", () => { continuationCalls++; return "unexpected"; });
+      assert.notEqual(result.stopped, "pass");
+      assert.equal(continuationCalls, 0);
+    });
+  }
 });
 
 test("an unsubmitted workflow is not denied as already completed on retry",async()=>{

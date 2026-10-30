@@ -97,6 +97,13 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    the repair runs through the same executor, policy, hooks, and call budget. If it cannot produce
    a usable tool exchange, the task stops with an unverified result.
 
+   If the agent is blocked after a successful read, it may make one additional bounded attempt to
+   find a missing fact. The agent must propose one read-only command documented by the installed
+   command help, and the controller checks that command against the caller's existing permissions
+   before running it through the normal hooks. It does not repeat a prior successful lookup or
+   guess a value. If the reference, permission rules, or result cannot support a suitable lookup,
+   the task remains blocked for the missing information.
+
 For web-page reads, the registered browser capability includes `agent browser inspect` for the
 ordered content blocks emitted from the current rendered page. Its completeness is limited to the
 extractor's blocks on that page; it does not prove that all visible text, later pages, or a full
