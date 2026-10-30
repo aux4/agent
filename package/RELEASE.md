@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.51
+
+- Rebuild final output when any required criterion or guard check is failed, unknown, or missing; preserve verified partial facts and omit internal check labels.
+
 ## 4.1.50
 
 - Build terminal summaries from verified state and answer criteria: preserve verified partial outcomes and verified answer facts, label failed versus unconfirmed outcomes, and omit unsupported executor claims. Fully passing answers remain unchanged.

@@ -107,10 +107,10 @@ needs more pages.
    or direct read-back evidence. With no read possible, `state` criteria are judged from the
    actions' own results; with no successful action at all, a `state` pass becomes
    `unverifiable`. A reply cut off mid-JSON is salvaged; an unparseable one is asked once more.
-   Final output is rebuilt from criterion outcomes whenever a requested state or answer-accuracy
-   criterion is not a pass: verified partial state and verified answer facts remain, failed outcomes
-   are labeled `Failed`, and unknown outcomes are `Not confirmed`. Unsupported executor prose is
-   omitted; an all-pass answer is returned unchanged.
+   Final output is rebuilt from criterion outcomes whenever any required outcome or guard check is
+   failed, unknown, or missing: verified partial state and verified answer facts remain, failed
+   outcomes are labeled `Failed`, and unknown outcomes are `Not confirmed`. Unsupported executor
+   prose and internal guard labels are omitted; an all-pass answer is returned unchanged.
 4. **Retry.** If anything is not a pass: when only `answer` criteria failed and any requested
    state change is supported by action evidence, the agent rewrites its answer without acting
    again; otherwise it gets the unmet criteria, the attempt log, any list of

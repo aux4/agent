@@ -52,6 +52,7 @@ import {
   COVERAGE_CRITERION,
   HONESTY_CRITERION,
   AGREEMENT_CRITERION,
+  PROVENANCE_CRITERION,
   verifyCriteria,
   allowedCommandsOffered,
   unresolvedActionGuard,
@@ -2504,14 +2505,67 @@ test("terminal evidence summary keeps verified partial outcomes and suppresses u
 
 test("evidence summary preserves fully verified read-only answers byte-for-byte", () => {
   const criterion = "The result lists the requested item.";
-  const plan = { stateCriteria: [criterion] };
+  const plan = { stateCriteria: [criterion], doneCriteria: [criterion] };
   const answer = "Here is the requested item, including its verified details.\n";
   const verdict = { overall: "pass", criteria: [
     { criterion, status: "pass" },
+    { criterion: COVERAGE_CRITERION, status: "pass" },
     { criterion: HONESTY_CRITERION, status: "pass" },
     { criterion: AGREEMENT_CRITERION, status: "pass" }
   ] };
   assert.equal(composeEvidenceSummary(answer, verdict, plan), answer);
+});
+
+test("evidence summary catches coverage and appended guard failures without exposing internal labels", () => {
+  const state = "The requested record is present.";
+  const answerFact = "The report includes the requested total.";
+  const plan = { stateCriteria: [state], doneCriteria: [state, answerFact] };
+  const base = [
+    { criterion: state, status: "pass" },
+    { criterion: answerFact, status: "pass", evidence: "The report shows a total of $500." },
+    { criterion: HONESTY_CRITERION, status: "pass" },
+    { criterion: AGREEMENT_CRITERION, status: "pass" }
+  ];
+  const coverage = composeEvidenceSummary("Everything requested is complete.", {
+    overall: "fail", criteria: [...base, { criterion: COVERAGE_CRITERION, status: "fail" }]
+  }, plan);
+  assert.match(coverage, /Verified: The requested record is present/);
+  assert.match(coverage, /Verified answer fact: The report shows a total of \$500/);
+  assert.match(coverage, /The reply does not address every requested part/);
+  assert.doesNotMatch(coverage, /Everything requested is complete|The final answer responds to every part/);
+
+  const guardFailure = composeEvidenceSummary("Everything requested is complete.", {
+    overall: "fail", criteria: [...base,
+      { criterion: COVERAGE_CRITERION, status: "pass" },
+      { criterion: PROVENANCE_CRITERION, status: "fail", evidence: "An entered value lacks a source." }]
+  }, plan);
+  assert.match(guardFailure, /Verified: The requested record is present/);
+  assert.match(guardFailure, /A required check failed/);
+  assert.doesNotMatch(guardFailure, /Everything requested is complete|UNSOURCED_FIELD_VALUES|every value entered or sent/);
+
+  const guardUnknown = composeEvidenceSummary("Everything requested is complete.", {
+    overall: "fail", criteria: [...base,
+      { criterion: COVERAGE_CRITERION, status: "pass" },
+      { criterion: "An additional required guard", status: "unverifiable" }]
+  }, plan);
+  assert.match(guardUnknown, /A required check could not be confirmed/);
+  assert.doesNotMatch(guardUnknown, /Everything requested is complete|An additional required guard/);
+});
+
+test("missing planned answer criteria fail closed in terminal evidence summaries", () => {
+  const state = "The requested record is present.";
+  const answerFact = "The response names the requested account.";
+  const plan = { stateCriteria: [state], doneCriteria: [state, answerFact] };
+  const verdict = { overall: "pass", criteria: [
+    { criterion: state, status: "pass" },
+    { criterion: COVERAGE_CRITERION, status: "pass" },
+    { criterion: HONESTY_CRITERION, status: "pass" },
+    { criterion: AGREEMENT_CRITERION, status: "pass" }
+  ] };
+  const summary = composeEvidenceSummary("The account is Acme and everything is done.", verdict, plan);
+  assert.match(summary, /Verified: The requested record is present/);
+  assert.match(summary, /Not confirmed: The response names the requested account/);
+  assert.doesNotMatch(summary, /Acme|everything is done/);
 });
 
 test("evidence summary cannot leak a false raw answer when outcome truthfulness is unknown", () => {

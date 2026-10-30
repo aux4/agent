@@ -1337,12 +1337,10 @@ export function composeEvidenceSummary(content, verdict, plan) {
   const truthCriteria = [HONESTY_CRITERION, AGREEMENT_CRITERION];
   const requestedAnswerCriteria = new Set((plan?.doneCriteria || []).filter(criterion => !stateSet.has(criterion)
     && ![COVERAGE_CRITERION, ...truthCriteria].includes(criterion)));
-  const relevant = [
-    ...stateCriteria.map(criterion => byCriterion.get(criterion) || { criterion, status: "unverifiable" }),
-    ...[...requestedAnswerCriteria].map(criterion => byCriterion.get(criterion) || { criterion, status: "unverifiable" }),
-    ...truthCriteria.map(criterion => byCriterion.get(criterion) || { criterion, status: "unverifiable" })
-  ];
-  if (!relevant.some(c => c.status !== "pass")) return content;
+  const expectedCriteria = new Set([...stateCriteria, ...(plan?.doneCriteria || []), COVERAGE_CRITERION, ...truthCriteria]);
+  const missingCriteria = [...expectedCriteria].filter(criterion => !byCriterion.has(criterion));
+  const unpassedCriteria = (verdict.criteria || []).filter(c => c.status !== "pass");
+  if (verdict.overall === "pass" && !missingCriteria.length && !unpassedCriteria.length) return content;
 
   const lines = ["Not fully confirmed:"];
   for (const criterion of stateCriteria) {
@@ -1363,6 +1361,24 @@ export function composeEvidenceSummary(content, verdict, plan) {
     const label = result.status === "fail" ? "Failed" : "Not confirmed";
     lines.push(`${label}: ${criterion}`);
   }
+  const coverage = byCriterion.get(COVERAGE_CRITERION);
+  if (!coverage || coverage.status !== "pass") {
+    lines.push(coverage?.status === "fail"
+      ? "The reply does not address every requested part."
+      : "Response coverage was not confirmed.");
+  }
+  const accuracy = truthCriteria.map(criterion => byCriterion.get(criterion) || { status: "unverifiable" });
+  if (accuracy.some(result => result.status !== "pass")) {
+    lines.push(accuracy.some(result => result.status === "fail")
+      ? "The written response failed a check against the recorded actions and results."
+      : "The response could not be checked against the recorded actions and results.");
+  }
+  const surfaced = new Set([...stateCriteria, ...requestedAnswerCriteria, COVERAGE_CRITERION, ...truthCriteria]);
+  const extraUnpassed = unpassedCriteria.filter(c => !surfaced.has(c.criterion));
+  if (extraUnpassed.some(c => c.status === "fail")) lines.push("A required check failed.");
+  if (extraUnpassed.some(c => c.status !== "fail")) lines.push("A required check could not be confirmed.");
+  if (missingCriteria.some(criterion => !surfaced.has(criterion))) lines.push("A required check could not be confirmed.");
+  if (verdict.overall !== "pass" && !unpassedCriteria.length && !missingCriteria.length) lines.push("A required check failed.");
   if (lines.length === 1) lines.push("No verified outcomes were available to summarize.");
   return lines.join("\n");
 }
