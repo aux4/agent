@@ -58,6 +58,11 @@ is true.
 For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.
 
+When some requested outcomes pass and others do not, distinguish a failed
+outcome from one that remains unconfirmed. Do not describe an unconfirmed
+outcome as completed or as definitely not completed. Keep any final summary to
+verified outcomes and clearly label the remaining ones.
+
 Respond with ONLY this JSON, one entry per criterion, in the given order, with
 evidence of at most 12 words each:
 

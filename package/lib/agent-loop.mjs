@@ -1325,6 +1325,48 @@ export function executionProofContent(content, verdict, attempts) {
   return "The requested change was not completed. The recorded attempts to change state failed, were denied, or remained unexecuted.";
 }
 
+// A non-passing state or answer-truth verdict makes the executor's prose
+// unsafe to return verbatim. Reconstruct a compact response from the fixed
+// criterion outcomes instead, preserving verified partial results without
+// treating an unknown outcome as a failure.
+export function composeEvidenceSummary(content, verdict, plan) {
+  if (!Array.isArray(verdict?.criteria)) return content;
+  const stateCriteria = plan?.stateCriteria || [];
+  const stateSet = new Set(stateCriteria);
+  const byCriterion = new Map((verdict?.criteria || []).map(c => [c.criterion, c]));
+  const truthCriteria = [HONESTY_CRITERION, AGREEMENT_CRITERION];
+  const requestedAnswerCriteria = new Set((plan?.doneCriteria || []).filter(criterion => !stateSet.has(criterion)
+    && ![COVERAGE_CRITERION, ...truthCriteria].includes(criterion)));
+  const relevant = [
+    ...stateCriteria.map(criterion => byCriterion.get(criterion) || { criterion, status: "unverifiable" }),
+    ...[...requestedAnswerCriteria].map(criterion => byCriterion.get(criterion) || { criterion, status: "unverifiable" }),
+    ...truthCriteria.map(criterion => byCriterion.get(criterion) || { criterion, status: "unverifiable" })
+  ];
+  if (!relevant.some(c => c.status !== "pass")) return content;
+
+  const lines = ["Not fully confirmed:"];
+  for (const criterion of stateCriteria) {
+    const result = byCriterion.get(criterion) || { status: "unverifiable" };
+    const label = result.status === "pass" ? "Verified"
+      : result.status === "fail" ? "Failed"
+        : "Not confirmed";
+    lines.push(`${label}: ${criterion}`);
+  }
+  const passedAnswerFacts = (verdict?.criteria || []).filter(c => requestedAnswerCriteria.has(c.criterion)
+    && c.status === "pass" && c.evidence);
+  for (const fact of passedAnswerFacts) {
+    lines.push(`Verified answer fact: ${fact.evidence}`);
+  }
+  for (const criterion of requestedAnswerCriteria) {
+    const result = byCriterion.get(criterion) || { status: "unverifiable" };
+    if (result.status === "pass") continue;
+    const label = result.status === "fail" ? "Failed" : "Not confirmed";
+    lines.push(`${label}: ${criterion}`);
+  }
+  if (lines.length === 1) lines.push("No verified outcomes were available to summarize.");
+  return lines.join("\n");
+}
+
 // State-changing outcomes cannot be confirmed solely from failed or
 // unexecuted writes. Read-only/absence criteria and already-satisfied tasks
 // with no failed write attempt retain their normal verification.
@@ -1848,6 +1890,34 @@ export function composeDiagnoseQuestion(plan, verdict, attempts, request = "", l
     WORKING_RULES,
     "",
     `Only if finishing needs something only the requester can give (and you have already searched the help and any list of commands you may run), reply starting with "${BLOCKED_MARK}" and say exactly what you need.`
+  ].join("\n");
+}
+
+export function freshScopedContinuation(attempts) {
+  if (!Array.isArray(attempts) || !attempts.length) return null;
+  // A later read is harmless; any later command that is not provably
+  // read-only makes an earlier scoped-operation observation stale.
+  let index = attempts.length - 1;
+  while (index >= 0 && isReadCommand(attempts[index]?.command)) index--;
+  const attempt = attempts[index];
+  if (!attempt || attempt.failed || !isConclusiveAttempt(attempt)) return null;
+  const result = parseAttemptResult(attempt);
+  if (!goalNotVerified(result)) return null;
+  const firstValue = result?.observations?.firstObserved;
+  const currentValue = result?.observations?.current;
+  if (typeof firstValue !== "string" || typeof currentValue !== "string") return null;
+  const first = firstValue.trim();
+  const current = currentValue.trim();
+  if (!first || !current || first === current) return null;
+  return { attempt, current };
+}
+
+export function composeScopedContinuationQuestion(plan, verdict, attempts, request = "") {
+  return [
+    "A completed scoped operation explicitly reported that its goal was not verified, and its fresh current observation differs from the initial observation.",
+    "Continue the original request from the currently observed page and satisfy the unmet outcomes below. Re-observe the current page as needed, then choose controls and routes only from fresh observations. Discard the prior consumed target descriptor and do not guess a URL. Never repeat any successful change command; use its existing result and deny rule. If no further step is available, report the outcome as not confirmed without claiming success.",
+    "",
+    composeDiagnoseQuestion(plan, verdict, attempts, request)
   ].join("\n");
 }
 
@@ -2465,6 +2535,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   // erase an earlier round's answer from the final output.
   let lastAnswer = "";
   let lastVerdict = null;
+  let freshContinuationUsed = false;
   let pushedPastBlocked = false;
   let lookFirst = false;
   let confirmOpen = false;
@@ -2478,8 +2549,16 @@ export async function runLoop(options, history, execute, recovery = "") {
     metrics.total = [metrics.plan, metrics.actionChecks, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
       .reduce((acc, s) => addStats(acc, s), {});
     saveMetrics(history, metrics);
+    const rawContent = executionProofContent(stripFailureClass(String(lastContent || "").trim() ? lastContent : lastAnswer), lastVerdict, extractAttemptLog(history));
+    const summarizedContent = composeEvidenceSummary(rawContent, lastVerdict, plan);
+    const blocker = stopped === "blocked" && lastVerdict?.criteria
+      ? stripFailureClass(lastContent).replace(/^\s*BLOCKED:?\s*/i, "").trim()
+      : "";
+    const finalContent = blocker
+      ? `${summarizedContent}\n\nExecutor input request (not outcome evidence): ${blocker}`
+      : summarizedContent;
     return {
-      content: appendStatusNote(executionProofContent(stripFailureClass(String(lastContent || "").trim() ? lastContent : lastAnswer), lastVerdict, extractAttemptLog(history)), note),
+      content: appendStatusNote(finalContent, summarizedContent === rawContent ? note : ""),
       plan,
       verdict: lastVerdict,
       stopped,
@@ -2666,7 +2745,10 @@ export async function runLoop(options, history, execute, recovery = "") {
     // Nothing failed, only what the harness could not observe remains, and
     // the change behind it already ran -- a retry would just repeat a denied
     // command for the same inconclusive verdict. Stop now with the best answer.
-    if (unverifiableOnlyAfterChange(lastVerdict, attempts)) return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
+    const scopedContinuation = !freshContinuationUsed && freshScopedContinuation(attempts);
+    if (unverifiableOnlyAfterChange(lastVerdict, attempts) && !scopedContinuation) {
+      return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
+    }
     // A new command that returns the same read evidence is only a renamed
     // retry. Preserve attempts that introduce new evidence or change state.
     const previousAttempts = attempts.slice(0, before);
@@ -2674,13 +2756,17 @@ export async function runLoop(options, history, execute, recovery = "") {
     const triedSomethingNew = currentAttempts.some(a => !priorCommands.has(a.command));
     const repeatedReadOnly = sameReadEvidence(currentAttempts, previousAttempts);
     const changedState = currentAttempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
-    if (sameFailureShape(priorVerdict, lastVerdict) && (!triedSomethingNew || (repeatedReadOnly && !changedState))) {
+    if (!scopedContinuation && sameFailureShape(priorVerdict, lastVerdict) && (!triedSomethingNew || (repeatedReadOnly && !changedState))) {
       return done("no-progress", attempt, incompleteNote(lastVerdict));
     }
     for (const a of attempts) priorCommands.add(a.command);
     if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
 
     priorVerdict = lastVerdict;
+    if (scopedContinuation) {
+      freshContinuationUsed = true;
+      nextQuestion = composeScopedContinuationQuestion(plan, lastVerdict, attempts, options.request);
+    }
     lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
     // A change that already went through must not be repeated by a retry.

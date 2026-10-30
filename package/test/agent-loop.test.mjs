@@ -36,6 +36,9 @@ import {
   isBudgetExceededResult,
   runAux4Monitored,
   composeDiagnoseQuestion,
+  composeEvidenceSummary,
+  composeScopedContinuationQuestion,
+  freshScopedContinuation,
   composeExecuteQuestion,
   incompleteNote,
   fallbackPlan,
@@ -785,6 +788,7 @@ test("runLoop returns a bare BLOCKED marker before invoking the verifier", async
     assert.equal(outcome.verdict, null);
     assert.equal(outcome.metrics.rounds[0].verify, undefined);
     assert.match(outcome.content, /need the employee ID/);
+    assert.equal(composeEvidenceSummary("I need the employee ID.", null, { stateCriteria: ["the result is updated"] }), "I need the employee ID.");
   });
 });
 
@@ -2446,6 +2450,155 @@ test("an unexecuted change cannot leak a false success claim into the final answ
   assert.equal(executionProofContent("I sent the notification.",verdict,[failed,{command:"messages send",source:'{"id":"sent7"}'}]),"I sent the notification.");
   const submitted={command:"agent browser run",source:'{"status":"needs-input","submitted":true}'};
   assert.equal(executionProofContent("A change was saved; a later step needs input.",verdict,[submitted]),"A change was saved; a later step needs input.");
+});
+
+test("terminal evidence summary keeps verified partial outcomes and suppresses unverified executor claims", () => {
+  const removed = "The selected record is absent from the records list.";
+  const protectedRecord = "The protected record remains in the records list.";
+  const answerFact = "The report figure is 500 dollars.";
+  const plan = { stateCriteria: [removed, protectedRecord], doneCriteria: [removed, protectedRecord, answerFact] };
+  const verdict = { overall: "fail", criteria: [
+    { criterion: removed, status: "unverifiable", evidence: "The action ended on an intermediate page." },
+    { criterion: protectedRecord, status: "pass", evidence: "The current list contains the protected record." },
+    { criterion: answerFact, status: "pass", evidence: "$500 was present in the report." },
+    { criterion: COVERAGE_CRITERION, status: "pass", evidence: "The answer mentioned both outcomes." },
+    { criterion: HONESTY_CRITERION, status: "unverifiable", evidence: "The requested change was not verified." },
+    { criterion: AGREEMENT_CRITERION, status: "unverifiable", evidence: "The claim is unsupported." }
+  ] };
+  const summary = composeEvidenceSummary("The selected record was deleted; the protected record remains. Done.", verdict, plan);
+  assert.match(summary, new RegExp(`Verified: ${protectedRecord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(summary, new RegExp(`Not confirmed: ${removed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(summary, /Verified answer fact: \$500 was present in the report/);
+  assert.doesNotMatch(summary, /was deleted|Done\./);
+  assert.match(summary, /Not fully confirmed/);
+  assert.doesNotMatch(summary, /The final answer accurately describes what the actions actually did/);
+});
+
+test("evidence summary preserves fully verified read-only answers byte-for-byte", () => {
+  const criterion = "The result lists the requested item.";
+  const plan = { stateCriteria: [criterion] };
+  const answer = "Here is the requested item, including its verified details.\n";
+  const verdict = { overall: "pass", criteria: [
+    { criterion, status: "pass" },
+    { criterion: HONESTY_CRITERION, status: "pass" },
+    { criterion: AGREEMENT_CRITERION, status: "pass" }
+  ] };
+  assert.equal(composeEvidenceSummary(answer, verdict, plan), answer);
+});
+
+test("evidence summary cannot leak a false raw answer when outcome truthfulness is unknown", () => {
+  const criterion = "The report contains the requested figure.";
+  const answer = "The report contains $500 and everything is complete.";
+  const verdict = { overall: "fail", criteria: [
+    { criterion, status: "pass" },
+    { criterion: HONESTY_CRITERION, status: "unverifiable" },
+    { criterion: AGREEMENT_CRITERION, status: "unverifiable" }
+  ] };
+  const summary = composeEvidenceSummary(answer, verdict, { stateCriteria: [criterion] });
+  assert.match(summary, new RegExp(`Verified: ${criterion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(summary, /Not fully confirmed/);
+  assert.doesNotMatch(summary, /\$500|everything is complete/);
+});
+
+test("fresh scoped continuation requires changed current evidence and no later mutation", () => {
+  const scoped = { command: "agent browser run --goal complete the current operation", source: JSON.stringify({
+    status: "done", scopedOperation: { status: "activated", goalVerified: false },
+    observations: { firstObserved: "Initial page", current: "Confirmation page" }
+  }) };
+  const read = { command: "agent browser inspect --session s", source: "Current page controls" };
+  assert.equal(freshScopedContinuation([scoped]).current, "Confirmation page");
+  assert.equal(freshScopedContinuation([scoped, read]).current, "Confirmation page", "later read-only work leaves the latest scoped operation usable");
+  assert.equal(freshScopedContinuation([scoped, { command: "records update --id r1", source: '{"status":"done"}' }]), null);
+  assert.equal(freshScopedContinuation([{ ...scoped, source: JSON.stringify({
+    scopedOperation: { goalVerified: false }, observations: { firstObserved: "Page", current: "Page" }
+  }) }]), null, "unchanged observation is not actionable progress");
+  assert.equal(freshScopedContinuation([{ ...scoped, source: JSON.stringify({
+    scopedOperation: { goalVerified: false }, observations: { firstObserved: "Page" }
+  }) }]), null, "firstObserved alone is not current evidence");
+  assert.equal(freshScopedContinuation([{ ...scoped, source: JSON.stringify({
+    scopedOperation: { goalVerified: false }, observations: { firstObserved: "Page", current: { text: "Not a string observation" } }
+  }) }]), null, "structured objects are not coerced into observation text");
+
+  const question = composeScopedContinuationQuestion({ goal: "finish the original task", stateCriteria: ["the outcome holds"] },
+    { criteria: [{ criterion: "the outcome holds", status: "unverifiable", evidence: "not yet verified" }] }, [scoped], "finish the original task");
+  assert.match(question, /finish the original task/);
+  assert.match(question, /Discard the prior consumed target descriptor/);
+  assert.match(question, /fresh observations/);
+  assert.match(question, /never repeat any successful change command/i);
+});
+
+test("runLoop takes at most one fresh scoped continuation and does not replay the completed command", async () => {
+  const target = "The selected record is absent from the records list.";
+  const protectedRecord = "The protected record remains in the records list.";
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2), command = args.join(" ");
+if (command.includes("loop-plan.md")) {
+  process.stdout.write(JSON.stringify({ goal: "Complete the requested record operation", doneCriteria: [
+    { text: ${JSON.stringify(target)}, kind: "state" },
+    { text: ${JSON.stringify(protectedRecord)}, kind: "state" }
+  ] }));
+} else if (command.includes("loop-verify.md")) {
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => {
+    if (c.criterion === ${JSON.stringify(target)}) return { criterion:c.criterion,status:"unverifiable",evidence:"Current evidence is an intermediate page.",basis:"currentState",relation:"unknown",claim:"absence",coverage:"unknown" };
+    if (c.criterion === ${JSON.stringify(protectedRecord)}) return { criterion:c.criterion,status:"pass",evidence:"Protected record appears in the current list.",basis:"currentState",relation:"supports",claim:"presence",coverage:"complete" };
+    if (c.criterion === ${JSON.stringify(COVERAGE_CRITERION)}) return { criterion:c.criterion,status:"pass",evidence:"The response covers both requested outcomes." };
+    return { criterion:c.criterion,status:"unverifiable",evidence:"The response claim cannot be confirmed." };
+  }) }));
+} else if (command.startsWith("agent browser find") || command.startsWith("agent browser inspect")) {
+  process.stdout.write(JSON.stringify({ page: "Confirmation page with next control", complete: true }));
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    let firstCommand = "";
+    let secondQuestion = "";
+    let secondDenied = [];
+    let secondPatterns = [];
+    const freshDescriptorCommand = "agent browser run --session s1 --goal 'confirm the requested operation' --target '{\"role\":\"button\",\"name\":\"Yes, continue\"}' --field 'confirm=yes'";
+    const outcome = await runLoop(baseOptions({ request: "Complete the requested record operation." }), history, (question, h, denied, _retry, deniedPatterns) => {
+      calls++;
+      if (calls === 2) {
+        secondQuestion = question;
+        secondDenied = [...denied];
+        secondPatterns = [...deniedPatterns];
+        assert.ok(denied.includes(firstCommand), "descriptor A remains denied after its completed click");
+        assert.ok(!denied.includes(freshDescriptorCommand), "a fresh confirmation command is not denied by exact-command policy");
+      }
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      const add = (id, command, result) => {
+        data.messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
+        data.messages.push({ role: "tool", tool_call_id: id, name: "executeAux4", content: result });
+      };
+      if (calls === 1) {
+        firstCommand = "agent browser run --session s1 --goal 'Complete the requested record operation' --target '{\"role\":\"button\",\"name\":\"Continue\"}'";
+        add("scoped", firstCommand, JSON.stringify({ status: "done", scopedOperation: { status: "activated", goalVerified: false }, observations: { firstObserved: "Initial page", current: "Confirmation page with next control" } }));
+        add("later-read", "agent browser find --session s1 --question 'inspect current page'", JSON.stringify({ question: "inspect current page", matches: ["Confirmation page with next control"], provider: "mock", answered: true }));
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "The target was removed successfully; done.";
+      }
+      add("fresh-read", "agent browser inspect --session s1", JSON.stringify({ page: "Confirmation page with next control", complete: true }));
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "The target was removed successfully; done.";
+    });
+    assert.equal(calls, 2, "one bounded continuation follows the changed current observation");
+    assert.equal(outcome.stopped, "unverifiable-only");
+    assert.match(secondQuestion, /original request/i);
+    assert.match(secondQuestion, /Discard the prior consumed target descriptor/);
+    assert.match(secondQuestion, /Confirmation page with next control/);
+    assert.ok(secondDenied.includes(firstCommand), "the completed change command remains denied during continuation");
+    assert.deepEqual(secondPatterns, [], "the navigation click's unkeyed descriptor does not create a broad pattern denial that would block a fresh control");
+    assert.ok(!secondPatterns.some(pattern => freshDescriptorCommand.includes(pattern.replace(/\*/g, ""))));
+    const executePolicy = JSON.parse(mergeDenyPolicy(baseOptions().policy, secondDenied, secondPatterns));
+    const executeDenied = executePolicy.deny.flatMap(rule => rule.executeAux4 || []);
+    assert.ok(executeDenied.includes(firstCommand), "the actual next-round execute policy contains descriptor A");
+    assert.ok(!executeDenied.includes(freshDescriptorCommand), "the actual next-round execute policy permits descriptor B");
+    assert.match(outcome.content, new RegExp(`Verified: ${protectedRecord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.match(outcome.content, new RegExp(`Not confirmed: ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.doesNotMatch(outcome.content, /target was removed successfully/);
+  });
 });
 
 
