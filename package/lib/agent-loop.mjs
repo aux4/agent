@@ -3416,7 +3416,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     // A fresh confirmation yield takes priority: this recovery turn could
     // propose a different action before the validated `next` is handled.
     const freshRoundAttempts = extractAttemptLog(history).slice(before);
-    const pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(freshRoundAttempts);
+    let pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(freshRoundAttempts);
     const pendingGuard = unresolvedActionGuard(freshRoundAttempts);
     if (!pushedPastBlocked && !pendingBeforeGuardRecovery && !confirmationYielded && pendingGuard) {
       pushedPastBlocked = true;
@@ -3425,6 +3425,9 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "action-check-recovery" };
       const innerStop = stopAfterExecution(attempt);
       if (innerStop) return innerStop;
+      // Guard recovery can itself return a new pending contract without a
+      // monitor stop reason; refresh before interpreting its prose as BLOCKED.
+      pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(extractAttemptLog(history).slice(before));
     }
 
     if (!pendingBeforeGuardRecovery && !confirmationYielded && isBlocked(lastContent)) {
