@@ -3,6 +3,7 @@
 ## 4.1.63
 
 - Treat an explicit submitted result as an acknowledged effect even when the workflow is incomplete. Run one validated read-only follow-up when available, keep task verification separate, and block replay of the same browser operation on the same URL/resource while allowing distinct resources and actions.
+- Authorize an independently eligible target in a plural request without treating the remaining targets as completed; preserve explicit atomic requirements and deny unrequested targets.
 
 ## 4.1.62
 
