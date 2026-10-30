@@ -39,6 +39,7 @@ import {
   composeEvidenceSummary,
   composeScopedContinuationQuestion,
   freshScopedContinuation,
+  freshScopedReadAttempt,
   composeExecuteQuestion,
   incompleteNote,
   fallbackPlan,
@@ -83,6 +84,7 @@ import {
   composeRunNextQuestion,
   composeNeedsConfirmationAnswer
 } from "../lib/agent-loop.mjs";
+import { scopedContinuationGuardMessage } from "../lib/check-values.mjs";
 
 function tmpFile(name, content) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-test-"));
@@ -2583,30 +2585,69 @@ test("evidence summary cannot leak a false raw answer when outcome truthfulness 
 });
 
 test("fresh scoped continuation requires changed current evidence and no later mutation", () => {
-  const scoped = { command: "agent browser run --goal complete the current operation", source: JSON.stringify({
+  const scoped = { callId: "scoped", command: "agent browser run --goal complete the current operation", source: JSON.stringify({
     status: "done", scopedOperation: { status: "activated", goalVerified: false },
+    session: "s1", finalUrl: "https://example.test/confirm",
     observations: { firstObserved: "Initial page", current: "Confirmation page" }
   }) };
-  const read = { command: "agent browser inspect --session s", source: "Current page controls" };
-  assert.equal(freshScopedContinuation([scoped]).current, "Confirmation page");
-  assert.equal(freshScopedContinuation([scoped, read]).current, "Confirmation page", "later read-only work leaves the latest scoped operation usable");
+  const read = { command: "agent browser inspect --session s1", source: "Current page controls" };
+  assert.equal(freshScopedContinuation([scoped]).context.current, "Confirmation page");
+  assert.equal(freshScopedContinuation([scoped, read]).context.session, "s1", "later read-only work leaves the latest scoped operation usable");
   assert.equal(freshScopedContinuation([scoped, { command: "records update --id r1", source: '{"status":"done"}' }]), null);
   assert.equal(freshScopedContinuation([{ ...scoped, source: JSON.stringify({
-    scopedOperation: { goalVerified: false }, observations: { firstObserved: "Page", current: "Page" }
+    scopedOperation: { goalVerified: false }, session: "s1", observations: { firstObserved: "Page", current: "Page" }
   }) }]), null, "unchanged observation is not actionable progress");
   assert.equal(freshScopedContinuation([{ ...scoped, source: JSON.stringify({
-    scopedOperation: { goalVerified: false }, observations: { firstObserved: "Page" }
+    scopedOperation: { goalVerified: false }, session: "s1", observations: { firstObserved: "Page" }
   }) }]), null, "firstObserved alone is not current evidence");
   assert.equal(freshScopedContinuation([{ ...scoped, source: JSON.stringify({
-    scopedOperation: { goalVerified: false }, observations: { firstObserved: "Page", current: { text: "Not a string observation" } }
+    scopedOperation: { goalVerified: false }, session: "s1", observations: { firstObserved: "Page", current: { text: "Not a string observation" } }
   }) }]), null, "structured objects are not coerced into observation text");
+  assert.equal(freshScopedContinuation([{ ...scoped, callId: undefined }]), null, "continuation requires a stable operation call identity for the pre-action read guard");
+  const closedSession = freshScopedContinuation([{ ...scoped, source: JSON.stringify({
+    status: "done", scopedOperation: { goalVerified: false }, session: "closed", sessionClosed: true,
+    finalUrl: "https://example.test/confirm", observations: { firstObserved: "Initial page", current: "Confirmation page" }
+  }) }]);
+  assert.equal(closedSession.context.session, "", "a closed session falls back to the exact observed URL");
+  assert.equal(closedSession.context.finalUrl, "https://example.test/confirm");
 
-  const question = composeScopedContinuationQuestion({ goal: "finish the original task", stateCriteria: ["the outcome holds"] },
-    { criteria: [{ criterion: "the outcome holds", status: "unverifiable", evidence: "not yet verified" }] }, [scoped], "finish the original task");
-  assert.match(question, /finish the original task/);
-  assert.match(question, /Discard the prior consumed target descriptor/);
-  assert.match(question, /fresh observations/);
-  assert.match(question, /never repeat any successful change command/i);
+  const question = composeScopedContinuationQuestion({ goal: "finish the original task", stateCriteria: ["the outcome holds", "preserve the other record"], doneCriteria: [
+    { text: "the outcome holds", kind: "state" }, { text: "preserve the other record", kind: "state" }, { text: "include the confirmed value", kind: "answer" }
+  ] },
+    { criteria: [{ criterion: "the outcome holds", status: "unverifiable" }, { criterion: "preserve the other record", status: "pass" }, { criterion: "include the confirmed value", status: "unverifiable" }] },
+    freshScopedContinuation([scoped]).context, "finish the original task; preserve the other record");
+  assert.match(question, /finish the original task; preserve the other record/);
+  assert.match(question, /Live session: s1/);
+  assert.match(question, /Current URL: https:\/\/example\.test\/confirm/);
+  assert.match(question, /Current observation: Confirmation page/);
+  assert.match(question, /include the confirmed value \(unverifiable\)/);
+  assert.match(question, /first tool call must be a successful read-only observation/i);
+  assert.doesNotMatch(question, /--target|confirm=yes|the old row descriptor/);
+});
+
+test("scoped read guard requires a successful post-operation observation in the returned location", () => {
+  const context = { operationCallId: "op", operationCommand: "agent browser run --session s1", session: "s1", finalUrl: "https://example.test/confirm" };
+  const op = { callId: "op", tool: "executeAux4", command: context.operationCommand, completed: true, failed: false };
+  const oldRead = { callId: "old-read", tool: "executeAux4", command: "agent browser inspect --session s1", completed: true, failed: false, source: '{"elements":[]}' };
+  const sameSessionRead = { callId: "fresh-read", tool: "executeAux4", command: "agent browser inspect --session s1", completed: true, failed: false, source: '{"elements":[],"complete":true}' };
+  const otherSessionRead = { callId: "wrong-read", tool: "executeAux4", command: "agent browser inspect --session s2", completed: true, failed: false, source: '{"elements":[]}' };
+  assert.match(scopedContinuationGuardMessage("agent browser run --session s2 --target new", [op], context), /first obtain a successful read-only observation/i);
+  assert.match(scopedContinuationGuardMessage("agent browser inspect --session s2", [op], context), /returned live session/);
+  assert.match(scopedContinuationGuardMessage("agent browser inspect --session s1 --url https://example.test/other", [op], context), /first obtain a successful read-only observation/i);
+  assert.equal(scopedContinuationGuardMessage("agent browser inspect --session s1", [op], context), "");
+  assert.equal(scopedContinuationGuardMessage("agent browser run --session s1 --target old", [op, sameSessionRead], context), "", "the pre-action guard opens after a successful same-session read; the completed-target deny rule remains separate");
+  assert.equal(freshScopedReadAttempt([oldRead, op], context), null, "a read before the completed operation cannot satisfy freshness");
+  assert.equal(freshScopedReadAttempt([op, otherSessionRead], context), null, "a different session cannot satisfy freshness");
+  assert.equal(freshScopedReadAttempt([op, sameSessionRead], context), sameSessionRead);
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: '{"session":"s2","finalUrl":"https://example.test/confirm"}' }], context), null, "returned session metadata must agree when the read supplies it");
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: '{"session":"s1","finalUrl":"https://example.test/other"}' }], context), null, "returned URL metadata must agree when the read supplies it");
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: '{"answered":false,"matches":[]}' }], context), null, "an unanswered lookup is not a successful observation");
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: '{"answered":false,"matches":[],"question":"find the next control","provider":"mock"}' }], context), null, "a bare unanswered transport envelope has no current-page evidence");
+  assert.ok(freshScopedReadAttempt([op, { ...sameSessionRead, source: '{"answered":false,"matches":[],"text":"Delete this address?","elements":[{"role":"button","name":"Yes, delete it"}]}' }], context), "an unanswered semantic query can still carry fresh page controls");
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: "{}" }], context), null, "an empty object is not an observation");
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, failed: true }], context), null, "a failed read does not open the guard");
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: "", result: "" }], context), null, "an empty tool echo is not a read observation");
+  assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: '{"status":"needs-input","elements":[]}' }], context), null, "an explicit incomplete status is not a read observation");
 });
 
 test("runLoop takes at most one fresh scoped continuation and does not replay the completed command", async () => {
@@ -2639,13 +2680,19 @@ if (command.includes("loop-plan.md")) {
     let secondQuestion = "";
     let secondDenied = [];
     let secondPatterns = [];
-    const freshDescriptorCommand = "agent browser run --session s1 --goal 'confirm the requested operation' --target '{\"role\":\"button\",\"name\":\"Yes, continue\"}' --field 'confirm=yes'";
-    const outcome = await runLoop(baseOptions({ request: "Complete the requested record operation." }), history, (question, h, denied, _retry, deniedPatterns) => {
+    const freshDescriptorCommand = "agent browser run --session s1 --goal 'continue from the observed page' --target '{\"role\":\"button\",\"name\":\"Continue\"}'";
+    const request = "Delete only the selected record; preserve the protected record.";
+    const outcome = await runLoop(baseOptions({ request, hooksSupported: true }), history, (question, h, denied, _retry, deniedPatterns, continuationContext) => {
       calls++;
       if (calls === 2) {
         secondQuestion = question;
         secondDenied = [...denied];
         secondPatterns = [...deniedPatterns];
+        assert.equal(continuationContext.session, "s1");
+        assert.equal(continuationContext.finalUrl, "https://example.test/records/confirm");
+        assert.equal(continuationContext.current, "Confirmation page with next control");
+        const sidecar = JSON.parse(fs.readFileSync(`${h}.scoped-continuation.json`, "utf8"));
+        assert.equal(sidecar.operationCallId, "scoped");
         assert.ok(denied.includes(firstCommand), "descriptor A remains denied after its completed click");
         assert.ok(!denied.includes(freshDescriptorCommand), "a fresh confirmation command is not denied by exact-command policy");
       }
@@ -2656,20 +2703,36 @@ if (command.includes("loop-plan.md")) {
       };
       if (calls === 1) {
         firstCommand = "agent browser run --session s1 --goal 'Complete the requested record operation' --target '{\"role\":\"button\",\"name\":\"Continue\"}'";
-        add("scoped", firstCommand, JSON.stringify({ status: "done", scopedOperation: { status: "activated", goalVerified: false }, observations: { firstObserved: "Initial page", current: "Confirmation page with next control" } }));
-        add("later-read", "agent browser find --session s1 --question 'inspect current page'", JSON.stringify({ question: "inspect current page", matches: ["Confirmation page with next control"], provider: "mock", answered: true }));
+        add("scoped", firstCommand, JSON.stringify({ status: "done", scopedOperation: { status: "activated", goalVerified: false }, session: "s1", finalUrl: "https://example.test/records/confirm", observations: { firstObserved: "Initial page", current: "Confirmation page with next control" } }));
         fs.writeFileSync(h, JSON.stringify(data));
         return "The target was removed successfully; done.";
       }
-      add("fresh-read", "agent browser inspect --session s1", JSON.stringify({ page: "Confirmation page with next control", complete: true }));
+      assert.match(question, /first tool call must be a successful read-only observation/i);
+      assert.match(question, /Delete only the selected record; preserve the protected record\./);
+      assert.doesNotMatch(question, /--target|confirm=yes|Complete the requested record operation/);
+      const beforeReadAttempts = extractAttemptLog(h);
+      assert.match(scopedContinuationGuardMessage("agent browser run --session s2 --goal 'change other page'", beforeReadAttempts, continuationContext), /returned live session/);
+      assert.match(scopedContinuationGuardMessage(firstCommand, beforeReadAttempts, continuationContext), /first obtain a successful read-only observation/i);
+      const readCommand = "agent browser inspect --session s1";
+      assert.equal(scopedContinuationGuardMessage(readCommand, beforeReadAttempts, continuationContext), "");
+      add("fresh-read", readCommand, JSON.stringify({ page: "Confirmation page with next control", elements: [{ role: "button", name: "Continue" }], complete: true }));
+      fs.writeFileSync(h, JSON.stringify(data));
+      const afterReadAttempts = extractAttemptLog(h);
+      assert.ok(freshScopedReadAttempt(afterReadAttempts, continuationContext));
+      assert.equal(scopedContinuationGuardMessage(freshDescriptorCommand, afterReadAttempts, continuationContext), "", "fresh controls become actionable only after a successful read in the returned session");
+      assert.ok(secondDenied.includes(firstCommand), "the old target command stays denied after the fresh read");
+      assert.ok(!secondDenied.includes(freshDescriptorCommand), "the newly observed control can be used subject to existing guards");
+      assert.ok(!freshDescriptorCommand.includes("confirm=yes"), "confirmation data is not copied from the consumed operation");
+      add("fresh-action", freshDescriptorCommand, JSON.stringify({ status: "done", scopedOperation: { status: "activated", goalVerified: false }, session: "s1", finalUrl: "https://example.test/records/confirm", observations: { firstObserved: "Confirmation page", current: "Intermediate page" } }));
       fs.writeFileSync(h, JSON.stringify(data));
       return "The target was removed successfully; done.";
     });
     assert.equal(calls, 2, "one bounded continuation follows the changed current observation");
     assert.equal(outcome.stopped, "unverifiable-only");
-    assert.match(secondQuestion, /original request/i);
-    assert.match(secondQuestion, /Discard the prior consumed target descriptor/);
+    assert.match(secondQuestion, /Original request \(preserve all constraints and exclusions\): Delete only the selected record; preserve the protected record\./);
+    assert.match(secondQuestion, /Live session: s1/);
     assert.match(secondQuestion, /Confirmation page with next control/);
+    assert.doesNotMatch(secondQuestion, /Complete the requested record operation|--target|confirm=yes/);
     assert.ok(secondDenied.includes(firstCommand), "the completed change command remains denied during continuation");
     assert.deepEqual(secondPatterns, [], "the navigation click's unkeyed descriptor does not create a broad pattern denial that would block a fresh control");
     assert.ok(!secondPatterns.some(pattern => freshDescriptorCommand.includes(pattern.replace(/\*/g, ""))));
@@ -2680,6 +2743,63 @@ if (command.includes("loop-plan.md")) {
     assert.match(outcome.content, new RegExp(`Verified: ${protectedRecord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(outcome.content, new RegExp(`Not confirmed: ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.doesNotMatch(outcome.content, /target was removed successfully/);
+  });
+});
+
+test("runLoop stops without a scoped continuation when the executor cannot enforce its read guard", async () => {
+  const target = "The requested outcome is true.";
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2), command = args.join(" ");
+if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "Complete the request", doneCriteria: [{ text: ${JSON.stringify(target)}, kind: "state" }] }));
+else if (command.includes("loop-verify.md")) {
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => c.criterion === ${JSON.stringify(target)}
+    ? { criterion:c.criterion,status:"unverifiable",evidence:"Only an intermediate page was observed.",basis:"actionResult",relation:"unknown" }
+    : { criterion:c.criterion,status:"pass",evidence:"Required checks pass." }) }));
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const outcome = await runLoop(baseOptions({ request: "Complete the request." }), history, (_question, h) => {
+      calls++;
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      data.messages.push(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "scoped", name: "executeAux4", args: { command: "agent browser run --session s1 --goal complete the request --target next" } }] } },
+        { role: "tool", tool_call_id: "scoped", name: "executeAux4", content: JSON.stringify({ status: "done", scopedOperation: { goalVerified: false }, session: "s1", finalUrl: "https://example.test/next", observations: { firstObserved: "start", current: "intermediate" } }) }
+      );
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "The requested operation succeeded.";
+    });
+    assert.equal(calls, 1);
+    assert.equal(outcome.stopped, "unverifiable-only");
+    assert.doesNotMatch(outcome.content, /requested operation succeeded/);
+
+    const failedReadHistory = tmpFile("failed-read-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    let guardedCalls = 0;
+    const failedRead = await runLoop(baseOptions({ request: "Complete the request.", hooksSupported: true }), failedReadHistory,
+      (question, h, _denied, _retry, _patterns, context) => {
+        guardedCalls++;
+        const data = JSON.parse(fs.readFileSync(h, "utf8"));
+        const add = (id, command, result) => {
+          data.messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id, name: "executeAux4", args: { command } }] } });
+          data.messages.push({ role: "tool", tool_call_id: id, name: "executeAux4", content: result });
+        };
+        if (guardedCalls === 1) {
+          add("scoped", "agent browser run --session s1 --goal complete the request --target next", JSON.stringify({ status: "done", scopedOperation: { goalVerified: false }, session: "s1", finalUrl: "https://example.test/next", observations: { firstObserved: "start", current: "intermediate" } }));
+          fs.writeFileSync(h, JSON.stringify(data));
+          return "The requested operation succeeded.";
+        }
+        assert.match(question, /first tool call must be a successful read-only observation/i);
+        assert.match(scopedContinuationGuardMessage("agent browser inspect --session s2", extractAttemptLog(h), context), /returned live session/);
+        add("wrong-session", "agent browser inspect --session s2", "Error: this call was NOT run by the scoped continuation guard.");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "The requested operation succeeded.";
+      });
+    assert.equal(guardedCalls, 2, "one failed preflight is the only continuation opportunity");
+    assert.equal(failedRead.stopped, "unverifiable-only");
+    assert.doesNotMatch(failedRead.content, /requested operation succeeded/);
   });
 });
 

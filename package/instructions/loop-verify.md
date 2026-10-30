@@ -55,6 +55,14 @@ Keep evidence concise; it need not be an exact quote. These annotations help
 the harness reduce the assessment but are not guarantees that the interpretation
 is true.
 
+If a completed scoped operation reports `goalVerified: false` and the harness
+offers one continuation, treat it as an intermediate operation result, not task
+completion. Start with a read-only observation in the returned live session, or
+the exact returned URL when no session is available. The harness blocks other
+reads and changes until that observation succeeds. Use only controls from that
+fresh observation; do not reuse an earlier target, route, command, or consumed
+confirmation value. Existing action and confirmation checks still apply.
+
 For each criterion choose `pass` (confirmed), `fail` (confirmed not true), or
 `unverifiable` (could not confirm). Never pass on a guess.
 

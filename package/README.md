@@ -121,7 +121,10 @@ needs more pages.
    runs on a 10-call tool budget. One bounded continuation is allowed when the latest relevant
    scoped operation reports `goalVerified: false` and its fresh string `observations.current`
    differs from `firstObserved`, with only read-only attempts after it. The agent must re-observe
-   the current page and choose fresh controls; the completed operation remains denied.
+   the current page in the returned live session (or exact observed URL) before any further change,
+   then choose controls only from that new read. Old descriptors and consumed values are omitted
+   from the continuation prompt; the completed operation remains denied. This continuation is
+   unavailable when the executor cannot enforce the pre-action read guard.
 5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
    failure with nothing new tried), the requester declining a confirmation, or a reply beginning
    with the uppercase `BLOCKED` token (an optional colon is accepted). Generated replies are

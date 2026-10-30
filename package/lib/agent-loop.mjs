@@ -798,6 +798,71 @@ export function isReadCommand(command) {
   return commandPathWords(command).some(word => READ_VERB.has(word));
 }
 
+function optionValue(command, name) {
+  const words = commandWords(command) || [];
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === name) return words[i + 1] || "";
+    if (words[i].startsWith(`${name}=`)) return words[i].slice(name.length + 1);
+  }
+  return "";
+}
+
+export function matchesScopedLocation(command, context) {
+  if (context.session) {
+    const requestedUrl = optionValue(command, "--url");
+    return optionValue(command, "--session") === context.session
+      && (!requestedUrl || !context.finalUrl || requestedUrl === context.finalUrl);
+  }
+  return Boolean(context.finalUrl) && !optionValue(command, "--session")
+    && optionValue(command, "--url") === context.finalUrl;
+}
+
+function hasFreshReadEvidence(source) {
+  const text = String(source ?? "").trim();
+  if (!text) return false;
+  const output = parseJSONLoose(text, null);
+  if (output === null) return true; // legacy successful reads may return plain text.
+  if (Array.isArray(output)) return true; // an explicit empty list is still an observed result.
+  if (typeof output !== "object") return typeof output === "string" && Boolean(output.trim());
+  const textKeys = ["current", "currentText", "text", "page", "content", "body", "title", "summary", "observation", "evidence"];
+  if (textKeys.some(key => typeof output[key] === "string" && output[key].trim())) return true;
+  const collectionKeys = ["elements", "controls", "links", "blocks", "items", "matches", "results"];
+  const collections = collectionKeys.filter(key => Array.isArray(output[key]));
+  if (collections.some(key => output[key].length > 0)) return true;
+  if (output.complete === true && collections.length > 0) return true;
+  if (output.answered === true && Array.isArray(output.matches)) return true;
+  // Preserve generic legacy read results while refusing a bare transport
+  // envelope such as {answered:false,matches:[],question,provider}.
+  const transportKeys = new Set(["status", "reason", "question", "provider", "answered", "complete", "session", "sessionClosed", "finalUrl", "url", "query", "searchQuery", "metadata", "elapsed", "debug"]);
+  return Object.entries(output).some(([key, value]) => !transportKeys.has(key)
+    && value !== null && value !== "" && !(Array.isArray(value) && value.length === 0));
+}
+
+export function freshScopedReadAttempt(attempts, context) {
+  if (!Array.isArray(attempts) || !context) return null;
+  let operationIndex = context.operationCallId
+    ? attempts.findIndex(attempt => attempt.callId === context.operationCallId)
+    : -1;
+  if (operationIndex < 0 && context.operationCommand) {
+    for (let i = attempts.length - 1; i >= 0; i--) {
+      if (attempts[i]?.command === context.operationCommand) { operationIndex = i; break; }
+    }
+  }
+  if (operationIndex < 0) return null;
+  return attempts.slice(operationIndex + 1).find(attempt => {
+    if (attempt.tool !== "executeAux4" || attempt.completed !== true || attempt.failed
+      || !isConclusiveAttempt(attempt)
+      || !hasFreshReadEvidence(attempt.source ?? attempt.result)
+      || !isReadCommand(attempt.command) || !matchesScopedLocation(attempt.command, context)) return false;
+    const output = parseJSONLoose(attempt.source ?? attempt.result, null);
+    if (!output || typeof output !== "object" || Array.isArray(output)) return true;
+    if (typeof output.session === "string" && context.session && output.session !== context.session) return false;
+    if (output.sessionClosed === true) return false;
+    if (typeof output.finalUrl === "string" && context.finalUrl && output.finalUrl !== context.finalUrl) return false;
+    return true;
+  }) || null;
+}
+
 const EXECUTION_VALUE_FLAGS = new Set(["--command", "--execute", "--run", "--then"]);
 
 function commandPathWords(command) {
@@ -1647,12 +1712,13 @@ export function resetHooksSupportCacheForTests() {
   hooksSupportCache = null;
 }
 
-export function checkValuesHooksFile(packageDir, requestFile = "", guardOptionsFile = "") {
+export function checkValuesHooksFile(packageDir, requestFile = "", guardOptionsFile = "", scopedContinuationFile = "") {
+  const scopedFileArg = scopedContinuationFile ? ` --scopedContinuationFile '${scopedContinuationFile.replace(/'/g, "'\\''")}'` : "";
   const repeatedReadHook = pattern => ({
     tool: "executeAux4",
     command: pattern,
     timeout: 60000,
-    before: [`node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(__commandLine)${requestFile ? ` --requestFile ${requestFile}` : ""}${guardOptionsFile ? ` --guardOptions ${guardOptionsFile}` : ""}`]
+    before: [`node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(__commandLine)${requestFile ? ` --requestFile ${requestFile}` : ""}${guardOptionsFile ? ` --guardOptions ${guardOptionsFile}` : ""}${scopedFileArg}`]
   });
   return {
     hooks: [
@@ -1664,6 +1730,7 @@ export function checkValuesHooksFile(packageDir, requestFile = "", guardOptionsF
         tool: "executeAux4",
         command: "agent:browser/run",
         before: [
+          `node ${packageDir}/lib/check-values.mjs --repeatReadGuard true --history value(__history) --command value(__commandLine)${requestFile ? ` --requestFile ${requestFile}` : ""}${guardOptionsFile ? ` --guardOptions ${guardOptionsFile}` : ""}${scopedFileArg}`,
           `node ${packageDir}/lib/check-values.mjs --request value(__request) --history value(__history) --fieldsJson value(field) --dataJson value(data)${requestFile ? ` --requestFile ${requestFile}` : ""}`
         ]
       }
@@ -1687,7 +1754,7 @@ export function writeCheckValuesHooksFile(packageDir, history, request = "", opt
     history: path.resolve(history),
     delegatedPrefixes: (options.delegations || []).map(d => d.via.replace(/:/g, " "))
   }, null, 2));
-  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile, guardFile), null, 2));
+  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile, guardFile, `${history}.scoped-continuation.json`), null, 2));
   return file;
 }
 
@@ -1925,15 +1992,48 @@ export function freshScopedContinuation(attempts) {
   const first = firstValue.trim();
   const current = currentValue.trim();
   if (!first || !current || first === current) return null;
-  return { attempt, current };
+  const session = result?.sessionClosed === true ? "" : typeof result?.session === "string" ? result.session.trim() : "";
+  const finalUrl = typeof result?.finalUrl === "string" ? result.finalUrl.trim() : "";
+  if ((!session && !finalUrl) || typeof attempt.callId !== "string" || !attempt.callId) return null;
+  return {
+    attempt,
+    context: {
+      session,
+      finalUrl,
+      current,
+      operationCallId: attempt.callId,
+      operationCommand: attempt.command
+    }
+  };
 }
 
-export function composeScopedContinuationQuestion(plan, verdict, attempts, request = "") {
+function continuationOutcomeLines(plan, verdict) {
+  const criteria = plan.doneCriteria?.length ? plan.doneCriteria : plan.stateCriteria || [];
+  const wanted = criteria.map(item => typeof item === "string" ? item : item?.text).filter(Boolean);
+  const byCriterion = new Map((verdict?.criteria || []).map(item => [item.criterion, item]));
+  return wanted.map(text => {
+    const assessment = byCriterion.get(text);
+    return `- ${text} (${assessment?.status || "unverifiable"})`;
+  }).join("\n") || `- ${plan.goal}`;
+}
+
+export function composeScopedContinuationQuestion(plan, verdict, context, request = "") {
+  const location = context.session
+    ? `Live session: ${context.session}`
+    : `Observed current URL: ${context.finalUrl}`;
+  const evidence = [location, context.finalUrl ? `Current URL: ${context.finalUrl}` : "", `Current observation: ${context.current}`]
+    .filter(Boolean).join("\n");
   return [
-    "A completed scoped operation explicitly reported that its goal was not verified, and its fresh current observation differs from the initial observation.",
-    "Continue the original request from the currently observed page and satisfy the unmet outcomes below. Re-observe the current page as needed, then choose controls and routes only from fresh observations. Discard the prior consumed target descriptor and do not guess a URL. Never repeat any successful change command; use its existing result and deny rule. If no further step is available, report the outcome as not confirmed without claiming success.",
+    "The last operation completed, but its result explicitly says the requested goal is not verified. This is not task completion.",
+    `Original request (preserve all constraints and exclusions): ${request || plan.goal}`,
+    "Requested outcomes and current verdicts:",
+    continuationOutcomeLines(plan, verdict),
+    "Fresh continuation anchor:",
+    evidence,
+    "Your first tool call must be a successful read-only observation of this exact live session (or the exact observed URL if no session was returned). Do not use an old target, command, link, or confirmation value. The previous target descriptor and consumed values are stale. After the required fresh observation, use only controls and routes returned by that observation. The completed operation is denied and must never be replayed. Existing confirmation and authorization checks still apply; do not bypass them or assume a confirmation value.",
+    "If the required fresh observation cannot be obtained, stop and report what is not confirmed. Do not claim the operation succeeded or failed based only on the intermediate page.",
     "",
-    composeDiagnoseQuestion(plan, verdict, attempts, request)
+    "Only if finishing requires information that only the requester can provide, reply starting with the blocked marker and name exactly what is needed."
   ].join("\n");
 }
 
@@ -2543,6 +2643,8 @@ export async function runLoop(options, history, execute, recovery = "") {
   savePlan(history, { ...plan, ms: Date.now() - planStart });
   const metrics = { plan: { ...historyStats(planHistory), ms: Date.now() - planStart }, rounds: [] };
   const previousActionChecks = new Set(actionCheckFiles(history));
+  const scopedContinuationFile = history ? `${history}.scoped-continuation.json` : "";
+  if (scopedContinuationFile) fs.writeFileSync(scopedContinuationFile, JSON.stringify({ active: false }), "utf8");
 
   let deniedCommands = [];
   let deniedPatterns = [];
@@ -2553,6 +2655,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   let lastAnswer = "";
   let lastVerdict = null;
   let freshContinuationUsed = false;
+  let freshContinuationContext = null;
   let pushedPastBlocked = false;
   let lookFirst = false;
   let confirmOpen = false;
@@ -2561,6 +2664,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   let recoveryHint = "";
   const priorCommands = new Set();
   const done = (stopped, attempt, note = "") => {
+    if (scopedContinuationFile) fs.rmSync(scopedContinuationFile, { force: true });
     metrics.stopped = stopped;
     metrics.actionChecks = actionCheckStats(history, previousActionChecks);
     metrics.total = [metrics.plan, metrics.actionChecks, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
@@ -2626,12 +2730,27 @@ export async function runLoop(options, history, execute, recovery = "") {
     const gateOpen = confirmOpen || options.hooksSupported;
     confirmOpen = false;
     options.gateDeny = gateOpen ? [] : [CONFIRM_PATTERN, CONFIRM_DATA_PATTERN];
-    lastContent = await runExecution(question, history, deniedCommands, attempt > 1, deniedPatterns);
+    const continuationContext = freshContinuationContext;
+    if (continuationContext && scopedContinuationFile) {
+      fs.writeFileSync(scopedContinuationFile, JSON.stringify({ ...continuationContext, active: true }), "utf8");
+    }
+    try {
+      lastContent = await runExecution(question, history, deniedCommands, attempt > 1, deniedPatterns, continuationContext);
+    } finally {
+      if (continuationContext && scopedContinuationFile) fs.writeFileSync(scopedContinuationFile, JSON.stringify({ active: false }), "utf8");
+    }
     if (String(lastContent || "").trim()) lastAnswer = lastContent;
     const round = { attempt, execute: { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart } };
     metrics.rounds.push(round);
     const innerStop = stopAfterExecution(attempt);
     if (innerStop) return innerStop;
+    if (continuationContext) {
+      const observed = freshScopedReadAttempt(extractAttemptLog(history), continuationContext);
+      freshContinuationContext = null;
+      if (!observed) {
+        return done("unverifiable-only", attempt, "A fresh read-only observation of the returned current session was not obtained, so the requested outcome remains unconfirmed.");
+      }
+    }
     if (extractAttemptLog(history).slice(before).some(a => isBudgetExceededResult(a.source))) {
       return done("tool-budget", attempt, "The model's tool-call budget was exhausted, so the remaining work could not be confirmed.");
     }
@@ -2756,7 +2875,7 @@ export async function runLoop(options, history, execute, recovery = "") {
     // Nothing failed, only what the harness could not observe remains, and
     // the change behind it already ran -- a retry would just repeat a denied
     // command for the same inconclusive verdict. Stop now with the best answer.
-    const scopedContinuation = !freshContinuationUsed && freshScopedContinuation(attempts);
+    const scopedContinuation = !freshContinuationUsed && options.hooksSupported && scopedContinuationFile && freshScopedContinuation(attempts);
     if (unverifiableOnlyAfterChange(lastVerdict, attempts) && !scopedContinuation) {
       return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
     }
@@ -2776,7 +2895,8 @@ export async function runLoop(options, history, execute, recovery = "") {
     priorVerdict = lastVerdict;
     if (scopedContinuation) {
       freshContinuationUsed = true;
-      nextQuestion = composeScopedContinuationQuestion(plan, lastVerdict, attempts, options.request);
+      freshContinuationContext = scopedContinuation.context;
+      nextQuestion = composeScopedContinuationQuestion(plan, lastVerdict, scopedContinuation.context, options.request);
     }
     lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);

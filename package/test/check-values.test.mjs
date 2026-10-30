@@ -14,7 +14,7 @@ import {
   detectAiAgentHooksSupport,
   resetHooksSupportCacheForTests
 } from "../lib/agent-loop.mjs";
-import { parseFields, checkValues, repeatedReadGuardMessage } from "../lib/check-values.mjs";
+import { parseFields, checkValues, repeatedReadGuardMessage, scopedContinuationGuardMessage } from "../lib/check-values.mjs";
 
 test("outbound addresses require exact identifiers from the request or successful reads", () => {
   const command = 'notifications send --to="Person <person@work.test>" --cc other@work.test';
@@ -59,6 +59,48 @@ test("the command hook blocks an invented recipient and allows recovery after a 
     ]);
     const allowed = spawnSync(process.execPath, args, { encoding: "utf8" });
     assert.equal(allowed.status, 0, allowed.stdout + allowed.stderr);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the live tool hook requires a fresh read in the returned session before allowing changes", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoped-continuation-hook-"));
+  try {
+    const history = path.join(dir, "history.json");
+    const contextFile = `${history}.scoped-continuation.json`;
+    const context = { operationCallId: "op", operationCommand: "agent browser run --session s1", session: "s1", finalUrl: "https://example.test/confirm" };
+    writeHistory(history, [
+      { role: "assistant_with_tool", content: { tool_calls: [{ id: "op", name: "executeAux4", args: { command: context.operationCommand } }] } },
+      { role: "tool", tool_call_id: "op", name: "executeAux4", content: JSON.stringify({ status: "done", scopedOperation: { goalVerified: false }, session: "s1", finalUrl: context.finalUrl, observations: { firstObserved: "page", current: "confirm page" } }) }
+    ]);
+    fs.writeFileSync(contextFile, JSON.stringify(context));
+    const run = command => spawnSync(process.execPath, [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
+      "--history", history, "--command", command, "--scopedContinuationFile", contextFile], { encoding: "utf8" });
+    const outOfSession = run("agent browser run --session s2 --goal 'continue'");
+    assert.equal(outOfSession.status, 1);
+    assert.match(outOfSession.stdout, /returned live session \(s1\)/);
+    const oldTarget = run("agent browser run --session s1 --goal 'repeat previous operation'");
+    assert.equal(oldTarget.status, 1);
+    assert.match(oldTarget.stdout, /successful read-only observation/);
+    const nestedMutation = run("records:workspace:archive/delete --recordId r7");
+    assert.equal(nestedMutation.status, 1, "non-browser mutations are guarded too");
+    assert.match(nestedMutation.stdout, /successful read-only observation/);
+    const freshRead = run("agent browser inspect --session s1");
+    assert.equal(freshRead.status, 0, freshRead.stdout + freshRead.stderr);
+    const data = JSON.parse(fs.readFileSync(history, "utf8"));
+    data.messages.push(
+      { role: "assistant_with_tool", content: { tool_calls: [{ id: "read", name: "executeAux4", args: { command: "agent browser inspect --session s1" } }] } },
+      { role: "tool", tool_call_id: "read", name: "executeAux4", content: JSON.stringify({ elements: [{ role: "button", name: "Continue" }] }) }
+    );
+    fs.writeFileSync(history, JSON.stringify(data));
+    const freshControl = run("agent browser run --session s1 --target '{\"role\":\"button\",\"name\":\"Continue\"}'");
+    assert.equal(freshControl.status, 0, freshControl.stdout + freshControl.stderr);
+    fs.writeFileSync(contextFile, JSON.stringify({ active: false }));
+    const inactive = run("records:workspace:archive/delete --recordId r7");
+    assert.equal(inactive.status, 0, inactive.stdout + inactive.stderr);
+    fs.rmSync(contextFile);
+    const missingGuardState = run("records:workspace:archive/delete --recordId r7");
+    assert.equal(missingGuardState.status, 1, "removing the active sidecar cannot disable the guard");
+    assert.match(missingGuardState.stdout, /guard could not read its state/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -109,7 +151,7 @@ test("checkValuesHooksFile targets executeAux4 on every agent:browser/run call",
   assert.equal(hook.tool, "executeAux4");
   assert.equal(hook.command, "agent:browser/run");
   assert.equal(hook.params, undefined);
-  assert.equal(hook.before.length, 1);
+  assert.equal(hook.before.length, 2);
   assert.match(hook.before[0], /check-values\.mjs/);
   assert.match(hook.before[0], /\/pkg\/dir/);
   assert.deepEqual(file.hooks.slice(0, 2).map(h => h.command), ["*/*", "*/*/*"]);
@@ -229,7 +271,7 @@ test("checkValues: a sourced value passes in one round", () => {
 });
 
 test("the check-values hook passes the request and history with value(), never raw ${...} in a shell line", () => {
-  const step = checkValuesHooksFile("/pkg").hooks[2].before[0];
+  const step = checkValuesHooksFile("/pkg").hooks[2].before[1];
   assert.match(step, /--request value\(__request\) --history value\(__history\) --fieldsJson value\(field\)/);
   assert.doesNotMatch(step, /\$\{/);
 });
@@ -333,7 +375,9 @@ test("the hook reads the person's original request from the file next to the his
   const history = path.join(tmp, "h.json");
   const hooksFile = writeCheckValuesHooksFile("/pkg", history, "Please cancel my order");
   assert.equal(fs.readFileSync(`${history}.request.txt`, "utf8"), "Please cancel my order");
-  assert.match(JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[2].before[0], /--requestFile \/.*h\.json\.request\.txt$/);
+  const hook = JSON.parse(fs.readFileSync(hooksFile, "utf8")).hooks[2];
+  assert.match(hook.before[0], /--scopedContinuationFile '\/.*h\.json\.scoped-continuation\.json'/);
+  assert.match(hook.before[1], /--requestFile \/.*h\.json\.request\.txt$/);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

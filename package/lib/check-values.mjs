@@ -15,7 +15,7 @@ import { authorizeAction, actionCommandHelp } from "./action-check.mjs";
 // and prints the same message the two-round confirmation gate would have
 // asked for, when any value cannot be found anywhere. Exits 0 silently
 // otherwise, letting the confirmation run.
-import { extractAttemptLog, unsourcedFieldValues, unsourcedRecipientValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem, isReadCommand, isChangeCommand, sameReadEvidence, commandWords, runAux4 } from "./agent-loop.mjs";
+import { extractAttemptLog, unsourcedFieldValues, unsourcedRecipientValues, composeNotConfirmedQuestion, enteredValues, dataEntries, pendingConfirmation, hasConfirmationContract, namesUnselectedItem, isReadCommand, isChangeCommand, sameReadEvidence, commandWords, runAux4, freshScopedReadAttempt, matchesScopedLocation } from "./agent-loop.mjs";
 
 export function parseArgs(argv) {
   const options = {};
@@ -110,6 +110,17 @@ export function repeatedReadGuardMessage(command, attempts = []) {
   return "Error: recent lookups already returned the same evidence twice. Do not repeat another equivalent search or status check; use a materially different source/scope, wait with a polling interval if this is a running job, or report what remains unknown.";
 }
 
+export function scopedContinuationGuardMessage(command, attempts = [], context = null) {
+  if (!context || typeof context !== "object") return "";
+  const location = context.session || context.finalUrl;
+  if (!location || typeof context.operationCallId !== "string" || !context.operationCallId) {
+    return "Error: scoped continuation context is incomplete; no command was run. Stop and report that the current state could not be safely re-observed.";
+  }
+  if (freshScopedReadAttempt(attempts, context)) return "";
+  if (isReadCommand(command) && matchesScopedLocation(command, context)) return "";
+  return `Error: this call was NOT run. First obtain a successful read-only observation using the returned ${context.session ? "live session" : "observed URL"} (${location}). Other reads and all changes are blocked until that fresh observation succeeds. Do not reuse the completed operation or its previous target; after the read, use only newly observed controls and keep all confirmation and authorization checks.`;
+}
+
 // The most recent tool result still waiting for a confirmation, if any.
 function lastPendingConfirmation(attempts) {
   for (let i = attempts.length; i > 0; i--) {
@@ -149,6 +160,19 @@ async function main(argv) {
   }
   if (options.repeatReadGuard) {
     const attempts = contextAttempts(options.history,options.historyFiles);
+    if (options.scopedContinuationFile) {
+      try {
+        const scoped = JSON.parse(fs.readFileSync(options.scopedContinuationFile, "utf8"));
+        const scopedMessage = scoped.active === false ? "" : scopedContinuationGuardMessage(options.command, attempts, scoped);
+        if (scopedMessage) {
+          process.stdout.write(`${scopedMessage}\n`);
+          process.exit(1);
+        }
+      } catch (error) {
+        process.stdout.write("Error: scoped continuation guard could not read its state; no command was run. Stop and report that the current state could not be safely re-observed.\n");
+        process.exit(1);
+      }
+    }
     const reference = actionCommandHelp(options.command);
     const recipients = unsourcedRecipientValues(options.command, attempts, options.request, reference);
     const words = commandWords(options.command) || [];

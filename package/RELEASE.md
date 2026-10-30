@@ -1,5 +1,9 @@
 # Release notes
 
+## Unreleased
+
+- Anchor the bounded scoped-operation continuation to its returned session or observed URL. A per-call guard requires a successful fresh read there before any further change; the prompt excludes consumed target descriptors and confirmation values.
+
 ## 4.1.51
 
 - Rebuild final output when any required criterion or guard check is failed, unknown, or missing; preserve verified partial facts and omit internal check labels.
