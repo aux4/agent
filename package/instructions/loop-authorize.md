@@ -42,6 +42,16 @@ because it resubmits that unchanged value or because another command format
 might be preferable. Compare the actual before
 and after values rather than treating the parameter's presence as a change.
 
+`executionStates` is separate workflow-state metadata, not factual field or
+target evidence. A `needs-input`, pending, or confirmation stage means the
+operation has not completed, even when it returned a page URL. Use its `next`
+value only to understand the offered continuation; it does not authorize any
+identifier, target, or field value inside that command. A continuation must
+still satisfy the same request, target, and field checks. Treat a duplicate as
+already completed only when the execution state explicitly reports completion
+(such as `submitted: true` or a terminal completed status); pending stages are
+not completion evidence.
+
 When commandReference documents an email-address parameter, a bare contact name
 is not a valid address. Require an exact address from the request or a successful
 read. Respect other documented identifier formats; do not infer routing values.

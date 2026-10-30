@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { isChangeCommand, isReadCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, observedFieldValue, isConclusiveAttempt, sameReadEvidence } from "./agent-loop.mjs";
+import { isChangeCommand, isReadCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, observedFieldValue, isConclusiveAttempt, hasPendingWorkflowStage, sameReadEvidence } from "./agent-loop.mjs";
 export { actionCheckFiles, actionCheckStats } from "./agent-loop.mjs";
 
 // Read the installed command's contract; do not assume every --to is email
@@ -52,6 +52,63 @@ function repeatedScopeDenial(command, attempts) {
   const after = reads(attempts.slice(previousIndex + 1));
   if (after.length && !sameReadEvidence(after, before)) return null;
   return reason;
+}
+
+const COMPLETED_EXECUTION_STATUS = new Set(["done", "completed", "success", "succeeded"]);
+const MAX_EXECUTION_STATE_CHARS = 6000;
+const MAX_EXECUTION_STATE_COUNT = 12;
+
+// Keep transport/workflow progress separate from factual field evidence. A
+// confirmation's `next` command is useful for understanding a pending stage,
+// but values or identifiers in that command do not establish a real target.
+function executionState(attempt) {
+  if (!attempt || attempt.completed === false || attempt.failed) return null;
+  const result = parseJSONLoose(attempt.source ?? attempt.result ?? "", null);
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const status = typeof result.status === "string" ? result.status.trim().toLowerCase() : "";
+  const needsInputCandidate = result.needsInput && typeof result.needsInput === "object" && !Array.isArray(result.needsInput)
+    ? result.needsInput : null;
+  const needsInput = needsInputCandidate && (typeof needsInputCandidate.kind === "string" || Number.isInteger(needsInputCandidate.step))
+    ? needsInputCandidate : null;
+  const confirmationCandidate = result.confirmation && typeof result.confirmation === "object" && !Array.isArray(result.confirmation)
+    ? result.confirmation : null;
+  const confirmation = confirmationCandidate && typeof confirmationCandidate.next === "string" && confirmationCandidate.next.trim()
+    ? confirmationCandidate : null;
+  const submitted = typeof result.submitted === "boolean" ? result.submitted : undefined;
+  const pending = hasPendingWorkflowStage(result) || (COMPLETED_EXECUTION_STATUS.has(status) && submitted === false);
+  const workflowStatus = pending || COMPLETED_EXECUTION_STATUS.has(status);
+  if (!workflowStatus) return null;
+  const explicitCompletion = !pending && (submitted === true || COMPLETED_EXECUTION_STATUS.has(status));
+  return {
+    command: String(attempt.command || "").slice(0, 400),
+    ...(status ? { status } : {}),
+    ...(submitted !== undefined ? { submitted } : {}),
+    ...(needsInput ? { needsInput: {
+      ...(typeof needsInput.kind === "string" ? { kind: needsInput.kind.slice(0, 80) } : {}),
+      ...(Number.isInteger(needsInput.step) ? { step: needsInput.step } : {}),
+      ...(typeof needsInput.field?.label === "string" ? { fieldLabel: needsInput.field.label.slice(0, 160) } : {})
+    } } : {}),
+    ...(confirmation ? { confirmation: {
+      ...(typeof confirmation.action === "string" ? { action: confirmation.action.slice(0, 120) } : {}),
+      ...(typeof confirmation.target === "string" ? { target: confirmation.target.slice(0, 160) } : {}),
+      ...(typeof confirmation.next === "string" ? { next: confirmation.next.slice(0, 500) } : {})
+    } } : {}),
+    pending,
+    explicitCompletion
+  };
+}
+
+function boundedExecutionStates(attempts) {
+  const recent = attempts.map(executionState).filter(Boolean).slice(-MAX_EXECUTION_STATE_COUNT);
+  const result = [];
+  let remaining = MAX_EXECUTION_STATE_CHARS;
+  for (const state of [...recent].reverse()) {
+    const size = JSON.stringify(state).length + 1;
+    if (size > remaining) continue;
+    result.unshift(state);
+    remaining -= size;
+  }
+  return result;
 }
 
 export function unsourcedActionIds(command, attempts = [], request = "", reference = "") {
@@ -134,7 +191,11 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   };
   // The engine already reserves completed writes. Enforce the same invariant
   // before asking a model, while leaving incomplete delegates resumable.
-  if (attempts.some(attempt => isConclusiveAttempt(attempt) && canonical(attempt.command) === canonical(command))) {
+  if (attempts.some(attempt => {
+    if (!isConclusiveAttempt(attempt) || canonical(attempt.command) !== canonical(command)) return false;
+    const state = executionState(attempt);
+    return !state || state.explicitCompletion;
+  })) {
     return {allow: false, reason: "This exact change already succeeded. Reuse its result instead of performing it again."};
   }
   const repeatedDenial = repeatedScopeDenial(command, attempts);
@@ -170,12 +231,14 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     remaining -= result.length;
     return { command: a.command, result, suppliedFields: enteredValues(a.command) };
   });
+  const executionStates = boundedExecutionStates(attempts);
   const payload = { request, proposedAction: command, delegatedGoal, confirming,
     proposedFields: [...staged].map(([label, value]) => {
       const observed=observedFieldValue(label,attempts);
       return {label,value,...(observed!==null ? {observedValue:observed,unchanged:value===observed} : {})};
     }),
     explicitlyPermittedChoices: candidateFields.filter(entry=>explicitOpenChoice(entry.label,entry.value,attempts,request)), successfulActionsAndResults: evidence,
+    executionStates,
     commandReference: commandReference ?? actionCommandHelp(command) };
   let auditBase = "";
   if (history) {

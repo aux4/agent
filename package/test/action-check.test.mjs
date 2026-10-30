@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { authorizeAction, actionCheckFiles, actionCheckStats, unsourcedActionIds } from "../lib/action-check.mjs";
-import { writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
+import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 test("pre-action checks inherit the configured model, retain scope evidence, and record their cost", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-"));
@@ -241,6 +241,100 @@ printf '%s' '{"allow":true,"reason":"Allowed"}'
   } finally {
     if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
     fs.rmSync(dir, {recursive:true, force:true});
+  }
+});
+
+test("authorization keeps multi-step execution state separate from facts and only rejects explicit completion", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "execution-state-authorization-"));
+  const fake = path.join(dir, "aux4"), payloadLog = path.join(dir, "payloads.jsonl"), modelCalls = path.join(dir, "model-calls");
+  fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');const args=process.argv.slice(2);const payload=JSON.parse(args[args.indexOf('--question')+1]);
+fs.appendFileSync(${JSON.stringify(payloadLog)},JSON.stringify(payload)+'\\n');
+const count=fs.existsSync(${JSON.stringify(modelCalls)})?Number(fs.readFileSync(${JSON.stringify(modelCalls)},'utf8')):0;
+fs.writeFileSync(${JSON.stringify(modelCalls)},String(count+1));
+console.log(JSON.stringify({allow:true,reason:'The requested continuation is supported.'}));
+`, { mode: 0o755 });
+  process.env.AUX4_BIN = fake;
+  try {
+    const options = { configFile: "/local.yaml", packageDir: "/agent", delegatedPrefixes: ["agent records"] };
+    const command = 'agent records run --url https://example.test/records --goal "Finalize the selected record" --field "confirm=yes"';
+    const request = "Finalize the selected record after its required confirmations.";
+    const pending = step => ({
+      status: "needs-input", submitted: false,
+      needsInput: { kind: "confirm", step, field: { label: `Confirm ${step}` } },
+      confirmation: {
+        action: `Confirm ${step}`, target: `Record stage ${step}`,
+        next: `${command} --field 'Record Code=ghost-${step}'`
+      },
+      pageUrl: "https://example.test/records/selected"
+    });
+    const attempts = [{ command, source: JSON.stringify(pending(1)), completed: true, failed: false }];
+    let sideEffects = 0;
+    const authorizeContinuation = () => {
+      const verdict = authorizeAction(options, command, attempts, request, "", "run\n  --goal <arg>\n  --field <value>");
+      if (verdict.allow) sideEffects++;
+      return verdict;
+    };
+
+    assert.equal(isConclusiveAttempt(attempts[0]), false, "a structured confirmation is pending, not completed");
+    assert.equal(isConclusiveAttempt({ source: '{"status":"done","submitted":true,"confirmation":{"id":"receipt-1"}}' }), true,
+      "a terminal receipt may include a business confirmation object without becoming pending");
+    assert.deepEqual(JSON.parse(fieldEvidenceText('{"status":"pending","id":"record-17","confirmation":{"id":"receipt-17"}}')),
+      { status: "pending", id: "record-17", confirmation: { id: "receipt-17" } },
+      "business pending/confirmation fields remain factual when they lack the recognized workflow contract");
+    assert.equal(isConclusiveAttempt({ source: '{"status":"deleted","id":"record-17"}' }), true,
+      "business completion status remains conclusive");
+    assert.equal(authorizeContinuation().allow, true, "the first pending stage remains resumable");
+    attempts.push({ command, source: JSON.stringify(pending(2)), completed: true, failed: false });
+    assert.equal(authorizeContinuation().allow, true, "the same command can continue from a distinct pending stage");
+
+    const payloads = fs.readFileSync(payloadLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(payloads.length, 2);
+    assert.deepEqual(payloads[0].executionStates.map(state => [state.status, state.needsInput.step, state.pending, state.explicitCompletion]), [
+      ["needs-input", 1, true, false]
+    ]);
+    assert.deepEqual(payloads[1].executionStates.map(state => [state.status, state.needsInput.step, state.pending, state.explicitCompletion]), [
+      ["needs-input", 1, true, false], ["needs-input", 2, true, false]
+    ]);
+    assert.ok(JSON.stringify(payloads[1].executionStates).length <= 6000);
+    assert.match(payloads[1].executionStates[1].confirmation.next, /ghost-2/);
+    assert.doesNotMatch(JSON.stringify(payloads[1].successfulActionsAndResults), /ghost-|needs-input|confirmation|Record stage/,
+      "continuation commands and pending protocol details do not become value/target evidence");
+
+    const done = { command, source: JSON.stringify({ status: "done", submitted: true }), completed: true, failed: false };
+    attempts.push(done);
+    assert.equal(isConclusiveAttempt(done), true);
+    const duplicate = authorizeContinuation();
+    assert.equal(duplicate.allow, false);
+    assert.match(duplicate.reason, /already succeeded/);
+    assert.equal(Number(fs.readFileSync(modelCalls, "utf8")), 2, "completed duplicates are denied before another model authorization");
+    assert.equal(sideEffects, 2, "the simulated operation is reached only after each allow verdict");
+
+    const pendingAttempt = { command, source: JSON.stringify(pending(1)), completed: true, failed: false };
+    const unknownTarget = unsourcedActionIds("records delete --recordId ghost-47", [{
+      ...pendingAttempt, source: JSON.stringify({ ...pending(1), confirmation: { next: "records delete --recordId ghost-47" } })
+    }], "Delete the selected record", "delete\n  --recordId <arg>");
+    assert.deepEqual(unknownTarget.map(item => item.value), ["ghost-47"], "a next command cannot establish its target ID");
+    const targetDenied = authorizeAction({ ...options, delegatedPrefixes: [] }, "records delete --recordId ghost-47", [{
+      ...pendingAttempt, source: JSON.stringify({ ...pending(1), confirmation: { next: "records delete --recordId ghost-47" } })
+    }], "Delete the selected record", "", "delete\n  --recordId <arg>");
+    assert.equal(targetDenied.allow, false);
+    assert.match(targetDenied.reason, /not established/);
+    assert.equal(Number(fs.readFileSync(modelCalls, "utf8")), 2, "next-command IDs cannot bypass the deterministic target check");
+
+    const unknownFieldCommand = 'agent records run --url https://example.test/records --goal "Finalize the selected record" --field "Record Code=ghost-1"';
+    const fieldDenied = authorizeAction(options, unknownFieldCommand, [pendingAttempt], request, "", "run\n  --goal <arg>\n  --field <value>");
+    assert.equal(fieldDenied.allow, false);
+    assert.match(fieldDenied.reason, /not established/);
+    assert.equal(Number(fs.readFileSync(modelCalls, "utf8")), 2, "next-command fields cannot bypass value provenance");
+    assert.deepEqual(unsourcedFieldValues(["Record Code=ghost-1"], [{
+      ...pendingAttempt
+    }], "Finalize the selected record"), [{ label: "Record Code", value: "ghost-1" }],
+    "a value echoed only in a continuation command remains unsourced");
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

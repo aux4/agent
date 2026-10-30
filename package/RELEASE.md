@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.57
+
+- Keep structured pending/completed workflow state separate from field evidence during action authorization, so confirmation continuations remain resumable without treating echoed next-command values as facts.
+
 ## 4.1.56
 
 - Preserve validated, incomplete ranked page candidates as positive provenance evidence without treating them as authorization or proof of absence.

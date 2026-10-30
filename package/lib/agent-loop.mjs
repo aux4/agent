@@ -1199,9 +1199,13 @@ export function fieldEvidenceText(value, command = "") {
     const pageEvidence = positivePageEvidence(data.pageEvidence);
     return JSON.stringify({answer:data.answer, matches:data.matches, ...(pageEvidence ? {pageEvidence} : {})});
   }
-  const clean = item => Array.isArray(item) ? item.map(clean) : item && typeof item === "object"
-    ? Object.fromEntries(Object.entries(item).filter(([key]) => !/^(?:options|choices|fromGoal|commandReference|documentation|examples)$/i.test(key)).map(([key,v])=>[key,clean(v)])) : item;
-  return JSON.stringify(clean(data));
+  const workflowEnvelope = hasPendingWorkflowStage(data);
+  const clean = (item, root = false) => Array.isArray(item) ? item.map(value => clean(value)) : item && typeof item === "object"
+    ? Object.fromEntries(Object.entries(item).filter(([key]) => {
+      if (/^(?:options|choices|fromGoal|commandReference|documentation|examples)$/i.test(key)) return false;
+      return !(workflowEnvelope && root && /^(?:needsInput|confirmation|next|goal|submitted|status)$/i.test(key));
+    }).map(([key,v])=>[key,clean(v)])) : item;
+  return JSON.stringify(clean(data, true));
 }
 
 // Ranked page evidence is a positive source for the text and identity it
@@ -1991,6 +1995,19 @@ const INCONCLUSIVE_STATUS = /"status"\s*:\s*"(incomplete|needs-input|needs-confi
 export function isConclusiveAttempt(attempt) {
   const result = String(attempt.source ?? attempt.result ?? "");
   return attempt.completed !== false && !attempt.failed && !INCONCLUSIVE_STATUS.test(result) && !/"submitted"\s*:\s*false\b/i.test(result);
+}
+
+export function hasPendingWorkflowStage(value) {
+  const result = typeof value === "string" ? parseJSONLoose(value, null) : value;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const status = typeof result.status === "string" ? result.status.trim() : "";
+  const needsInput = result.needsInput && typeof result.needsInput === "object" && !Array.isArray(result.needsInput)
+    ? result.needsInput : null;
+  const confirmation = result.confirmation && typeof result.confirmation === "object" && !Array.isArray(result.confirmation)
+    ? result.confirmation : null;
+  const hasNeedsInputDescriptor = Boolean(needsInput && (typeof needsInput.kind === "string" || Number.isInteger(needsInput.step)));
+  const hasContinuation = Boolean(confirmation && typeof confirmation.next === "string" && confirmation.next.trim());
+  return /^(?:needs-input|needs-confirmation)$/i.test(status) && (hasNeedsInputDescriptor || hasContinuation);
 }
 
 const CHANGE_RESULT_WORD = /\b(sent|saved|submitted|booked|confirmed|cancelled|canceled|deleted|removed|archived|updated|patched|posted|created|inserted|added|written|moved|modified|edited|renamed|uploaded|published|deployed|paid|approved|installed|uninstalled|forwarded|replied)\b/i;
