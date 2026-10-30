@@ -91,6 +91,12 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    unparseable verdict prevents that command from running and tells the agent what evidence is
    missing.
 
+   If a provider rejects a tool request before any tool runs, the controller may issue one
+   bounded repair using the original task and the bound tool's declared argument schema. The
+   malformed provider diagnostic is never treated as a command or copied into the repair prompt;
+   the repair runs through the same executor, policy, hooks, and call budget. If it cannot produce
+   a usable tool exchange, the task stops with an unverified result.
+
 For web-page reads, the registered browser capability includes `agent browser inspect` for the
 ordered content blocks emitted from the current rendered page. Its completeness is limited to the
 extractor's blocks on that page; it does not prove that all visible text, later pages, or a full

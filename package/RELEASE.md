@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.64
+
+- Add one controller-level repair after a fresh provider tool-protocol error when the agent is blocked. The repair uses the declared tool schema through the normal executor, never reuses malformed diagnostic text, and stops boundedly if no usable tool exchange follows.
+
 ## 4.1.63
 
 - Treat an explicit submitted result as an acknowledged effect even when the workflow is incomplete. Run one validated read-only follow-up when available, keep task verification separate, and block replay of the same browser operation on the same URL/resource while allowing distinct resources and actions.

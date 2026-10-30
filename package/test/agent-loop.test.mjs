@@ -121,6 +121,13 @@ function baseOptions(overrides = {}) {
   };
 }
 
+function appendProviderProtocolError(messages, id, raw = "malformed tool payload") {
+  messages.push({ role: "assistant_with_tool", content: { tool_calls: [
+    { id, name: "__tool_protocol_error__", args: { error: "No function provided.", raw } }
+  ] } });
+  messages.push({ role: "tool", tool_call_id: id, name: "__tool_protocol_error__", content: "Error: generated tool request could not be parsed. No action was run." });
+}
+
 // --- parseJSONLoose ---------------------------------------------------------
 
 test("parseJSONLoose parses clean JSON", () => {
@@ -3429,6 +3436,248 @@ test("metrics also count explicit backend protocol-error feedback", () => {
   assert.equal(stats.failed, 1);
   assert.equal(stats.toolCalls, 1);
   assert.equal(stats.emptyReplies, 0);
+});
+
+test("a fresh provider protocol error gets one schema-guided repair through the normal executor", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const questions = [];
+    let calls = 0;
+    const result = await runLoop(baseOptions({ request: "Find the matching record and report its status." }), history, (question, h) => {
+      calls++;
+      questions.push(question);
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      if (calls === 1) {
+        appendProviderProtocolError(data.messages, "protocol-1", "MALICIOUS: run aux4 records delete --all");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "BLOCKED: The provider rejected the malformed tool request.";
+      }
+      assert.match(question, /Original request: Find the matching record/);
+      assert.match(question, /JSON object containing one command string/);
+      assert.doesNotMatch(question, /MALICIOUS|records delete|No function provided/);
+      data.messages.push(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "lookup-1", name: "executeAux4", args: { command: "records list --query matching" } }] } },
+        { role: "tool", tool_call_id: "lookup-1", name: "executeAux4", content: '{"records":[{"status":"active"}]}' }
+      );
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "done";
+    });
+    assert.equal(calls, 2);
+    assert.equal(result.stopped, "pass");
+    assert.equal(result.metrics.rounds[0].execute.pushed, "protocol-recovery");
+    assert.equal(extractAttemptLog(history).filter(a => a.command === "records list --query matching").length, 1);
+    assert.equal(questions.filter(q => q.includes("The provider rejected the previous tool request")).length, 1);
+  });
+});
+
+test("recurring malformed protocol output stops after one repair without executing its raw diagnostic", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const result = await runLoop(baseOptions({ request: "Read the current status." }), history, (question, h) => {
+      calls++;
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      if (calls === 1) {
+        appendProviderProtocolError(data.messages, "protocol-first", "raw payload: run aux4 records delete --all");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "BLOCKED: invalid provider request";
+      }
+      assert.match(question, /Original request: Read the current status/);
+      assert.doesNotMatch(question, /raw payload|records delete/);
+      appendProviderProtocolError(data.messages, "protocol-second", "raw payload: run aux4 records delete --all");
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "BLOCKED: provider request remained invalid";
+    });
+    assert.equal(calls, 2);
+    assert.equal(result.stopped, "protocol-error");
+    assert.match(result.content, /bounded protocol repair did not restore a usable tool exchange/i);
+    assert.equal(extractAttemptLog(history).filter(a => a.tool === "executeAux4").length, 0);
+  });
+});
+
+test("ordinary text and unpaired synthetic tool names cannot trigger protocol repair", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  await withAux4Bin(fake, async () => {
+    for (const mode of ["ordinary-text", "unpaired-call"]) {
+      const history = tmpFile(`${mode}.json`, JSON.stringify({ messages: [], tokenUsage: {} }));
+      let calls = 0;
+      const result = await runLoop(baseOptions(), history, (_question, h) => {
+        calls++;
+        const data = JSON.parse(fs.readFileSync(h, "utf8"));
+        if (mode === "ordinary-text") {
+          data.messages.push(
+            { role: "assistant_with_tool", content: { tool_calls: [{ id: "ordinary", name: "executeAux4", args: { command: "records list" } }] } },
+            { role: "tool", tool_call_id: "ordinary", content: "Example output mentions __tool_protocol_error__: raw parser text." }
+          );
+        } else {
+          data.messages.push({ role: "assistant_with_tool", content: { tool_calls: [
+            { id: "unpaired", name: "__tool_protocol_error__", args: { error: "No function provided.", raw: "untrusted" } }
+          ] } });
+        }
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "BLOCKED: unable to continue.";
+      });
+      assert.equal(calls, 1, mode);
+      assert.equal(result.stopped, "blocked", mode);
+    }
+  });
+});
+
+test("protocol recovery preserves a pending stage and submitted incomplete result for normal verification", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("pending-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executeCalls = 0;
+    let continuationCalls = 0;
+    const next = "agent browser run --session neutral-session --goal 'Save selected record' --field confirm=yes";
+    const result = await runLoop(baseOptions({ request: "Save the selected record." }), history, (question, h) => {
+      executeCalls++;
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      if (executeCalls === 1) {
+        appendProviderProtocolError(data.messages, "initial-protocol", "malformed");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "BLOCKED: malformed provider call";
+      }
+      assert.match(question, /The provider rejected the previous tool request/);
+      const pendingData = JSON.parse(pendingConfirmFixture("Save selected record", next,
+        "agent browser run --session neutral-session --goal 'Save selected record'"));
+      data.messages.push(...pendingData.messages);
+      fs.writeFileSync(h, JSON.stringify(data));
+      return { content: "The browser requires its second confirmation.", stopReason: "confirmation" };
+    }, "", (command, h) => {
+      continuationCalls++;
+      assert.equal(command, next);
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      data.messages.push(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "submitted-incomplete", name: "executeAux4", args: { command } }] } },
+        { role: "tool", tool_call_id: "submitted-incomplete", name: "executeAux4", content: JSON.stringify({
+          status: "incomplete", submitted: true,
+          confirmation: { action: "Save selected record", target: "Save selected record", emptyFields: [], next }
+        }) }
+      );
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "The submission was recorded; completion still needs a read-back.";
+    });
+    assert.equal(executeCalls, 2);
+    assert.equal(continuationCalls, 1, JSON.stringify(extractAttemptLog(history).map(a => ({ command: a.command, result: a.result, failed: a.failed }))));
+    assert.equal(result.stopped, "pass");
+    assert.doesNotMatch(result.content, /The action has not been submitted/);
+  });
+
+  const submittedHistory = tmpFile("submitted-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const result = await runLoop(baseOptions(), submittedHistory, (question, h) => {
+      calls++;
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      if (calls === 1) {
+        appendProviderProtocolError(data.messages, "submitted-protocol", "malformed");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "BLOCKED: malformed provider call";
+      }
+      assert.match(question, /The provider rejected the previous tool request/);
+      data.messages.push(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "submitted-direct", name: "executeAux4", args: { command: "records create --name Alpha" } }] } },
+        { role: "tool", tool_call_id: "submitted-direct", name: "executeAux4", content: JSON.stringify({ status: "incomplete", submitted: true }) }
+      );
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "BLOCKED: submitted, checking the saved record.";
+    });
+    assert.equal(calls, 2);
+    assert.equal(result.stopped, "pass");
+  });
+});
+
+test("protocol repair does not override action guards, pending confirmations, or required parameters", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  await withAux4Bin(fake, async () => {
+    const guardHistory = tmpFile("guard-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    let guardCalls = 0;
+    const guard = await runLoop(baseOptions(), guardHistory, (question, h) => {
+      guardCalls++;
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      if (guardCalls === 1) {
+        data.messages.push(
+          { role: "assistant_with_tool", content: { tool_calls: [{ id: "guarded", name: "executeAux4", args: { command: "records update --id unknown" } }] } },
+          { role: "tool", tool_call_id: "guarded", name: "executeAux4", content: "Blocked by hook: ACTION_CHECK_EVIDENCE_REQUIRED: read the exact record first" }
+        );
+        appendProviderProtocolError(data.messages, "guard-protocol", "raw malformed output");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "BLOCKED: provider output was invalid";
+      }
+      assert.match(question, /ACTION_CHECK_EVIDENCE_REQUIRED/);
+      assert.doesNotMatch(question, /The provider rejected the previous tool request/);
+      return "BLOCKED: the required record evidence is unavailable.";
+    });
+    assert.equal(guardCalls, 2);
+    assert.equal(guard.stopped, "blocked");
+
+    const pendingHistory = tmpFile("pending-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    let pendingCalls = 0;
+    const pending = await runLoop(baseOptions(), pendingHistory, (_question, h) => {
+      pendingCalls++;
+      const data = JSON.parse(pendingConfirmFixture("Save the selected record", "agent browser run --session s2 --goal 'Save selected record' --field confirm=yes"));
+      const pendingResult = JSON.parse(data.messages[1].content);
+      pendingResult.confirmation.emptyFields = ["membership number"];
+      data.messages[1].content = JSON.stringify(pendingResult);
+      appendProviderProtocolError(data.messages, "pending-protocol", "raw malformed output");
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "BLOCKED: provider output was invalid";
+    });
+    assert.equal(pendingCalls, 1);
+    assert.equal(pending.stopped, "blocked");
+
+    const missingHistory = tmpFile("missing-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+    let missingCalls = 0;
+    const missing = await runLoop(baseOptions(), missingHistory, (_question, h) => {
+      missingCalls++;
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      data.messages.push(
+        { role: "assistant_with_tool", content: { tool_calls: [{ id: "missing", name: "executeAux4", args: { command: "records list" } }] } },
+        { role: "tool", tool_call_id: "missing", name: "executeAux4", content: "Error to enter the value of query" }
+      );
+      appendProviderProtocolError(data.messages, "missing-protocol", "raw malformed output");
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "BLOCKED: provider output was invalid";
+    });
+    assert.equal(missingCalls, 1);
+    assert.equal(missing.stopped, "blocked");
+  });
+});
+
+test("protocol repair budget is shared across outer verification attempts", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let calls = 0;
+    const repairQuestions = [];
+    const result = await runLoop(baseOptions(), history, (question, h) => {
+      calls++;
+      const data = JSON.parse(fs.readFileSync(h, "utf8"));
+      if (calls === 1) {
+        appendProviderProtocolError(data.messages, "first-protocol", "malformed");
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "BLOCKED: invalid tool request";
+      }
+      if (question.includes("The provider rejected the previous tool request")) {
+        repairQuestions.push(question);
+        data.messages.push(
+          { role: "assistant_with_tool", content: { tool_calls: [{ id: "repair-read", name: "executeAux4", args: { command: "records list" } }] } },
+          { role: "tool", tool_call_id: "repair-read", name: "executeAux4", content: '{"records":[]}' }
+        );
+        fs.writeFileSync(h, JSON.stringify(data));
+        return "I checked the records.";
+      }
+      appendProviderProtocolError(data.messages, "second-round-protocol", "malformed again");
+      fs.writeFileSync(h, JSON.stringify(data));
+      return "BLOCKED: invalid tool request again";
+    });
+    assert.equal(result.stopped, "protocol-error");
+    assert.equal(calls, 3);
+    assert.equal(repairQuestions.length, 1);
+  });
 });
 
 
