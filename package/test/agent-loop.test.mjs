@@ -1719,6 +1719,38 @@ setTimeout(() => {}, 10000);
   }
 });
 
+test("runAux4Monitored stops on a repeated hook-block aggregate", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hook-block-watch-"));
+  const bin = path.join(dir, "aux4");
+  const history = path.join(dir, "history.json");
+  const pidFile = path.join(dir, "pid");
+  const blocked = 'Error executing tool "executeAux4": Aborting: a hook has blocked agent:browser/run 3 times. Last reason: ACTION_CHECK_SCOPE_DENIED: The requested target is not available in this action scope.';
+  fs.writeFileSync(history, JSON.stringify({ messages: [] }));
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const file = args[args.indexOf('--history') + 1];
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setTimeout(() => fs.writeFileSync(file, JSON.stringify({ messages: [
+  { role: 'assistant_with_tool', content: { tool_calls: [{ id: 'blocked-aggregate', name: 'executeAux4', args: { command: 'agent browser run --goal "archive the selected record"' } }] } },
+  { role: 'tool', tool_call_id: 'blocked-aggregate', name: 'executeAux4', content: ${JSON.stringify(blocked)} }
+] })), 40);
+setTimeout(() => {}, 10000);
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const result = await runAux4Monitored(["--history", history], history, { pollInterval: 25 });
+    assert.equal(result.noProgress, true);
+    assert.equal(result.budgetExceeded, false);
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runAux4Monitored refuses jittered browser-find repetitions through persisted tool history", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repeat-transient-watch-"));
   const bin = path.join(dir, "aux4");
@@ -2753,6 +2785,30 @@ test("options and page overviews are not assigned field values",()=>{
   assert.equal(fieldEvidenceText('The assigned category is Gold.','agent ask --request lookup'),'');
   assert.equal(fieldEvidenceText('{"status":"done","observations":{"current":"Gold"'), '');
   assert.match(fieldEvidenceText('{"answered":true,"matches":[{"text":"Assigned category Silver"}]}'),/Silver/);
+  const ranked = fieldEvidenceText(JSON.stringify({
+    answered: true,
+    matches: [],
+    pageEvidence: {
+      coverage: "ranked-top-k", complete: false, limitPerPage: 2,
+      pages: [{ page: 3, url: "https://example.test/records?page=3", matches: [{
+        text: "rec-17 | Rowan Lee | selected",
+        block: { id: "row-17" },
+        location: { url: "https://example.test/records?page=3", selector: "#row-17" }
+      }] }]
+    }
+  }), "agent browser find --question records");
+  assert.match(ranked, /rec-17 \| Rowan Lee \| selected/);
+  assert.match(ranked, /ranked-top-k/);
+  assert.match(ranked, /"complete":false/);
+  assert.match(ranked, /sourceUrl/);
+  assert.doesNotMatch(ranked, /"actions"|"score"/);
+  for (const malformed of [
+    { coverage: "ranked-top-k", complete: true, limitPerPage: 2, pages: [] },
+    { coverage: "ranked-top-k", complete: false, limitPerPage: 0, pages: [] },
+    { coverage: "ranked-top-k", complete: false, limitPerPage: 2, pages: [{ page: 1, url: "x", matches: [{ id: "row-17" }] }] }
+  ]) {
+    assert.doesNotMatch(fieldEvidenceText(JSON.stringify({ answered: true, matches: [], pageEvidence: malformed }), "agent browser find"), /rec-17/);
+  }
 });
 
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { isChangeCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, observedFieldValue, isConclusiveAttempt } from "./agent-loop.mjs";
+import { isChangeCommand, isReadCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, observedFieldValue, isConclusiveAttempt, sameReadEvidence } from "./agent-loop.mjs";
 export { actionCheckFiles, actionCheckStats } from "./agent-loop.mjs";
 
 // Read the installed command's contract; do not assume every --to is email
@@ -20,6 +20,39 @@ export function actionCommandHelp(command) {
 const identifierParameter = name => /^(?:id|ids)$/.test(name)
   || /(?:Id|Ids|ID|IDs)$/.test(name) || /[-_]ids?$/i.test(name);
 const escapePattern = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function canonicalCommand(command) {
+  const parts = commandWords(command) || [];
+  return JSON.stringify(parts[0] === "aux4" ? parts.slice(1) : parts);
+}
+
+function scopeDenialReason(attempt) {
+  const text = String(attempt?.source ?? attempt?.result ?? "");
+  const marker = /ACTION_CHECK_SCOPE_DENIED:\s*/i.exec(text);
+  if (!marker) return "";
+  return text.slice(marker.index + marker[0].length)
+    .split(/\s+Check the target and requested scope against the existing facts/i)[0]
+    .replace(/\s+/g, " ").trim();
+}
+
+// A first denial leaves room for one repair. Repeating the same action and
+// denial without any new read facts would spend another authorization call on
+// unchanged evidence. Any newly observed successful read permits a fresh
+// check; we do not guess whether unfamiliar evidence is relevant to the goal.
+function repeatedScopeDenial(command, attempts) {
+  const commandKey = canonicalCommand(command);
+  const previousIndex = attempts.findLastIndex(attempt => attempt.failed
+    && canonicalCommand(attempt.command) === commandKey && scopeDenialReason(attempt));
+  if (previousIndex < 0) return null;
+  const reason = scopeDenialReason(attempts[previousIndex]);
+  const reads = list => list.filter(attempt => attempt.completed !== false && !attempt.failed
+    && isReadCommand(attempt.command)
+    && !/(?:^|\s)(?:--help|-h)(?:\s|$)/.test(attempt.command || ""));
+  const before = reads(attempts.slice(0, previousIndex));
+  const after = reads(attempts.slice(previousIndex + 1));
+  if (after.length && !sameReadEvidence(after, before)) return null;
+  return reason;
+}
 
 export function unsourcedActionIds(command, attempts = [], request = "", reference = "") {
   const words = commandWords(command) || [];
@@ -103,6 +136,10 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   // before asking a model, while leaving incomplete delegates resumable.
   if (attempts.some(attempt => isConclusiveAttempt(attempt) && canonical(attempt.command) === canonical(command))) {
     return {allow: false, reason: "This exact change already succeeded. Reuse its result instead of performing it again."};
+  }
+  const repeatedDenial = repeatedScopeDenial(command, attempts);
+  if (repeatedDenial) {
+    return {allow: false, repeatedDenial: true, reason: `This exact action was already refused for the same reason: ${repeatedDenial} Obtain new evidence that addresses the refusal or revise the action before retrying.`};
   }
   const confirming = confirmsAction(command);
   const staged = new Map();

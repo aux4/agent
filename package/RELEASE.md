@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.56
+
+- Preserve validated, incomplete ranked page candidates as positive provenance evidence without treating them as authorization or proof of absence.
+- Stop repeating an identical hook-denied action when no new successful read facts have been observed; any new read facts allow a fresh authorization check.
+
 ## 4.1.55
 
 - Retain bounded per-page ranked browser-find candidates alongside the unchanged global top-K, and normalize their score/order jitter while preserving newly surfaced page facts.

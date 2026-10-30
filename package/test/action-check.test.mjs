@@ -106,6 +106,114 @@ const fs=require('fs');const args=process.argv.slice(2);const payload=JSON.parse
   }finally{if(original===undefined)delete process.env.AUX4_BIN;else process.env.AUX4_BIN=original;fs.rmSync(dir,{recursive:true,force:true});}
 });
 
+test("ranked page evidence reaches delegated authorization as positive facts but cannot authorize a field", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ranked-evidence-auth-"));
+  const fake = path.join(dir, "aux4"), count = path.join(dir, "count"), payloadFile = path.join(dir, "payload.json");
+  fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');const args=process.argv.slice(2);const payload=JSON.parse(args[args.indexOf('--question')+1]);
+fs.writeFileSync(${JSON.stringify(count)},String((fs.existsSync(${JSON.stringify(count)})?Number(fs.readFileSync(${JSON.stringify(count)})):0)+1));
+fs.writeFileSync(${JSON.stringify(payloadFile)},JSON.stringify(payload));
+console.log(JSON.stringify({allow:false,reason:'The page does not expose an editable Record ID field.'}));
+`, { mode: 0o755 });
+  process.env.AUX4_BIN = fake;
+  try {
+    const options = { configFile: "/local.yaml", packageDir: "/agent", delegatedPrefixes: ["agent forms"] };
+    const command = 'agent forms run --url https://example.test/records --goal "Archive the selected record" --field "Record ID=rec-17"';
+    const request = "Archive the selected record that is named on the page.";
+    const reference = "run\n  --goal <arg>\n  --field <value>";
+    const valid = {
+      answered: true, question: "find the selected record", url: "https://example.test/records", matches: [],
+      pageEvidence: {
+        coverage: "ranked-top-k", complete: false, limitPerPage: 2,
+        pages: [{ page: 3, url: "https://example.test/records?page=3", matches: [{
+          text: "rec-17 | Rowan Lee | selected", block: { id: "row-17" },
+          location: { url: "https://example.test/records?page=3", selector: "#row-17" }
+        }] }]
+      }
+    };
+    const attempts = [{ tool: "executeAux4", command: "agent browser find --url https://example.test/records --question selected", source: JSON.stringify(valid), completed: true, failed: false }];
+    const denied = authorizeAction(options, command, attempts, request, "", reference);
+    assert.equal(denied.allow, false, "evidence of an ID does not establish that the command exposes an editable field or authorize the action");
+    const payload = JSON.parse(fs.readFileSync(payloadFile, "utf8"));
+    assert.match(payload.successfulActionsAndResults[0].result, /rec-17 \| Rowan Lee \| selected/);
+    assert.match(payload.successfulActionsAndResults[0].result, /ranked-top-k/);
+    assert.equal(payload.successfulActionsAndResults[0].result.includes('"complete":false'), true);
+    assert.match(payload.successfulActionsAndResults[0].result, /sourceUrl/);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 1);
+
+    const invalid = { ...valid, pageEvidence: { coverage: "ranked-top-k", complete: true, limitPerPage: 2, pages: valid.pageEvidence.pages } };
+    const invalidResult = authorizeAction(options, command, [{ ...attempts[0], source: JSON.stringify(invalid) }], request, "", reference);
+    assert.equal(invalidResult.allow, false);
+    assert.match(invalidResult.reason, /Record ID=rec-17/);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 1, "invalid/incomplete metadata must not reach the authorization model as positive evidence");
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("repeated scope denials stop on unchanged reads and recheck after any new successful read", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scope-denial-recovery-"));
+  const fake = path.join(dir, "aux4"), count = path.join(dir, "count");
+  fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+const previous=fs.existsSync(${JSON.stringify(count)})?Number(fs.readFileSync(${JSON.stringify(count)},'utf8')):0;
+fs.writeFileSync(${JSON.stringify(count)},String(previous+1));
+console.log(JSON.stringify({allow:false,reason:'The requested action target is outside the available scope.'}));
+`, { mode: 0o755 });
+  process.env.AUX4_BIN = fake;
+  try {
+    const options = { configFile: "/local.yaml", packageDir: "/agent" };
+    const command = "records archive --recordId rec-17";
+    const reference = "archive\n  --recordId <arg>";
+    const request = "Archive the selected record.";
+    const initialRead = { command: "records get --id rec-17", source: '{"id":"rec-17","name":"Rowan Lee","status":"selected"}', completed: true, failed: false };
+    const first = authorizeAction(options, command, [initialRead], request, "", reference);
+    assert.equal(first.allow, false);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 1, "the first authorization check is allowed to make a reasoned denial");
+
+    const denial = { command, source: "Blocked by hook: ACTION_CHECK_SCOPE_DENIED: The requested action target is outside the available scope.", completed: true, failed: true };
+    const suppressed = authorizeAction(options, command, [initialRead, denial], request, "", reference);
+    assert.equal(suppressed.allow, false);
+    assert.equal(suppressed.repeatedDenial, true);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 1, "no new evidence does not repeat the identical check");
+
+    const duplicateRead = authorizeAction(options, command, [initialRead, denial, { ...initialRead }], request, "", reference);
+    assert.equal(duplicateRead.repeatedDenial, true);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 1, "a normalized duplicate read is not new evidence");
+
+    const schemaRead = { command: "records fields describe", source: '{"fields":[{"label":"Status","type":"select"}]}', completed: true, failed: false };
+    const freshRead = authorizeAction(options, command, [initialRead, denial, schemaRead], request, "", reference);
+    assert.equal(freshRead.allow, false, "unfamiliar new evidence permits a fresh decision without being treated as authorization");
+    assert.equal(freshRead.repeatedDenial, undefined);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 2);
+
+    const newMatchingRead = { ...initialRead, command: "records get --id rec-17 --details", source: '{"id":"rec-17","name":"Rowan Lee","status":"selected","details":"freshly read"}' };
+    const retried = authorizeAction(options, command, [initialRead, denial, schemaRead, newMatchingRead], request, "", reference);
+    assert.equal(retried.allow, false, "new evidence permits a fresh authorization decision but does not grant permission");
+    assert.equal(retried.repeatedDenial, undefined);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 3);
+
+    const secondDenial = { ...denial };
+    const sameAgain = authorizeAction(options, command, [initialRead, denial, schemaRead, newMatchingRead, secondDenial], request, "", reference);
+    assert.equal(sameAgain.repeatedDenial, true);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 3, "the same denial is bounded again after an evidence-triggered recheck");
+
+    const revised = authorizeAction(options, "records archive --recordId rec-18", [
+      initialRead,
+      { command: "records get --id rec-18", source: '{"id":"rec-18","status":"selected"}', completed: true, failed: false }
+    ], request, "", reference);
+    assert.equal(revised.allow, false);
+    assert.equal(Number(fs.readFileSync(count, "utf8")), 4, "a revised explicit target receives its own authorization check");
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 
 test("a forwarded goal echo cannot establish an existing resource identifier",()=>{
   const fake=[{command:'agent browser run --goal "Show report-17"',source:'{"status":"done","goal":"Show report-17","observations":{"current":"Report index"}}'}];

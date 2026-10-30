@@ -221,7 +221,8 @@ export function isBudgetExceededResult(content) {
 
 function isNoProgressAbort(content) {
   const text = typeof content === "string" ? content : JSON.stringify(content || "");
-  return /aborting:\s*the same (?:call has been refused|action has returned the same result)\b/i.test(text);
+  return /aborting:\s*the same (?:call has been refused|action has returned the same result)\b/i.test(text)
+    || /aborting:\s*a hook has blocked\s+.+?\s+([2-9]|[1-9]\d+)\s+times\b/i.test(text);
 }
 
 function repeatsWithoutNewResult(attempts, count = 3) {
@@ -1195,11 +1196,43 @@ export function fieldEvidenceText(value, command = "") {
   if (data.observations && typeof data.status === "string") return JSON.stringify({pageUrl:data.finalUrl || data.url || ""});
   if (Object.hasOwn(data, "answered")) {
     if (data.answered !== true) return "";
-    return JSON.stringify({answer:data.answer, matches:data.matches});
+    const pageEvidence = positivePageEvidence(data.pageEvidence);
+    return JSON.stringify({answer:data.answer, matches:data.matches, ...(pageEvidence ? {pageEvidence} : {})});
   }
   const clean = item => Array.isArray(item) ? item.map(clean) : item && typeof item === "object"
     ? Object.fromEntries(Object.entries(item).filter(([key]) => !/^(?:options|choices|fromGoal|commandReference|documentation|examples)$/i.test(key)).map(([key,v])=>[key,clean(v)])) : item;
   return JSON.stringify(clean(data));
+}
+
+// Ranked page evidence is a positive source for the text and identity it
+// actually returned, but remains explicitly incomplete. It must never be
+// used to infer that an omitted record or field does not exist.
+function positivePageEvidence(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.coverage !== "ranked-top-k" || value.complete !== false
+    || !Number.isInteger(value.limitPerPage) || value.limitPerPage < 1
+    || !Array.isArray(value.pages)) return null;
+  const pages = [];
+  for (const page of value.pages) {
+    if (!page || typeof page !== "object" || Array.isArray(page)
+      || !Number.isInteger(page.page) || page.page < 1
+      || typeof page.url !== "string" || !Array.isArray(page.matches)) return null;
+    const matches = [];
+    for (const match of page.matches) {
+      if (!match || typeof match !== "object" || Array.isArray(match)) return null;
+      const text = typeof match.text === "string" ? match.text : typeof match.sentence === "string" ? match.sentence : "";
+      if (!text) return null;
+      const sourceUrl = typeof match.location?.url === "string" && match.location.url ? match.location.url : page.url;
+      matches.push({
+        text,
+        page: Number.isInteger(match.page) && match.page > 0 ? match.page : page.page,
+        sourceUrl,
+        ...(typeof match.block?.id === "string" ? {identity: match.block.id} : {})
+      });
+    }
+    pages.push({page: page.page, url: page.url, matches});
+  }
+  return {coverage: "ranked-top-k", complete: false, limitPerPage: value.limitPerPage, pages};
 }
 
 export function availableFieldChoices(attempts) {
