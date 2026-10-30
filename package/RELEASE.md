@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.65
+
+- Offer one schema-guided recovery after a malformed provider tool exchange; stop if the follow-up remains unusable. Prevent replay of a submitted browser workflow while its outcome is unknown.
+- Bind verification reads to the latest available operation session or location, keep unchanged state evidence from passing after answer-only rewrites, and do not treat submission, incomplete workflows, pre-submit fields, or a bare success flag alone as persisted state.
+
 ## 4.1.64
 
 - Add one controller-level repair after a fresh provider tool-protocol error when the agent is blocked. The repair uses the declared tool schema through the normal executor, never reuses malformed diagnostic text, and stops boundedly if no usable tool exchange follows.
