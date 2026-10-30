@@ -229,10 +229,42 @@ function repeatsWithoutNewResult(attempts, count = 3) {
   const recent = attempts.slice(-count);
   const command = recent[0]?.command;
   if (!command || recent.some(attempt => attempt.command !== command || !attempt.source)) return false;
+  const findFacts = recent.map(browserFindFacts);
+  if (findFacts.every(Boolean)) return repeatsWithoutNewBrowserFindFacts(attempts, count, command);
   // Ignore transient request/session metadata so a fresh session ID or score
   // cannot make an unchanged answer look like new progress.
   const evidence = recent.map(readEvidenceKey);
   return Boolean(evidence[0]) && evidence.every(key => key === evidence[0]);
+}
+
+function repeatsWithoutNewBrowserFindFacts(attempts, count, command) {
+  const recent = attempts.slice(-count);
+  const earlier = attempts.slice(0, -count).filter(attempt => attempt.command === command).map(browserFindFacts).filter(Boolean);
+  const seen = new Map();
+  const add = fact => {
+    let byBase = seen.get(fact.scope);
+    if (!byBase) seen.set(fact.scope, byBase = new Map());
+    let rows = byBase.get(fact.baseKey);
+    if (!rows) byBase.set(fact.baseKey, rows = new Set());
+    for (const row of fact.rows) rows.add(row);
+  };
+  for (const fact of earlier) add(fact);
+
+  const recentFacts = recent.map(browserFindFacts);
+  let start = 0;
+  // The first observation is the baseline when this is the first repeated
+  // window; only later calls can demonstrate a repeat without new facts.
+  if (!earlier.length && recentFacts[0]) {
+    add(recentFacts[0]);
+    start = 1;
+  }
+  for (const fact of recentFacts.slice(start)) {
+    const rows = seen.get(fact.scope)?.get(fact.baseKey);
+    if (!rows) return false;
+    if (fact.rows.some(row => !rows.has(row))) return false;
+    add(fact);
+  }
+  return true;
 }
 
 // Run an execution turn while watching its persisted tool history. Once the
@@ -2485,9 +2517,12 @@ export function unverifiableOnlyAfterChange(verdict, attempts) {
 
 export function sameFailureShape(a, b) {
   if (!a || !b) return false;
+  // A criterion can move between fail and unverifiable when a later attempt
+  // merely changes the verifier's confidence. That label change is not
+  // progress unless the evidence or achieved outcomes changed as well.
   const key = verdict => verdict.criteria
     .filter(c => c.status !== "pass")
-    .map(c => `${c.criterion}::${c.status}`)
+    .map(c => c.criterion)
     .sort()
     .join("|");
   return key(a) === key(b);
@@ -2502,6 +2537,108 @@ const EPHEMERAL_EVIDENCE_KEYS = new Set([
   "duration", "elapsed", "elapsedms", "runtime"
 ]);
 
+const BROWSER_FIND_RANKING_KEYS = new Set([
+  "session", "sessionclosed", "answerscore", "rankcalls", "usage", "wallms",
+  "timestamp", "observedat", "queriedat", "fetchedat", "checkedat"
+]);
+
+function canonicalEvidenceValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalEvidenceValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalEvidenceValue(value[key])]));
+}
+
+function normalizeFindContinuation(command) {
+  const words = commandWords(command);
+  if (!words) return command;
+  let changed = false;
+  for (let index = 0; index < words.length; index++) {
+    if (words[index] === "--session" && index + 1 < words.length) {
+      words[index + 1] = "<session>";
+      changed = true;
+    } else if (words[index].startsWith("--session=")) {
+      words[index] = "--session=<session>";
+      changed = true;
+    }
+  }
+  return changed ? JSON.stringify(words) : command;
+}
+
+function normalizeFindAction(action) {
+  if (!action || typeof action !== "object" || Array.isArray(action)) return canonicalEvidenceValue(action);
+  const normalized = {};
+  for (const key of Object.keys(action).sort()) {
+    normalized[key] = key === "next" && typeof action[key] === "string"
+      ? normalizeFindContinuation(action[key])
+      : canonicalEvidenceValue(action[key]);
+  }
+  return normalized;
+}
+
+function normalizeFindActionList(actions) {
+  return actions.map(normalizeFindAction).sort(compareCanonicalEvidence);
+}
+
+function compareCanonicalEvidence(a, b) {
+  const left = JSON.stringify(a);
+  const right = JSON.stringify(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function browserFindPayload(attempt) {
+  const words = commandWords(attempt?.command);
+  if (!words || words.slice(0, 3).map(word => word.toLowerCase()).join(" ") !== "agent browser find") return null;
+  let data;
+  try { data = JSON.parse(String(attempt?.source ?? attempt?.result ?? "")); } catch { return null; }
+  if (!data || typeof data !== "object" || Array.isArray(data)
+    || typeof data.answered !== "boolean" || typeof data.question !== "string"
+    || typeof data.url !== "string" || !Array.isArray(data.matches)
+    || !data.matches.every(match => match && typeof match === "object" && !Array.isArray(match) && typeof match.text === "string")) return null;
+  return data;
+}
+
+function normalizeBrowserFind(data) {
+  const normalized = {};
+  for (const key of Object.keys(data).sort()) {
+    if (BROWSER_FIND_RANKING_KEYS.has(key.toLowerCase())) continue;
+    if (key === "matches") {
+      normalized.matches = data.matches.map(match => {
+        const row = {};
+        for (const matchKey of Object.keys(match).sort()) {
+          if (matchKey === "score") continue;
+          row[matchKey] = matchKey === "actions" && Array.isArray(match.actions)
+            ? normalizeFindActionList(match.actions)
+            : canonicalEvidenceValue(match[matchKey]);
+        }
+        return row;
+      }).sort(compareCanonicalEvidence);
+    } else if (key === "actions" && Array.isArray(data.actions)) {
+      normalized.actions = normalizeFindActionList(data.actions);
+    } else if (key === "next" && typeof data.next === "string") {
+      // findOutcome.Next hoists the same generated resume command as the
+      // first actionable match. Normalize only its ephemeral session handle;
+      // the actual target and remaining command arguments stay significant.
+      normalized.next = normalizeFindContinuation(data.next);
+    } else {
+      normalized[key] = canonicalEvidenceValue(data[key]);
+    }
+  }
+  return normalized;
+}
+
+function browserFindFacts(attempt) {
+  const data = browserFindPayload(attempt);
+  if (!data) return null;
+  const normalized = normalizeBrowserFind(data);
+  const rows = normalized.matches.map(match => JSON.stringify(match));
+  const { matches: _matches, ...base } = normalized;
+  return {
+    scope: JSON.stringify([data.url, data.question]),
+    baseKey: JSON.stringify(base),
+    rows
+  };
+}
+
 function stableEvidence(value) {
   if (Array.isArray(value)) return value.map(stableEvidence);
   if (!value || typeof value !== "object") return value;
@@ -2513,6 +2650,8 @@ function stableEvidence(value) {
 function readEvidenceKey(attempt) {
   const raw = String(attempt?.source ?? attempt?.result ?? "").trim();
   if (!raw) return "";
+  const browserFind = browserFindPayload(attempt);
+  if (browserFind) return JSON.stringify(normalizeBrowserFind(browserFind));
   try {
     return JSON.stringify(stableEvidence(JSON.parse(raw)));
   } catch {
@@ -2520,14 +2659,127 @@ function readEvidenceKey(attempt) {
   }
 }
 
+// Compare the facts returned by reads separately from the locator used to
+// obtain them. Locator changes do not create new facts; readSourceKey below
+// still permits a bounded first observation from a genuinely different
+// command/source. Keep unrelated URLs distinct there rather than normalizing
+// them into one source.
+const READ_LOCATOR_KEYS = new Set(["url", "finalurl"]);
+const READ_ENVELOPE_TIME_KEYS = new Set(["timestamp", "observedat", "queriedat", "fetchedat", "checkedat"]);
+function stableReadFacts(value, root = true) {
+  if (Array.isArray(value)) return value.map(item => stableReadFacts(item, false));
+  if (!value || typeof value !== "object") return value;
+  const isToolEnvelope = root && (Object.hasOwn(value, "answered")
+    || (Object.hasOwn(value, "session") && (Object.hasOwn(value, "status") || Object.hasOwn(value, "steps"))));
+  return Object.fromEntries(Object.keys(value).sort()
+    .filter(key => !EPHEMERAL_EVIDENCE_KEYS.has(key.toLowerCase())
+      && !(isToolEnvelope && (READ_LOCATOR_KEYS.has(key.toLowerCase()) || READ_ENVELOPE_TIME_KEYS.has(key.toLowerCase()))))
+    .map(key => [key, stableReadFacts(value[key], false)]));
+}
+
+function readFactsKey(attempt) {
+  const raw = String(attempt?.source ?? attempt?.result ?? "").trim();
+  if (!raw) return "";
+  try { return JSON.stringify(stableReadFacts(JSON.parse(raw))); }
+  catch { return raw.replace(/\s+/g, " "); }
+}
+
+const QUERY_AND_SESSION_FLAGS = new Set([
+  "--question", "--query", "--search", "--q", "--where", "--filter",
+  "--session", "--limit", "--sort", "--order", "--rank"
+]);
+
+function readSourceKey(attempt) {
+  const words = commandWords(attempt?.command);
+  if (!words?.length) return "";
+  const source = [];
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index];
+    const equals = word.indexOf("=");
+    const flag = equals >= 0 ? word.slice(0, equals) : word;
+    if (QUERY_AND_SESSION_FLAGS.has(flag.toLowerCase())) {
+      if (equals < 0 && index + 1 < words.length) index++;
+      continue;
+    }
+    source.push(word);
+  }
+  return JSON.stringify(source);
+}
+
+export function sameReadFacts(current, previous) {
+  const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
+  const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
+  if (!priorReads.length || !currentReads.length) return false;
+  const priorBrowser = priorReads.map(attempt => ({ attempt, facts: browserFindFacts(attempt) })).filter(item => item.facts);
+  const priorOther = new Set(priorReads.filter(attempt => !browserFindFacts(attempt)).map(readFactsKey).filter(Boolean));
+  return currentReads.every(attempt => {
+    const facts = browserFindFacts(attempt);
+    if (facts) return browserFindContained(facts, priorBrowser);
+    const key = readFactsKey(attempt);
+    return key && priorOther.has(key);
+  });
+}
+
+function browserFindContained(facts, priorBrowser) {
+  const matching = priorBrowser.filter(item => item.facts.scope === facts.scope && item.facts.baseKey === facts.baseKey);
+  if (!matching.length) return false;
+  const rows = new Set(matching.flatMap(item => item.facts.rows));
+  return facts.rows.every(row => rows.has(row));
+}
+
+export function hasNewReadSource(current, previous) {
+  const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
+  const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
+  if (!currentReads.length) return false;
+  const prior = new Set(priorReads.map(readSourceKey).filter(Boolean));
+  return currentReads.some(attempt => {
+    const key = readSourceKey(attempt);
+    return key && !prior.has(key);
+  });
+}
+
+function failureEvidenceKey(attempt) {
+  if (!attempt?.failed) return "";
+  let text = String(attempt.source ?? attempt.result ?? "").trim();
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  const notFoundLine = lines.findIndex(line => /command not found:/i.test(line));
+  if (notFoundLine >= 0) {
+    const line = lines[notFoundLine];
+    const match = /command not found:/i.exec(line);
+    const after = line.slice(match.index + match[0].length);
+    const guidance = after.match(/\b(?:did you mean|available commands|commands you may run):[\s\S]*/i)?.[0] || "";
+    // Normalize the changing name and any generic tool-error wrapper. Keep
+    // explicit command suggestions and all subsequent diagnostic lines.
+    lines[notFoundLine] = `Command not found.${guidance ? ` ${guidance}` : ""}`;
+    text = lines.join("\n");
+    return readEvidenceKey({ source: text });
+  }
+  // Other failures count only when aux4 provided a concrete parameter repair.
+  // Generic tool errors, permissions, and arbitrary model text are not new facts.
+  if (!missingParameterHints([attempt]).length) return "";
+  return readEvidenceKey({ source: text });
+}
+
+function hasNewFailureEvidence(current, previous) {
+  const priorFailures = new Set(previous.map(failureEvidenceKey).filter(Boolean));
+  return current.some(attempt => {
+    const key = failureEvidenceKey(attempt);
+    return key && !priorFailures.has(key);
+  });
+}
+
 export function sameReadEvidence(current, previous) {
   const priorReads = previous.filter(a => !a.failed && isReadCommand(a.command));
   const currentReads = current.filter(a => !a.failed && isReadCommand(a.command));
   if (!priorReads.length || !currentReads.length) return false;
-  const prior = new Set(priorReads.map(readEvidenceKey).filter(Boolean));
-  return prior.size > 0 && currentReads.every(a => {
-    const key = readEvidenceKey(a);
-    return key && prior.has(key);
+  const priorBrowser = priorReads.map(attempt => ({ attempt, facts: browserFindFacts(attempt) })).filter(item => item.facts);
+  const priorOther = new Set(priorReads.filter(attempt => !browserFindFacts(attempt)).map(readEvidenceKey).filter(Boolean));
+  return currentReads.every(attempt => {
+    const facts = browserFindFacts(attempt);
+    if (facts) return browserFindContained(facts, priorBrowser);
+    const key = readEvidenceKey(attempt);
+    return key && priorOther.has(key);
   });
 }
 
@@ -2666,7 +2918,6 @@ export async function runLoop(options, history, execute, recovery = "") {
   let commitGranted = false;
   let nextQuestion = "";
   let recoveryHint = "";
-  const priorCommands = new Set();
   const done = (stopped, attempt, note = "") => {
     if (scopedContinuationFile) fs.rmSync(scopedContinuationFile, { force: true });
     metrics.stopped = stopped;
@@ -2883,17 +3134,27 @@ export async function runLoop(options, history, execute, recovery = "") {
     if (unverifiableOnlyAfterChange(lastVerdict, attempts) && !scopedContinuation) {
       return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
     }
-    // A new command that returns the same read evidence is only a renamed
-    // retry. Preserve attempts that introduce new evidence or change state.
+    // A reworded/repointed read of the same source, verifier status drift, and
+    // result locator metadata are not progress by themselves. A genuinely new
+    // read source gets one bounded opportunity; new returned facts, new
+    // successful non-read evidence, and completed state changes also remain
+    // progress. A renamed failed command is not evidence of progress.
     const previousAttempts = attempts.slice(0, before);
     const currentAttempts = attempts.slice(before);
-    const triedSomethingNew = currentAttempts.some(a => !priorCommands.has(a.command));
-    const repeatedReadOnly = sameReadEvidence(currentAttempts, previousAttempts);
     const changedState = currentAttempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
-    if (!scopedContinuation && sameFailureShape(priorVerdict, lastVerdict) && (!triedSomethingNew || (repeatedReadOnly && !changedState))) {
+    const currentReads = currentAttempts.some(a => !a.failed && isReadCommand(a.command));
+    const newFacts = currentReads && !sameReadFacts(currentAttempts, previousAttempts);
+    const newSource = hasNewReadSource(currentAttempts, previousAttempts);
+    const priorNonReadResults = new Set(previousAttempts
+      .filter(a => !a.failed && !isReadCommand(a.command))
+      .map(readFactsKey).filter(Boolean));
+    const newNonReadEvidence = currentAttempts.some(a => !a.failed && !isReadCommand(a.command)
+      && Boolean(readFactsKey(a)) && !priorNonReadResults.has(readFactsKey(a)));
+    const newFailureEvidence = hasNewFailureEvidence(currentAttempts, previousAttempts);
+    if (!scopedContinuation && sameFailureShape(priorVerdict, lastVerdict)
+      && !changedState && !newFacts && !newSource && !newNonReadEvidence && !newFailureEvidence) {
       return done("no-progress", attempt, incompleteNote(lastVerdict));
     }
-    for (const a of attempts) priorCommands.add(a.command);
     if (attempt > RETRY_BUDGET) return done("budget", attempt, incompleteNote(lastVerdict));
 
     priorVerdict = lastVerdict;
