@@ -4,6 +4,7 @@
 
 - Offer one schema-guided recovery after a malformed provider tool exchange; stop if the follow-up remains unusable. Prevent replay of a submitted browser workflow while its outcome is unknown.
 - Bind verification reads to the latest available operation session or location, keep unchanged state evidence from passing after answer-only rewrites, and do not treat submission, incomplete workflows, pre-submit fields, or a bare success flag alone as persisted state.
+- After a submitted incomplete action and its successful read-only check, stop with an evidence summary when every requested state outcome is pass or unverified and no pending workflow or scoped continuation remains; keep retrying when another requested state outcome failed or is unassessed.
 
 ## 4.1.64
 

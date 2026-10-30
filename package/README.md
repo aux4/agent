@@ -140,6 +140,12 @@ needs more pages.
    from the continuation prompt; the completed operation remains denied. This continuation is
    unavailable when the executor cannot enforce the pre-action read guard.
 
+   After an operation reports that it was submitted, an incomplete result still gets one successful
+   read-only check when the tool provides a safe read command. If all requested state criteria are
+   then either verified or explicitly unverified, with no pending workflow stage or unused scoped
+   continuation, the runner returns its evidence summary instead of spending another answer-only
+   execution round. A failed or unattempted requested state criterion keeps the normal retry path.
+
 Exact pending-confirmation continuations require aux4/ai-agent 1.3.28 or newer, which provides the internal `--toolCall` path. The runner checks for that capability and stops safely when it is unavailable; it does not ask a model to reconstruct the controller-supplied command.
 
 When a pending action's label uses different wording from the requested outcome, the runner proceeds only if the generated action-check before-hook is present for that history and allows the exact action and target. The form's confirmation prompt and filled values do not authorize submission; draft-only and explicit do-not-send requests remain binding.

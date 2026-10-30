@@ -81,6 +81,7 @@ import {
   runReadBack,
   isNoChangeCriterion,
   unverifiableOnlyAfterChange,
+  submittedStateUnverifiableAfterRead,
   commandWords,
   pendingConfirmation,
   isClearlyRequestedAction,
@@ -2398,6 +2399,202 @@ test("unverifiableOnlyAfterChange is true only when nothing failed, something re
   assert.equal(unverifiableOnlyAfterChange(unverifiableAfterSend, noChangeYet), false);
   // Already passing: no reason to stop early via this rule.
   assert.equal(unverifiableOnlyAfterChange({ overall: "pass", criteria: [] }, change), false);
+});
+
+test("a submitted incomplete change stops after its successful read only when all requested state outcomes are resolved or unverified", () => {
+  const state = "The requested record update is persisted.";
+  const action = {
+    command: "records update --id R-1",
+    callId: "submitted-record-update",
+    failed: false,
+    completed: true,
+    source: JSON.stringify({ status: "incomplete", submitted: true })
+  };
+  const read = {
+    command: "records get --id R-1",
+    callId: "record-read-back",
+    failed: false,
+    completed: true,
+    source: JSON.stringify({ status: "ok", record: { id: "R-1" } })
+  };
+  const plan = { stateCriteria: [state] };
+  const answerFailure = {
+    overall: "fail",
+    criteria: [
+      { criterion: state, status: "unverifiable", evidence: "The read did not confirm the persisted update." },
+      { criterion: "The final answer says the update is complete.", status: "fail", evidence: "The submitted result was incomplete." }
+    ]
+  };
+  const assess = (verdict = answerFailure, criteriaPlan = plan, change = action, check = read, options = {}) =>
+    submittedStateUnverifiableAfterRead(verdict, criteriaPlan, change, check, [change, check], options);
+  assert.equal(assess(), true,
+    "an answer-only failure must not unlock another execution round");
+  assert.equal(assess(answerFailure, plan, action, { ...read, source: "" }), false,
+    "an empty response is not a successful read observation");
+  assert.equal(assess(answerFailure, plan, action, { ...read, failed: true }), false);
+  assert.equal(submittedStateUnverifiableAfterRead(answerFailure, plan, action, read, [read, action]), false,
+    "a read that predates the submitted change is not a fresh check");
+  assert.equal(assess(answerFailure, plan, { ...action, source: "{}" }, read), false,
+    "a call without a submitted-effect receipt does not qualify");
+  assert.equal(assess(answerFailure, plan, action, read, { scopedContinuationAvailable: true }), false,
+    "an unused explicit scoped continuation keeps its existing opportunity");
+
+  const secondState = "The second requested outcome is complete.";
+  assert.equal(assess(answerFailure, { stateCriteria: [state, secondState] }), false,
+    "a requested state outcome missing from the verdict remains actionable");
+  assert.equal(assess({ ...answerFailure, criteria: [
+    ...answerFailure.criteria,
+    { criterion: secondState, status: "fail", evidence: "The second step has not run." }
+  ] }, { stateCriteria: [state, secondState] }), false,
+  "a failed requested state outcome keeps normal continuation available");
+  assert.equal(assess({ ...answerFailure, criteria: [
+    { criterion: state, status: "fail", evidence: "The requested update is contradicted." }
+  ] }), false,
+  "a contradicted state outcome is not classified as mere unverifiability");
+
+  const pending = {
+    ...action,
+    source: JSON.stringify({ status: "needs-confirmation", submitted: true,
+      confirmation: { action: "Update", target: "R-1", emptyFields: [], next: "records update --id R-1 --confirm=yes" } })
+  };
+  assert.equal(assess(answerFailure, plan, pending, read), false,
+    "a structured pending workflow stage remains eligible for its existing continuation");
+
+  const browserAction = {
+    command: "agent browser run --url https://example.test/record --goal update",
+    callId: "browser-submit",
+    failed: false,
+    completed: true,
+    source: JSON.stringify({ status: "incomplete", submitted: true, session: "s1", finalUrl: "https://example.test/record/result" })
+  };
+  const unrelatedRead = {
+    command: "agent browser inspect --session s2",
+    callId: "other-session-read",
+    failed: false,
+    completed: true,
+    source: JSON.stringify({ status: "ok", session: "s2", blocks: [{ text: "A page was read." }] })
+  };
+  assert.equal(submittedStateUnverifiableAfterRead(answerFailure, plan, browserAction, unrelatedRead, [browserAction, unrelatedRead]), false,
+    "a successful read of another resource cannot qualify as this action's post-submit check");
+});
+
+test("a submitted first step does not stop while another requested state outcome failed", async () => {
+  const firstState = "The first requested change is complete.";
+  const secondState = "The second requested change is complete.";
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) {
+  process.stdout.write(JSON.stringify({ goal: "Complete both requested changes", doneCriteria: [
+    { text: ${JSON.stringify(firstState)}, kind: "state" },
+    { text: ${JSON.stringify(secondState)}, kind: "state" }
+  ] }));
+} else if (command.includes("loop-verify.md")) {
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => c.criterion === ${JSON.stringify(firstState)}
+    ? { criterion: c.criterion, status: "pass", evidence: "The first state is present.", basis: "currentState", relation: "supports" }
+    : c.criterion === ${JSON.stringify(secondState)}
+      ? { criterion: c.criterion, status: "fail", evidence: "The second requested step remains undone.", basis: "currentState", relation: "contradicts" }
+      : { criterion: c.criterion, status: "pass", evidence: "The criterion is satisfied." }) }));
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    let continuations = 0;
+    const prompts = [];
+    const command = "records update --id R-1";
+    const readCommand = "records get --id R-1";
+    const outcome = await runLoop(
+      baseOptions({ request: "Complete both requested changes for records R-1 and R-2." }),
+      history,
+      (question, h) => {
+        executions++;
+        prompts.push(question);
+        if (executions === 1) {
+          appendExecutionResult(h, command, JSON.stringify({
+            status: "incomplete", submitted: true, next: readCommand
+          }), "first-submitted-change");
+          return "The first change was submitted; the second remains.";
+        }
+        return { content: "The second requested state still needs work.", stopReason: "no-progress" };
+      },
+      "",
+      (observedCommand, h) => {
+        continuations++;
+        assert.equal(observedCommand, readCommand);
+        appendExecutionResult(h, observedCommand, JSON.stringify({ status: "ok", records: [{ id: "R-1" }] }), "first-read");
+        return "The first record was inspected.";
+      }
+    );
+
+    assert.equal(continuations, 1);
+    assert.equal(executions, 2, "the failed second state remains eligible for another task step");
+    assert.match(prompts[1], /The second requested change is complete/);
+    assert.equal(outcome.stopped, "no-progress", "the fixture then stops only because no new second-step evidence was produced");
+  });
+});
+
+test("runLoop stops after one submitted acknowledgement and successful read when state stays unverified", async () => {
+  const state = "The requested record update is persisted.";
+  const answerFact = "The returned record identifier is reported.";
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) {
+  process.stdout.write(JSON.stringify({ goal: "Update the requested record and report its identifier", doneCriteria: [
+    { text: ${JSON.stringify(state)}, kind: "state" },
+    { text: ${JSON.stringify(answerFact)}, kind: "answer" }
+  ] }));
+} else if (command.includes("loop-verify.md")) {
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => c.criterion === ${JSON.stringify(state)}
+    ? { criterion: c.criterion, status: "unverifiable", evidence: "The read showed a result, but not whether the requested update persisted.", basis: "currentState", relation: "unknown" }
+    : c.criterion === ${JSON.stringify(answerFact)}
+      ? { criterion: c.criterion, status: "pass", evidence: "Record identifier R-1 was observed.", basis: "actionResult", relation: "supports" }
+      : { criterion: c.criterion, status: "pass", evidence: "The criterion is satisfied." }) }));
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    let executions = 0;
+    let continuations = 0;
+    const command = "agent browser run --url https://example.test/record --goal 'update the requested record'";
+    const readCommand = "agent browser inspect --session s1";
+    const outcome = await runLoop(
+      baseOptions({ request: "Update record R-1 and report its identifier." }),
+      history,
+      (_question, h) => {
+        executions++;
+        appendExecutionResult(h, command, JSON.stringify({
+          status: "incomplete", submitted: true, session: "s1", finalUrl: "https://example.test/record/result", next: readCommand
+        }), "submitted-update");
+        return "The requested update definitely completed.";
+      },
+      "",
+      (observedCommand, h) => {
+        continuations++;
+        assert.equal(observedCommand, readCommand);
+        appendExecutionResult(h, observedCommand, JSON.stringify({
+          status: "ok", session: "s1", url: "https://example.test/record/result", blocks: [{ text: "Result received" }]
+        }), "post-submit-read");
+        return "The read returned a generic result page.";
+      }
+    );
+
+    assert.equal(outcome.stopped, "unverifiable-only");
+    assert.equal(outcome.attempts, 1, "no answer-only execution retry follows the bounded read");
+    assert.equal(executions, 1);
+    assert.equal(continuations, 1, "the successful read is made exactly once");
+    assert.match(outcome.content, /Not fully confirmed/);
+    assert.match(outcome.content, /Not confirmed: The requested record update is persisted/);
+    assert.match(outcome.content, /Verified answer fact: Record identifier R-1 was observed/);
+    assert.doesNotMatch(outcome.content, /definitely completed/);
+    assert.equal(extractAttemptLog(history).filter(attempt => isChangeCommand(attempt.command)).length, 1,
+      "the submitted mutation is never replayed");
+  });
 });
 
 test("the fixed read-back lets calendar-cancel pass on the first round instead of retrying on a downgrade (HARN-034)", async () => {

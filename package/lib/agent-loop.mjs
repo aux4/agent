@@ -3110,6 +3110,52 @@ export function unverifiableOnlyAfterChange(verdict, attempts) {
   return attempts.some(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
 }
 
+// A submitted-but-incomplete change still gets its one successful read-back
+// above. If that read leaves every requested state outcome either verified or
+// explicitly unverifiable, an answer-only retry cannot add state evidence.
+// Keep retrying when a requested state criterion failed or has no verdict yet:
+// that can still identify a remaining task step.
+export function submittedStateUnverifiableAfterRead(
+  verdict,
+  plan,
+  submittedAttempt,
+  readAttempt,
+  attempts,
+  { scopedContinuationAvailable = false } = {}
+) {
+  if (scopedContinuationAvailable || !verdict || verdict.overall === "pass") return false;
+  if (!Array.isArray(attempts)) return false;
+  // Re-extracting the history after the read produces new attempt objects, so
+  // bind the pre-read submission to its persisted call id rather than object
+  // identity.
+  const submittedCallId = typeof submittedAttempt?.callId === "string" ? submittedAttempt.callId.trim() : "";
+  const readCallId = typeof readAttempt?.callId === "string" ? readAttempt.callId.trim() : "";
+  if (!submittedCallId || !readCallId) return false;
+  const submittedIndex = attempts.findIndex(attempt => attempt.callId === submittedCallId
+    && attempt.command === submittedAttempt?.command);
+  const readIndex = attempts.findIndex(attempt => attempt.callId === readCallId
+    && attempt.command === readAttempt?.command);
+  if (submittedIndex < 0 || readIndex <= submittedIndex) return false;
+  const submitted = attempts[submittedIndex];
+  const read = attempts[readIndex];
+  if (attempts.slice(submittedIndex + 1, readIndex).some(observedChange)) return false;
+  if (!hasSubmittedEffect(submitted)) return false;
+  const readOutput = String(read.source ?? read.result ?? "").trim();
+  if (!readOutput || read.failed || !isConclusiveAttempt(read) || !isReadCommand(read.command)
+    || !readMatchesAction(read.command, parseAttemptResult(read), submitted)
+    || !readAttemptIsFreshForAction(attempts, read)) return false;
+  if (hasPendingWorkflowStage(parseAttemptResult(submitted))
+    || hasPendingWorkflowStage(parseAttemptResult(read))
+    || pendingConfirmation([submitted, read], { allowSubmitted: true })) return false;
+
+  const requestedState = Array.isArray(plan?.stateCriteria) ? plan.stateCriteria : [];
+  if (!requestedState.length) return false;
+  const byCriterion = new Map((verdict.criteria || []).map(criterion => [criterion.criterion, criterion]));
+  const outcomes = requestedState.map(criterion => byCriterion.get(criterion));
+  if (outcomes.some(outcome => !outcome || !["pass", "unverifiable"].includes(outcome.status))) return false;
+  return outcomes.some(outcome => outcome.status === "unverifiable");
+}
+
 export function sameFailureShape(a, b) {
   if (!a || !b) return false;
   // A criterion can move between fail and unverifiable when a later attempt
@@ -4061,6 +4107,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     // the change behind it already ran -- a retry would just repeat a denied
     // command for the same inconclusive verdict. Stop now with the best answer.
     const scopedContinuation = !freshContinuationUsed && options.hooksSupported && scopedContinuationFile && freshScopedContinuation(attempts);
+    if (submittedStateUnverifiableAfterRead(lastVerdict, plan, submittedEffectAttempt, submittedReadAttempt, attempts, {
+      scopedContinuationAvailable: Boolean(scopedContinuation)
+    })) {
+      return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
+    }
     if (unverifiableOnlyAfterChange(lastVerdict, attempts) && !scopedContinuation) {
       return done("unverifiable-only", attempt, incompleteNote(lastVerdict));
     }
