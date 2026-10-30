@@ -15,6 +15,7 @@ const RESULTS_TOTAL_LIMIT = 4000;
 // How much of each tool result is kept to check where entered values came from.
 const SOURCE_LIMIT = 50000;
 const FAILURE_CLASSES = ["wrong_tool", "wrong_parameters", "tool_error", "incomplete", "misread_facts", "blocked"];
+const STATE_EVIDENCE_KEY = Symbol("stateEvidenceKey");
 
 export function runAux4(args, { allowFailure = false, timeout = 0 } = {}) {
   const result = spawnSync(process.env.AUX4_BIN || "aux4", args, {
@@ -969,8 +970,108 @@ function words(text) {
   return new Set(String(text || "").toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2).map(w => w.replace(/s$/, "")));
 }
 
-export function pickReadBack(plan, candidates) {
-  const reads = candidates.filter(isReadCommand);
+function resultLocation(attempt) {
+  const result = parseAttemptResult(attempt);
+  if (!result || typeof result !== "object" || Array.isArray(result)) return {};
+  const observation = result.observations?.current;
+  const observedUrl = typeof observation === "object" && observation
+    ? observation.url || observation.finalUrl || ""
+    : "";
+  return {
+    session: typeof result.session === "string" ? result.session
+      : typeof result.scopedOperation?.session === "string" ? result.scopedOperation.session : "",
+    finalUrl: typeof result.finalUrl === "string" ? result.finalUrl
+      : typeof result.scopedOperation?.finalUrl === "string" ? result.scopedOperation.finalUrl
+        : typeof observedUrl === "string" ? observedUrl : ""
+  };
+}
+
+function stateActionCandidates(attempts) {
+  return attempts.map((attempt, index) => ({ attempt, index }))
+    .filter(({ attempt }) => attempt && (!attempt.tool || attempt.tool === "executeAux4")
+      && !attempt.failed && attempt.completed !== false && isChangeCommand(attempt.command));
+}
+
+function latestStateAction(attempts) {
+  return stateActionCandidates(attempts).at(-1)?.attempt || null;
+}
+
+function commandFamily(command) {
+  const parsed = commandWords(command);
+  if (!parsed?.length) return "";
+  const words = parsed[0] === "aux4" ? parsed.slice(1) : parsed;
+  const firstFlag = words.findIndex(word => word.startsWith("--"));
+  const pathWords = firstFlag < 0 ? words : words.slice(0, firstFlag);
+  return pathWords.filter(word => !READ_VERB.has(word.toLowerCase()) && !CHANGE_VERB.test(word))
+    .map(word => word.toLowerCase()).join(" ");
+}
+
+function readMatchesAction(command, result, action) {
+  const location = resultLocation(action);
+  if (location.session) {
+    const readResult = result && typeof result === "object" ? result : {};
+    return optionValue(command, "--session") === location.session
+      && (typeof readResult.session !== "string" || readResult.session === location.session)
+      && readResult.sessionClosed !== true;
+  }
+  if (location.finalUrl) {
+    const readResult = result && typeof result === "object" ? result : {};
+    return optionValue(command, "--url") === location.finalUrl
+      || readResult.finalUrl === location.finalUrl;
+  }
+  return Boolean(commandFamily(command)) && commandFamily(command) === commandFamily(action.command);
+}
+
+function relevantPostActionReads(attempts, candidates) {
+  const changes = stateActionCandidates(attempts);
+  if (!changes.length) return candidates.filter(isReadCommand);
+  // Prefer a read tied by explicit session/URL context. A later unscoped write
+  // on another command family must not displace that read.
+  const contextChanges = [...changes].reverse().filter(({ attempt }) => {
+    const location = resultLocation(attempt);
+    return location.session || location.finalUrl;
+  });
+  for (const { attempt: action } of contextChanges) {
+    const matching = [...new Set(candidates.filter(command => isReadCommand(command)
+      && readMatchesAction(command, null, action)))];
+    if (matching.length) return matching;
+  }
+  if (contextChanges.length) return [];
+  // For legacy commands without a returned session or location, re-run a
+  // known successful read from the same command family after the action.
+  for (const { attempt: action } of [...changes].reverse()) {
+    if (resultLocation(action).session || resultLocation(action).finalUrl) continue;
+    const matching = [...new Set(candidates.filter(command => isReadCommand(command)
+      && readMatchesAction(command, null, action)))];
+    if (matching.length) return matching;
+  }
+  return [];
+}
+
+function readAttemptIsFreshForAction(attempts, readAttempt) {
+  const readIndex = attempts.indexOf(readAttempt);
+  if (readIndex < 0) return false;
+  if (stateActionCandidates(attempts.slice(readIndex + 1)).length) return false;
+  const preceding = stateActionCandidates(attempts.slice(0, readIndex));
+  if (!preceding.length) return true;
+  const result = parseAttemptResult(readAttempt);
+  const contextual = [...preceding].reverse().filter(({ attempt }) => {
+    const location = resultLocation(attempt);
+    return location.session || location.finalUrl;
+  });
+  for (const { attempt } of contextual) {
+    if (readMatchesAction(readAttempt.command, result, attempt)) return true;
+  }
+  if (contextual.length) return false;
+  for (const { attempt, index } of [...preceding].reverse()) {
+    if (index < readIndex && readMatchesAction(readAttempt.command, result, attempt)) return true;
+  }
+  return false;
+}
+
+export function pickReadBack(plan, candidates, attempts = []) {
+  const reads = relevantPostActionReads(attempts, candidates);
+  if (stateActionCandidates(attempts).length && reads.length === 1) return { command: reads[0], none: false };
   const target = words((plan.stateCriteria || []).join(" "));
   let best = "";
   let bestScore = 0;
@@ -1591,6 +1692,13 @@ function summaryOutcome(label, criterion, result) {
   return `${label}: ${criterion}${result?.status === "pass" ? "" : summaryEvidence(result)}`;
 }
 
+function hasSubstantiveActionFacts(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const receiptFields = new Set(["status", "success", "submitted", "presubmitfieldstate", "goalverified", "scopedoperation", "session", "sessionid", "sessionclosed", "finalurl", "url", "timestamp", "requestid", "elapsed", "elapsedms", "usage", "id"]);
+  return Object.entries(result).some(([key, value]) => !receiptFields.has(key.toLowerCase())
+    && value !== null && value !== "" && !(Array.isArray(value) && value.length === 0));
+}
+
 // A non-passing state or answer-truth verdict makes the executor's prose
 // unsafe to return verbatim. Reconstruct a compact response from the fixed
 // criterion outcomes instead, preserving verified partial results without
@@ -1676,7 +1784,8 @@ export function applyExecutionProof(verdict, plan, attempts, currentState = null
     if (criterion.basis === "currentState" && (currentState?.source || currentState?.output)) {
       try { source = JSON.parse(String(currentState.source || currentState.output)); } catch { source = null; }
     } else if (criterion.basis === "actionResult") {
-      source = attempts.map(parseAttemptResult).find(result => result && hasExplicitIncompleteSourceMetadata(result));
+      source = attempts.slice().reverse().map(parseAttemptResult).find(hasExplicitIncompleteSourceMetadata)
+        || null;
     }
     if (criterion.claim === "absence" && criterion.relation === "supports" && hasExplicitIncompleteSourceMetadata(source)) {
       next = { ...next, status: "unverifiable", evidence: criterion.evidence || "Structured source metadata marks this result partial, truncated, or ranked." };
@@ -1684,9 +1793,29 @@ export function applyExecutionProof(verdict, plan, attempts, currentState = null
     if (criterion.basis === "currentState" && criterion.status === "pass" && goalNotVerified(source) && !hasFreshObservation(source)) {
       next = { ...next, status: "unverifiable", evidence: criterion.evidence || "The operation receipt has no fresh current observation." };
     }
+    if (criterion.basis === "currentState" && criterion.status === "pass"
+      && source?.preSubmitFieldState && !hasFreshObservation(source)
+      && source.goalVerified !== true && source.scopedOperation?.goalVerified !== true) {
+      next = { ...next, status: "unverifiable", evidence: criterion.evidence || "A pre-submit field snapshot does not establish persisted state." };
+    }
     if (criterion.basis === "actionResult" && criterion.relation === "supports" && criterion.status === "pass"
-      && attempts.some(a => goalNotVerified(parseAttemptResult(a)))) {
+      && attempts.some(attempt => goalNotVerified(parseAttemptResult(attempt)))) {
       next = { ...next, status: "unverifiable", evidence: criterion.evidence || "The operation receipt says its goal was not verified." };
+    }
+    if (criterion.basis === "actionResult" && criterion.status === "pass" && changeState.has(criterion.criterion)) {
+      const action = latestStateAction(attempts);
+      const result = action ? parseAttemptResult(action) : null;
+      const explicitlyVerified = result?.goalVerified === true || result?.scopedOperation?.goalVerified === true;
+      const unverifiedOperation = attempts.some(attempt => goalNotVerified(parseAttemptResult(attempt)));
+      const weakSuccess = result?.success === true && !hasSubstantiveActionFacts(result);
+      const submittedOnly = result?.submitted === true && !explicitlyVerified && !hasSubstantiveActionFacts(result);
+      const preSubmitOnly = Object.hasOwn(result || {}, "preSubmitFieldState") && !explicitlyVerified
+        && !hasSubstantiveActionFacts(result);
+      const unfinished = action && !isConclusiveAttempt(action);
+      const receiptAlone = unfinished || unverifiedOperation || weakSuccess || submittedOnly || preSubmitOnly;
+      if (receiptAlone) {
+        next = { ...next, status: "unverifiable", evidence: criterion.evidence || "The action receipt does not establish the requested persisted outcome." };
+      }
     }
     // Contradiction has precedence over any other typed annotation.
     if (criterion.relation === "contradicts") {
@@ -2115,7 +2244,9 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   let readNow = null;
   const suppliedFreshRead = freshReadAttempt && attempts.includes(freshReadAttempt)
     && !freshReadAttempt.failed && isConclusiveAttempt(freshReadAttempt)
-    && isReadCommand(freshReadAttempt.command) ? freshReadAttempt : null;
+    && isReadCommand(freshReadAttempt.command)
+    && readAttemptIsFreshForAction(attempts, freshReadAttempt)
+    ? freshReadAttempt : null;
   if (suppliedFreshRead) {
     readNow = {
       command: suppliedFreshRead.command,
@@ -2128,7 +2259,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   const anySuccess = attempts.some(a => !a.failed);
   let noReadPossible = anySuccess && !readBack.some(isReadCommand);
   if (!readNow && hasState && readBack.length) {
-    const pick = pickReadBack(plan, readBack);
+    const pick = pickReadBack(plan, readBack, attempts);
     const command = pick.command;
     if (anySuccess && !isSafeReadBack(pick.command, readBack)) noReadPossible = true;
     if (isSafeReadBack(command, readBack)) {
@@ -2183,7 +2314,7 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
     parsed = readVerdict(again.stdout);
   }
   const criteria = verifyCriteria(plan);
-  const verdict = parsed
+  const parsedVerdict = parsed
     ? normalizeVerdict(parsed, criteria)
     : fallbackVerdict(criteria, "the verifier's output could not be parsed, so this outcome could not be confirmed");
   // Without a history file the verifier's own calls can't be counted, so the
@@ -2191,9 +2322,97 @@ export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = 
   // When nothing can re-read the state (only the action's own result shows
   // it), the verifier's judgement from the recorded results stands.
   const observed = verifyHistory && !noReadPossible && !sameCallObservation
-    ? requireOwnObservation(verdict, checks, plan.stateCriteria || plan.doneCriteria, attempts)
-    : verdict;
-  return { ...applyExecutionProof(applyProvenance(observed, attempts, options.request), plan, attempts, currentState), checks: checks.map(c => c.command) };
+    ? requireOwnObservation(parsedVerdict, checks, plan.stateCriteria || plan.doneCriteria, attempts)
+    : parsedVerdict;
+  const finalVerdict = { ...applyExecutionProof(applyProvenance(observed, attempts, options.request), plan, attempts, currentState), checks: checks.map(c => c.command) };
+  Object.defineProperty(finalVerdict, STATE_EVIDENCE_KEY, { value: stateEvidenceSnapshot(currentState, attempts, plan), enumerable: false });
+  return finalVerdict;
+}
+
+function stateEvidenceSnapshot(currentState, attempts, plan) {
+  const read = currentState ? {
+    source: readSourceKey({ command: currentState.command }),
+    location: { finalUrl: resultLocation({ source: currentState.source ?? currentState.output }).finalUrl },
+    facts: stableReadFacts(parseJSONLoose(currentState.source ?? currentState.output, String(currentState.source ?? currentState.output ?? "")))
+  } : null;
+  // Only the explicit goal-level completion signal can add action-only state
+  // evidence here. Generic `success: true` fields and submitted receipts do
+  // not create a new basis for upgrading a prior state verdict.
+  const permittedGoals = new Set([plan?.goal, ...(plan?.stateCriteria || [])]
+    .filter(value => typeof value === "string" && value.trim())
+    .map(value => value.trim().toLowerCase().replace(/\s+/g, " ")));
+  const completed = attempts.filter(attempt => !attempt.failed && attempt.completed !== false
+    && isChangeCommand(attempt.command) && isConclusiveAttempt(attempt))
+    .map(attempt => ({ attempt, result: parseAttemptResult(attempt) }))
+    .map(({ attempt, result }) => ({ attempt, result, goal: result?.goal ?? result?.scopedOperation?.goal }))
+    .filter(({ result, goal }) => (result?.goalVerified === true || result?.scopedOperation?.goalVerified === true)
+      && typeof goal === "string" && permittedGoals.has(goal.trim().toLowerCase().replace(/\s+/g, " ")))
+    .map(({ attempt, result, goal }) => ({
+      source: readSourceKey({ command: attempt.command }),
+      goal: goal.trim().toLowerCase().replace(/\s+/g, " "),
+      facts: stableReadFacts(result)
+    }))
+    .filter((item, index, all) => all.findIndex(other => JSON.stringify(other) === JSON.stringify(item)) === index);
+  return { read, completed };
+}
+
+function stateCriterionKey(criterion) {
+  return `state:${String(criterion || "").trim().toLowerCase()}`;
+}
+
+// A changed answer may fix answer checks, but it cannot turn an unchanged,
+// previously unverified state observation into new proof. A substantive new
+// read or an explicit goalVerified completion changes the evidence key.
+export function retainUnchangedStateOutcome(previous, current, plan) {
+  const previousSnapshot = previous?.[STATE_EVIDENCE_KEY];
+  const currentSnapshot = current?.[STATE_EVIDENCE_KEY];
+  if (previousSnapshot === undefined || currentSnapshot === undefined) return current;
+  const states = new Set(plan?.stateCriteria || plan?.doneCriteria || []);
+  const priorByKey = new Map((previous.criteria || []).filter(item => states.has(item.criterion))
+    .map(item => [stateCriterionKey(item.criterion), item]));
+  let changed = false;
+  const criteria = (current.criteria || []).map(item => {
+    if (item.status !== "pass" || !states.has(item.criterion)) return item;
+    const prior = priorByKey.get(stateCriterionKey(item.criterion));
+    if (!prior || prior.status === "pass") return item;
+    if (hasNewCriterionStateEvidence(previousSnapshot, currentSnapshot, item.criterion, plan)) return item;
+    changed = true;
+    return { ...item, status: prior.status, evidence: prior.evidence || item.evidence };
+  });
+  if (!changed) return current;
+  const retained = { ...current, overall: criteria.every(item => item.status === "pass") ? "pass" : "fail", criteria };
+  Object.defineProperty(retained, STATE_EVIDENCE_KEY, { value: currentSnapshot, enumerable: false });
+  return retained;
+}
+
+function criterionStateEvidenceKey(snapshot, criterion, plan) {
+  const labels = new Set([criterion, plan?.goal].filter(value => typeof value === "string" && value.trim())
+    .map(value => value.trim().toLowerCase().replace(/\s+/g, " ")));
+  const completed = (snapshot.completed || []).filter(action => labels.has(action.goal));
+  return JSON.stringify({ read: snapshot.read, completed });
+}
+
+function hasSubstantiveRead(read) {
+  if (!read) return false;
+  const facts = read.facts;
+  if (Array.isArray(facts)) return true;
+  if (typeof facts === "string") return Boolean(facts.trim());
+  if (!facts || typeof facts !== "object") return false;
+  const envelope = new Set(["status", "session", "sessionid", "sessionclosed", "finalurl", "url", "timestamp", "observedat", "queriedat", "fetchedat", "checkedat", "provider", "question", "answered", "elapsed", "elapsedms", "usage", "metadata"]);
+  return Object.entries(facts).some(([key, value]) => !envelope.has(key.toLowerCase())
+    && value !== null && value !== "");
+}
+
+function hasNewCriterionStateEvidence(previousSnapshot, currentSnapshot, criterion, plan) {
+  const previousKey = criterionStateEvidenceKey(previousSnapshot, criterion, plan);
+  const currentKey = criterionStateEvidenceKey(currentSnapshot, criterion, plan);
+  const previous = JSON.parse(previousKey);
+  const current = JSON.parse(currentKey);
+  const previousCompleted = new Set(previous.completed.map(item => JSON.stringify(item)));
+  if (current.completed.some(item => !previousCompleted.has(JSON.stringify(item)))) return true;
+  if (!hasSubstantiveRead(current.read)) return false;
+  if (!hasSubstantiveRead(previous.read)) return true;
+  return JSON.stringify(current.read) !== JSON.stringify(previous.read);
 }
 
 export function verdictLogPath(historyFile) {
@@ -3113,7 +3332,9 @@ function stableReadFacts(value, root = true) {
   if (Array.isArray(value)) return value.map(item => stableReadFacts(item, false));
   if (!value || typeof value !== "object") return value;
   const isToolEnvelope = root && (Object.hasOwn(value, "answered")
-    || (Object.hasOwn(value, "session") && (Object.hasOwn(value, "status") || Object.hasOwn(value, "steps"))));
+    || (Object.hasOwn(value, "session") && (Object.hasOwn(value, "status") || Object.hasOwn(value, "steps")))
+    || Object.hasOwn(value, "goalVerified")
+    || (value.scopedOperation && typeof value.scopedOperation === "object" && Object.hasOwn(value.scopedOperation, "goalVerified")));
   return Object.fromEntries(Object.keys(value).sort()
     .filter(key => !EPHEMERAL_EVIDENCE_KEYS.has(key.toLowerCase())
       && !(isToolEnvelope && (READ_LOCATOR_KEYS.has(key.toLowerCase()) || READ_ENVELOPE_TIME_KEYS.has(key.toLowerCase()))))
@@ -3726,6 +3947,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
 
     const verifyStart = Date.now();
     lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt), submittedReadAttempt);
+    lastVerdict = retainUnchangedStateOutcome(priorVerdict, lastVerdict, plan);
     round.verify = { ...historyStats(verifyHistoryPath(history, attempt)), ms: Date.now() - verifyStart };
     saveVerdict(history, attempt, attempts, { ...lastVerdict, ms: { execute: verifyStart - executeStart, verify: Date.now() - verifyStart } });
 

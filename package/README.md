@@ -97,11 +97,14 @@ extractor's blocks on that page; it does not prove that all visible text, later 
 website collection was read. `agent browser find` returns ranked relevant matches, which may be
 useful evidence but are not an exhaustive list. The agent follows observed navigation when a task
 needs more pages.
-3. **Verify.** For `state` criteria the harness reads the current state itself: it re-runs the
-   already-successful command that shares the most words with the criteria, and only one whose
-   command words include a read verb (get, list, show, view, search, ...) and no change verb.
-   That re-run does not go back through ai-agent's runtime ask/deny prompt, which is why only
-   commands that already ran successfully, and read, qualify. A single short verifier call (no tools) then judges
+3. **Verify.** For `state` criteria the harness reads the current state itself: it re-runs a
+   previously successful read command that is tied to the latest relevant change by its returned
+   session or exact location when available, or by its command family for legacy tools. It only
+   re-runs commands whose words include a read verb (get, list, show, view, search, ...) and no
+   change verb. This selects a command to re-run; the returned facts still have to support the
+   requested criterion. A command-family match by itself does not prove the same target. That
+   re-run does not go back through ai-agent's runtime ask/deny prompt, which is why only commands
+   that already ran successfully, and read, qualify. A single short verifier call (no tools) then judges
    every criterion against the request, the answer, each action's raw result, and that fresh
    read. Three criteria are always added: the answer covers every part of the request, it
    accurately describes what the actions did, and anything sent, submitted, or saved agrees with
