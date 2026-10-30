@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.48
+
+- Expose `agent browser inspect` as a deterministic page-read capability. State that completeness is limited to extracted blocks on the current rendered page and that ranked `find` matches are not an exhaustive result set.
+
 ## 4.1.47
 
 - Give authorization checks explicit observed values and unchanged-value comparisons from independent unambiguous evidence.

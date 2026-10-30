@@ -87,6 +87,13 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    changes state, a short check using the caller's configured model compares its target and values
    with the original request and observed facts, including exclusions. A denied or unparseable
    verdict prevents that command from running and tells the agent what evidence is missing.
+
+For web-page reads, the registered browser capability includes `agent browser inspect` for the
+ordered content blocks emitted from the current rendered page. Its completeness is limited to the
+extractor's blocks on that page; it does not prove that all visible text, later pages, or a full
+website collection was read. `agent browser find` returns ranked relevant matches, which may be
+useful evidence but are not an exhaustive list. The agent follows observed navigation when a task
+needs more pages.
 3. **Verify.** For `state` criteria the harness reads the current state itself: it re-runs the
    already-successful command that shares the most words with the criteria, and only one whose
    command words include a read verb (get, list, show, view, search, ...) and no change verb.

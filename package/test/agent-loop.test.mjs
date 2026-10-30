@@ -1462,6 +1462,12 @@ test("a capability with a goal-level agent is delegated: its low-level commands 
   assert.match(delegations[0].note, /Reuse a returned live session id/);
   assert.match(delegations[0].note, /the "agent browser" command group is available/);
   assert.match(delegations[0].note, /For any task performed on a web page, use executeAux4/);
+  assert.deepEqual(delegations[0].entrypoints, ["run", "find", "inspect"]);
+  assert.match(delegations[0].note, /deterministic read of extracted content on the current rendered page/);
+  assert.match(delegations[0].note, /does not require semantic ranking/);
+  assert.match(delegations[0].note, /not every visible text fragment, other pages, or the whole website/);
+  assert.match(delegations[0].note, /ranked evidence, which may return relevant matches without proving that its list is exhaustive/);
+  assert.match(delegations[0].planningScope, /does not establish website-wide or paginated collection completeness/);
   assert.deepEqual(delegatedDenyPatterns(delegations), ["browser", "browser *", "aux4 browser", "aux4 browser *"]);
   assert.deepEqual(activeDelegations(new Set(["main", "browser"])), []);
   const policy = JSON.parse(addDenyPatterns('{"budget":{"calls":60},"deny":[{"executeAux4":["x"]}]}', ["browser *"]));
