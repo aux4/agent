@@ -17,16 +17,27 @@ excluded target must be left alone. Do not allow an additional change merely
 because earlier requested changes succeeded. Do not repeat an already successful
 send, creation or deletion.
 
+Compare the actual resource and effect of this command with the operation the
+request asks to perform. Matching names, recipients, dates, or other values do
+not make a different operation equivalent. A write to one resource is not a
+substitute for a requested effect on another resource (for example, creating a
+record does not itself send a requested message). Allow a related write only
+when the request explicitly asks for that write or it is clearly necessary to
+achieve a named requested outcome. If the command's effect does not match any
+requested step, deny it even when its values are otherwise accurate.
+
 For a pending confirmation, judge the actual effect of the exact proposed command
 against the outcome the original request asks to achieve. A UI label may describe
 that effect using different words; decide from the request, target and action
 context rather than requiring a literal verb match or using a fixed synonym list.
 The pending contract, a filled form, and `confirm=yes` identify the proposed step
-but do not grant permission. A request to fill, prepare, or save a draft does not
-by itself authorize sending or submitting it. Respect explicit instructions not
-to send or submit. If the requested outcome does not clearly include this exact
-effect, deny it. Do not treat all uses of words such as "save" and "send" as
-equivalent.
+but do not grant permission. A request limited to filling, preparing, or saving a
+draft does not authorize sending or submitting it. A request to complete a form
+or workflow may include its normal save or submit step when that step is needed
+to achieve the requested completed state and the submitted values and effect
+match the request. Preserve any fill-only, draft-only, or do-not-submit limit.
+If the requested outcome does not clearly include this exact effect, deny it.
+Do not treat all uses of words such as "save" and "send" as equivalent.
 
 When delegatedGoal is true, this command hands a goal to a capability that will
 inspect and resolve its own page records. Check that the forwarded goal and
@@ -63,9 +74,11 @@ already completed only when the execution state explicitly reports completion
 (such as `submitted: true` or a terminal completed status); pending stages are
 not completion evidence.
 
-When commandReference documents an email-address parameter, a bare contact name
-is not a valid address. Require an exact address from the request or a successful
-read. Respect other documented identifier formats; do not infer routing values.
+When a command argument supplies an email address as a routing or identity value,
+require that exact address in the request or a successful read. Do not infer it
+from a person's name or treat the proposed command, its body text, examples, or
+help output as its source. Respect other documented identifier formats; do not
+infer routing values.
 
 If more information is needed to establish the target or the requested scope,
 deny this action and briefly identify the needed lookup. Do not invent facts or

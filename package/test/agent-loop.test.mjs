@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   parseJSONLoose,
@@ -89,6 +90,8 @@ import {
   composeNeedsConfirmationAnswer
 } from "../lib/agent-loop.mjs";
 import { scopedContinuationGuardMessage } from "../lib/check-values.mjs";
+
+const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function tmpFile(name, content) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "agent-loop-test-"));
@@ -2570,7 +2573,7 @@ else if(command.includes('loop-verify.md')) {
   const runCase = async ({ expectedCalls = 1, expectedEffects = 0, requestText = request, target = "Contact form for Dana Lee", emptyFields = [], resultError = "" } = {}) => {
     fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
     const options = {
-      ...baseOptions(), request: requestText, packageDir: path.resolve("package"), configFile,
+      ...baseOptions(), request: requestText, packageDir: PACKAGE_DIR, configFile,
       hooksSupported: true, toolDispatchSupported: true
     };
     options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, requestText, options);
@@ -2685,7 +2688,7 @@ test("lexically inconclusive actions cannot dispatch with missing, changed, or m
     ];
     await withAux4Bin(fake, async () => {
       for (const capabilities of cases) {
-        const options = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, ...capabilities };
+        const options = { ...baseOptions(), request: "Fill out the selected form.", packageDir: PACKAGE_DIR, configFile, ...capabilities };
         let dispatches = 0;
         const outcome = await runLoop(options, history, (_question, h) => {
           fs.writeFileSync(h, pendingConfirmFixture("Submit", next));
@@ -2701,7 +2704,7 @@ test("lexically inconclusive actions cannot dispatch with missing, changed, or m
       ]) {
         const unsupportedHistory = path.join(dir, `unsupported-${Math.random()}.json`);
         fs.writeFileSync(unsupportedHistory, JSON.stringify({ messages: [], tokenUsage: {} }));
-        const unsupportedOptions = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+        const unsupportedOptions = { ...baseOptions(), request: "Fill out the selected form.", packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true };
         unsupportedOptions.hooksFile = writeCheckValuesHooksFile(unsupportedOptions.packageDir, unsupportedHistory, unsupportedOptions.request, unsupportedOptions);
         let unsupportedDispatches = 0;
         const unsupported = await runLoop(unsupportedOptions, unsupportedHistory, (_question, h) => {
@@ -2714,7 +2717,7 @@ test("lexically inconclusive actions cannot dispatch with missing, changed, or m
 
       const ambiguousHistory = path.join(dir, "ambiguous-target-history.json");
       fs.writeFileSync(ambiguousHistory, JSON.stringify({ messages: [], tokenUsage: {} }));
-      const ambiguousOptions = { ...baseOptions(), request: "Delete a record.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+      const ambiguousOptions = { ...baseOptions(), request: "Delete a record.", packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true };
       ambiguousOptions.hooksFile = writeCheckValuesHooksFile(ambiguousOptions.packageDir, ambiguousHistory, ambiguousOptions.request, ambiguousOptions);
       let ambiguousDispatches = 0;
       const ambiguous = await runLoop(ambiguousOptions, ambiguousHistory, (_question, h) => {
@@ -2726,7 +2729,7 @@ test("lexically inconclusive actions cannot dispatch with missing, changed, or m
 
       const incompleteHistory = path.join(dir, "incomplete-history.json");
       fs.writeFileSync(incompleteHistory, JSON.stringify({ messages: [], tokenUsage: {} }));
-      const incompleteOptions = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+      const incompleteOptions = { ...baseOptions(), request: "Fill out the selected form.", packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true };
       incompleteOptions.hooksFile = writeCheckValuesHooksFile(incompleteOptions.packageDir, incompleteHistory, incompleteOptions.request, incompleteOptions);
       let incompleteCalls = 0;
       let incompleteDispatches = 0;
@@ -2745,7 +2748,7 @@ test("lexically inconclusive actions cannot dispatch with missing, changed, or m
       assert.equal(incompleteDispatches, 0, "an available semantic hook cannot bypass missing required inputs");
       assert.equal(incomplete.stopped, "blocked");
 
-      const options = { ...baseOptions(), request: "Fill out the selected form.", packageDir: path.resolve("package"), configFile, hooksSupported: true, toolDispatchSupported: true };
+      const options = { ...baseOptions(), request: "Fill out the selected form.", packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true };
       options.hooksFile = writeCheckValuesHooksFile(options.packageDir, history, options.request, options);
       assert.equal(hasConfirmationActionCheckHook(options, history, next), true);
       const hooks = JSON.parse(fs.readFileSync(options.hooksFile, "utf8"));

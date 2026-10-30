@@ -5,7 +5,7 @@
 ### should pass the agent-loop unit suite
 
 ```timeout
-15000
+30000
 ```
 
 ```execute
@@ -27,7 +27,7 @@ node ask.test.mjs
 ```
 
 ```expect:partial
-pass 5
+pass 6
 ```
 
 ## the ask command

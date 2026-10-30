@@ -1149,27 +1149,97 @@ function emailAddresses(text) {
 export function unsourcedRecipientValues(command, attempts = [], request = "", commandHelp = "") {
   if (!isChangeCommand(command) || /(?:^|\s)--help(?:\s|$)/.test(command)) return [];
   const words = commandWords(command) || [];
-  const recipients = [];
+  const args = [];
   for (let i = 0; i < words.length; i++) {
-    const match = words[i].match(/^--(to|cc|bcc|recipient|recipients|email)(?:=(.*))?$/i);
-    if (!match) continue;
-    const value = match[2] ?? words[++i] ?? "";
-    const addresses = emailAddresses(value);
-    const sections = String(commandHelp).split(/(?=^  --)/m);
-    const parameterHelp = sections.find(section => section.startsWith(`  --${match[1]}`) &&
-      new RegExp(`^  --${match[1]}(?:[ =\\s]|$)`, "i").test(section)) || "";
-    // A person's name can identify the intended contact, but it is not the
-    // email address required by a typed command parameter.
-    if (!addresses.length && /\be-?mail\b/i.test(parameterHelp)) {
-      recipients.push({ label: match[1], value, invalidFormat: true });
-    }
-    for (const address of addresses) recipients.push({ label: match[1], value: address });
+    const token = words[i];
+    if (!token.startsWith("--") || token === "--") continue;
+    const equals = token.indexOf("=");
+    const rawName = equals < 0 ? token.slice(2) : token.slice(2, equals);
+    const name = rawName.toLowerCase();
+    const value = equals < 0
+      ? (words[i + 1] && !words[i + 1].startsWith("--") ? words[++i] : "")
+      : token.slice(equals + 1);
+    args.push({ name, value });
   }
-  const sources = [request, ...attempts.filter(a =>
-    a.completed !== false && !a.failed && isReadCommand(a.command) && !/(?:^|\s)--help(?:\s|$)/.test(a.command)
-  ).map(a => a.source ?? a.result ?? "")];
+
+  const proseNames = new Set([
+    "body", "message", "content", "text", "subject", "description", "comment", "note", "html", "markdown", "summary",
+    "messagebody", "bodytext", "textbody", "plaintextbody", "htmlbody", "messagecontent"
+  ]);
+  const normalizeKey = key => String(key).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const proseKeyNames = new Set([...proseNames].map(normalizeKey));
+  const isProseKey = key => proseKeyNames.has(normalizeKey(key));
+  const findStructuredAddresses = (value, label, key, out) => {
+    if (typeof value === "string") {
+      if (!isProseKey(key)) for (const address of emailAddresses(value)) out.push({ label, value: address });
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => findStructuredAddresses(item, `${label}[${index}]`, key, out));
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        findStructuredAddresses(item, `${label}.${key}`, key, out);
+      }
+    }
+  };
+  const recipients = [];
+  const helpSections = String(commandHelp).split(/(?=^  --)/m);
+  for (const { name, value } of args) {
+    if (!value) continue;
+    const label = name || "argument";
+    let structured = false;
+    let decodedScalar = value;
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object") {
+        findStructuredAddresses(parsed, label, name, recipients);
+        structured = true;
+      } else if (typeof parsed === "string") {
+        decodedScalar = parsed;
+      }
+    } catch {}
+    if (structured) continue;
+
+    // Plain message text may mention addresses without routing to them. When
+    // content flags contain structured JSON, the branch above still checks
+    // routing/data fields while excluding prose-valued properties.
+    if (proseNames.has(name)) continue;
+    const fieldMatch = name === "field" ? decodedScalar.match(/^([^=]+)=(.*)$/s) : null;
+    const fieldLabel = fieldMatch?.[1].trim() || "";
+    const fieldValue = fieldMatch ? fieldMatch[2] : decodedScalar;
+    if (fieldMatch && isProseKey(fieldLabel)) continue;
+    const argLabel = fieldMatch ? `${label}.${fieldLabel}` : label;
+    const addresses = emailAddresses(fieldValue);
+    for (const address of addresses) recipients.push({ label: argLabel, value: address });
+
+    // Preserve the existing typed-address check, but derive it from the
+    // installed option contract instead of a recipient-flag name list.
+    if (!addresses.length) {
+      const section = helpSections.find(candidate =>
+        candidate.split(/\r?\n/, 1)[0].trim().split(/\s+/)[0].toLowerCase() === `--${name}`) || "";
+      if (/\be-?mail\s+address(?:es)?\b/i.test(section) && !(fieldMatch && isProseKey(fieldLabel))) {
+        recipients.push({ label: argLabel, value: fieldValue, invalidFormat: true });
+      }
+    }
+  }
+  const sources = [request, ...attempts.filter(a => {
+    if (a.completed === false || a.failed || !isReadCommand(a.command) || /(?:^|\s)--help(?:\s|$)/.test(a.command)) return false;
+    const result = String(a.source ?? a.result ?? "");
+    const parsed = parseJSONLoose(result, null);
+    const status = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.status === "string"
+      ? parsed.status.toLowerCase() : "";
+    return !isFailedResult(result) && !["error", "failed", "blocked"].includes(status);
+  }).map(a => a.source ?? a.result ?? "")];
   const known = new Set(sources.flatMap(emailAddresses).map(address => address.toLowerCase()));
-  return recipients.filter(({ value, invalidFormat }) => invalidFormat || !known.has(value.toLowerCase()));
+  const seen = new Set();
+  return recipients.filter(({ label, value, invalidFormat }) => {
+    const key = `${label}\u0000${value.toLowerCase()}\u0000${Boolean(invalidFormat)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return invalidFormat || !known.has(value.toLowerCase());
+  });
 }
 
 // A value is sourced when every word and number in it appears in the request or

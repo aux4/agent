@@ -3,8 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { authorizeAction, actionCheckFiles, actionCheckStats, unsourcedActionIds } from "../lib/action-check.mjs";
 import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
+
+const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("pre-action checks inherit the configured model, retain scope evidence, and record their cost", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-"));
@@ -48,6 +51,45 @@ console.log(JSON.stringify({ allow:false, reason:'The selected record is explici
     const hooks = writeCheckValuesHooksFile("/agent", history, "change one record", options);
     assert.match(JSON.parse(fs.readFileSync(hooks, "utf8")).hooks[0].before[0], /--guardOptions/);
     assert.equal(JSON.parse(fs.readFileSync(`${history}.guard-options.json`, "utf8")).history, history);
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("authorization payload preserves the requested operation and command effect for the existing check", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-effect-contract-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    const capture = path.join(dir, "capture.json");
+    fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+const question=JSON.parse(args[args.indexOf('--question')+1]);
+const instructions=fs.readFileSync(args[args.indexOf('--instructions')+1],'utf8');
+fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({args,question,instructions}));
+console.log(JSON.stringify({allow:false,reason:'The proposed effect is not the requested operation.'}));
+`, { mode: 0o755 });
+    process.env.AUX4_BIN = fake;
+    const options = { configFile: "/local.yaml", packageDir: PACKAGE_DIR };
+    const request = "Send a message to Morgan with the verified inspection time.";
+    const command = "records create --owner morgan@work.test --start 2026-04-01T14:00:00Z";
+    const reference = "create\nCreate a record.\n\n  --owner <arg>\n    Owner email address.\n";
+    const denied = authorizeAction(options, command, [
+      { command: "inspection get", source: "The inspection is at 14:00 UTC.", completed: true, failed: false }
+    ], request, "", reference);
+    assert.equal(denied.allow, false);
+    const captured = JSON.parse(fs.readFileSync(capture, "utf8"));
+    assert.equal(captured.question.request, request);
+    assert.equal(captured.question.proposedAction, command);
+    assert.match(captured.question.commandReference, /Create a record/);
+    assert.match(captured.instructions, /actual resource and effect/i);
+    assert.match(captured.instructions, /different operation equivalent/i);
+    assert.match(captured.instructions, /request to complete a form\s+or workflow may include its normal save or submit step/i);
+    assert.match(captured.instructions, /fill-only, draft-only, or do-not-submit limit/i);
+    assert.equal(captured.args.filter(value => value === "--question").length, 1,
+      "the existing authorization call is reused; no second model call is introduced");
   } finally {
     if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
     fs.rmSync(dir, { recursive: true, force: true });

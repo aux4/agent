@@ -82,11 +82,14 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    goals identify the target from observed page data, name only requested fields, include the save
    or submit step, and stop after one successful save. A round that asked without using any tool,
    narrated a step, or wrote a tool call as text is pushed once straight away (a text-form call is
-   removed from the history first). When tool hooks are available, outbound recipient addresses
-   must appear exactly in the original request or a successful lookup. Before a command that
-   changes state, a short check using the caller's configured model compares its target and values
-   with the original request and observed facts, including exclusions. A denied or unparseable
-   verdict prevents that command from running and tells the agent what evidence is missing.
+   removed from the history first). When tool hooks are available, email addresses used as routing
+   or identity values must appear exactly in the original request or a successful lookup; prose in
+   a proposed message does not establish its destination. Before a command that changes state, a
+   short check using the caller's configured model compares the command's actual resource and
+   effect, target, and values with the requested outcome and observed facts, including exclusions.
+   A related change is not a substitute for a different requested operation. A denied or
+   unparseable verdict prevents that command from running and tells the agent what evidence is
+   missing.
 
 For web-page reads, the registered browser capability includes `agent browser inspect` for the
 ordered content blocks emitted from the current rendered page. Its completeness is limited to the

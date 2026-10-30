@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   unsourcedFieldValues,
@@ -15,6 +16,8 @@ import {
   resetHooksSupportCacheForTests
 } from "../lib/agent-loop.mjs";
 import { parseFields, checkValues, repeatedReadGuardMessage, scopedContinuationGuardMessage } from "../lib/check-values.mjs";
+
+const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("outbound addresses require exact identifiers from the request or successful reads", () => {
   const command = 'notifications send --to="Person <person@work.test>" --cc other@work.test';
@@ -41,6 +44,69 @@ test("documentation, failed reads and write echoes cannot source an outbound add
   ]), []);
 });
 
+test("email identity values in arbitrary named arguments require exact request or read provenance", () => {
+  assert.deepEqual(unsourcedRecipientValues("records update --owner owner@work.test", [], "Update the record"),
+    [{ label: "owner", value: "owner@work.test" }]);
+  assert.deepEqual(unsourcedRecipientValues("groups add --members 'one@work.test,two@work.test'", [], "Add members"), [
+    { label: "members", value: "one@work.test" },
+    { label: "members", value: "two@work.test" }
+  ]);
+  const payload = `--payload '{"routing":{"account":"route@work.test"},"messageBody":"quoted prose@work.test"}'`;
+  assert.deepEqual(unsourcedRecipientValues(`records update ${payload}`, [], "Update the record"), [
+    { label: "payload.routing.account", value: "route@work.test" }
+  ]);
+  const nestedMessage = `records update --payload '{"message":{"to":"nested-route@work.test"},"body":{"text":"nested-prose@work.test"}}'`;
+  assert.deepEqual(unsourcedRecipientValues(nestedMessage, [], "Update the record"), [
+    { label: "payload.message.to", value: "nested-route@work.test" }
+  ]);
+  assert.deepEqual(unsourcedRecipientValues(`records update --data '"scalar@work.test"'`, [], "Update the record"), [
+    { label: "data", value: "scalar@work.test" }
+  ]);
+  const arbitraryJson = `records update --record '{"routing":{"owner":"unicode\\u0040work.test"},"note":"quoted prose@work.test"}'`;
+  assert.deepEqual(unsourcedRecipientValues(arbitraryJson, [], "Update the record"), [
+    { label: "record.routing.owner", value: "unicode@work.test" }
+  ]);
+  assert.deepEqual(unsourcedRecipientValues("records update --ownershipBody ownership@work.test", [], "Update the record"), [
+    { label: "ownershipbody", value: "ownership@work.test" }
+  ]);
+  const body = `notifications send --to recipient@work.test --body '{"to":"nested@work.test","body":"ordinary prose@work.test"}'`;
+  assert.deepEqual(unsourcedRecipientValues(body, [], "Send an update"), [
+    { label: "to", value: "recipient@work.test" },
+    { label: "body.to", value: "nested@work.test" }
+  ]);
+  assert.deepEqual(unsourcedRecipientValues("notes create --body 'Example: fictional@work.test'", [], "Write an example"), []);
+  assert.deepEqual(unsourcedRecipientValues("notes create --field 'Description=fictional@work.test'", [], "Write an example"), []);
+  assert.deepEqual(unsourcedRecipientValues("contacts search --email guessed@work.test", [], "Find the address"), []);
+  assert.deepEqual(unsourcedRecipientValues("records update --confirm yes", [], "Update the record"), []);
+  assert.deepEqual(unsourcedRecipientValues("records update --assignedUser Morgan", [], "Update the record",
+    "update\n  --assignedUser <arg>\n    Assigned person's email address.\n"),
+  [{ label: "assigneduser", value: "Morgan", invalidFormat: true }]);
+});
+
+test("structured routing values are checked, but content and bad provenance cannot source them", () => {
+  const command = `records update --payload '{"routing":{"owner":"owner@work.test"},"description":"content@work.test"}'`;
+  const priorRead = { command: "records get r-4", source: "{\"owner\":\"owner@work.test\"}", completed: true, failed: false };
+  assert.deepEqual(unsourcedRecipientValues(command, [priorRead], "Update r-4"), []);
+  assert.deepEqual(unsourcedRecipientValues(command, [
+    { command: "records get r-4", source: "owner@work.test", completed: true, failed: true },
+    { command: "records get r-4 --help", source: "owner@work.test", completed: true, failed: false },
+    { command: "records update --owner owner@work.test", source: "saved owner@work.test", completed: true, failed: false }
+  ], "Update r-4"), [{ label: "payload.routing.owner", value: "owner@work.test" }]);
+  assert.deepEqual(unsourcedRecipientValues("records update --body 'body@work.test' --owner owner@work.test",
+    [{ command: "records get r-4", source: "body@work.test", completed: true, failed: false }], "Update r-4"),
+  [{ label: "owner", value: "owner@work.test" }]);
+  assert.deepEqual(unsourcedRecipientValues("records update --owner owner@work.test", [], "Assign owner@work.test"), []);
+  const partialRead = {
+    command: "contacts search --query Morgan",
+    source: '{"status":"incomplete","complete":false,"matches":[{"email":"owner@work.test"}]}',
+    completed: true,
+    failed: false
+  };
+  assert.deepEqual(unsourcedRecipientValues("records update --owner owner@work.test", [partialRead], "Update record"), []);
+  const errorRead = { ...partialRead, source: '{"status":"error","email":"owner@work.test"}' };
+  assert.equal(unsourcedRecipientValues("records update --owner owner@work.test", [errorRead], "Update record").length, 1);
+});
+
 test("the command hook blocks an invented recipient and allows recovery after a lookup", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "recipient-hook-"));
   try {
@@ -48,7 +114,7 @@ test("the command hook blocks an invented recipient and allows recovery after a 
     const history = path.join(dir, "history.json");
     fs.writeFileSync(requestFile, "Send the update to Morgan");
     writeHistory(history, []);
-    const args = [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
+    const args = [path.join(PACKAGE_DIR, "lib/check-values.mjs"), "--repeatReadGuard", "true",
       "--requestFile", requestFile, "--history", history, "--command", "notifications send --to morgan@work.test"];
     const denied = spawnSync(process.execPath, args, { encoding: "utf8" });
     assert.equal(denied.status, 1);
@@ -60,6 +126,55 @@ test("the command hook blocks an invented recipient and allows recovery after a 
     const allowed = spawnSync(process.execPath, args, { encoding: "utf8" });
     assert.equal(allowed.status, 0, allowed.stdout + allowed.stderr);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("generic email provenance runs before the shared authorization call and a deny stops the write", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-email-provenance-"));
+  const originalBin = process.env.AUX4_BIN;
+  try {
+    const bin = path.join(dir, "aux4");
+    const calls = path.join(dir, "calls.jsonl");
+    fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args)+'\\n');
+if(args.at(-1)==='--help') { console.log('update\\n  --owner <arg>\\n    Record owner email address.'); process.exit(0); }
+if(args[0]==='ai' && args[1]==='agent' && args[2]==='ask') { console.log(JSON.stringify({allow:false,reason:'The requested communication is not this record change.'})); process.exit(0); }
+process.exit(4);
+`, { mode: 0o755 });
+    process.env.AUX4_BIN = bin;
+    const history = path.join(dir, "history.json");
+    const request = "Send a message to Morgan about the record.";
+    const guardOptions = path.join(dir, "guard-options.json");
+    fs.writeFileSync(guardOptions, JSON.stringify({ packageDir: "/agent", configFile: "/config.yaml", config: "test" }));
+    const run = () => spawnSync(process.execPath, [path.join(PACKAGE_DIR, "lib/check-values.mjs"),
+      "--repeatReadGuard", "true", "--history", history, "--request", request,
+      "--guardOptions", guardOptions, "--command", "records update --owner morgan@work.test"], { encoding: "utf8" });
+
+    writeHistory(history, []);
+    const unsourced = run();
+    assert.equal(unsourced.status, 1, unsourced.stdout + unsourced.stderr);
+    assert.match(unsourced.stdout, /ACTION_CHECK_EVIDENCE_REQUIRED/);
+    assert.match(unsourced.stdout, /morgan@work\.test/);
+    assert.equal(fs.readFileSync(calls, "utf8").split("\n").filter(Boolean).some(line => JSON.parse(line)[0] === "ai"), false,
+      "the provenance denial happens before the model authorization call");
+
+    writeHistory(history, [
+      { role: "assistant_with_tool", content: { tool_calls: [{ id: "lookup", name: "executeAux4", args: { command: "contacts get Morgan" } }] } },
+      { role: "tool", tool_call_id: "lookup", content: "Morgan <morgan@work.test>" }
+    ]);
+    const denied = run();
+    assert.equal(denied.status, 1, denied.stdout + denied.stderr);
+    assert.match(denied.stdout, /ACTION_CHECK_SCOPE_DENIED/);
+    const callsAfter = fs.readFileSync(calls, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+    const authorizationCall = callsAfter.find(args => args[0] === "ai" && args[1] === "agent" && args[2] === "ask");
+    assert.ok(authorizationCall, "a sourced address reaches the existing action check");
+    assert.equal(callsAfter.some(args => args[0] === "records" && args.at(-1) !== "--help"), false,
+      "only command-help discovery runs; the denied action never reaches execution");
+  } finally {
+    if (originalBin === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = originalBin;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("the live tool hook requires a fresh read in the returned session before allowing changes", () => {
@@ -75,7 +190,7 @@ test("the live tool hook requires a fresh read in the returned session before al
     const scopedPath = hookConfig.hooks[0].before[0].match(/--scopedContinuationFile '([^']+)'/)?.[1];
     assert.equal(scopedPath, contextFile, "relative histories produce an absolute hook-sidecar path");
     assert.deepEqual(JSON.parse(fs.readFileSync(contextFile, "utf8")), { active: false }, "hook generation starts with an inactive sidecar for non-loop callers");
-    const run = command => spawnSync(process.execPath, [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
+    const run = command => spawnSync(process.execPath, [path.join(PACKAGE_DIR, "lib/check-values.mjs"), "--repeatReadGuard", "true",
       "--history", historyAbs, "--command", command, "--scopedContinuationFile", contextFile], { encoding: "utf8", cwd: dir });
     const normalMode = run("records:workspace:archive/delete --recordId r7");
     assert.equal(normalMode.status, 0, normalMode.stdout + normalMode.stderr);
@@ -442,11 +557,11 @@ console.log('send\\n  --to <arg>\\n    Recipient email address.\\n  --body <arg>
 `, { mode: 0o755 });
     const history = path.join(dir, "history.json");
     writeHistory(history, []);
-    const args = [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
+    const args = [path.join(PACKAGE_DIR, "lib/check-values.mjs"), "--repeatReadGuard", "true",
       "--request", "Send the update to Morgan", "--history", history, "--command", "notifications send --to Morgan"];
     const denied = spawnSync(process.execPath, args, { encoding: "utf8", env: { ...process.env, AUX4_BIN: bin } });
     assert.equal(denied.status, 1, denied.stdout + denied.stderr);
-    assert.match(denied.stdout, /recipient address Morgan is not established/);
+    assert.match(denied.stdout, /email identity value Morgan is not established/);
     assert.match(denied.stdout, /successful lookup|matching record/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -465,7 +580,7 @@ console.log(args.length === 2
 `, {mode:0o755});
     const history = path.join(dir, 'history.json');
     writeHistory(history, []);
-    const result = spawnSync(process.execPath, [path.resolve('package/lib/check-values.mjs'),
+    const result = spawnSync(process.execPath, [path.join(PACKAGE_DIR, 'lib/check-values.mjs'),
       '--repeatReadGuard', 'true', '--history', history, '--request', 'Send the update to Morgan',
       '--command', 'notifications send --to Morgan'], {encoding:'utf8',env:{...process.env,AUX4_BIN:bin}});
     assert.equal(result.status, 1);
@@ -479,7 +594,7 @@ console.log(args.length === 2
 test("native field writes use original authority and factual history, never a forwarded goal",()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'native-value-source-'));
   const request=path.join(dir,'request.txt'),history=path.join(dir,'history.json'),parent=path.join(dir,'parent.json');
-  const guard=path.resolve('package/lib/check-values.mjs');
+  const guard=path.join(PACKAGE_DIR, 'lib/check-values.mjs');
   const save=(file,messages)=>fs.writeFileSync(file,JSON.stringify({messages}));
   const result=(id,command,content)=>[
     {role:'assistant_with_tool',content:{tool_calls:[{id,name:'executeAux4',args:{command}}]}},

@@ -20,6 +20,11 @@ back through ai-agent's ask/deny prompt; one short verifier call, with no tools,
 and honesty checks, from the request, the answer, the raw results and that read. A
 claim in the final answer alone cannot prove that something was sent, submitted,
 saved or changed; require a successful action result or direct read-back evidence.
+Before a state-changing command, the authorization check compares the command's
+actual resource and effect with the requested outcome; matching values do not make
+an unrelated change an acceptable substitute. When a command uses an email address
+as an identity or route, the exact address must come from the request or a successful
+read. Message prose, help text, and prior write echoes do not establish that address.
 On a miss the agent rewrites its answer (when only the answer was off and requested
 state changes have action evidence) or retries with
 the unmet criteria, the attempt log and hints. If an inner run stops after identical

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.61
+
+- Check a proposed change against the requested resource and effect, not just compatible values; require email identity values in consequential command arguments to come from the request or a successful read.
+
 ## 4.1.60
 
 - When a pending action's surface verb differs from the requested outcome, rely on the configured action-check before-hook to judge the exact action and target. Missing or denied hooks keep the action blocked; an uncertain command failure is not reported as an unexecuted action.
