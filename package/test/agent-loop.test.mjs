@@ -1188,7 +1188,11 @@ test("working rules forbid guessing commands and say how to recover from Command
   assert.match(WORKING_RULES, /Help output is documentation, not task evidence/);
   assert.match(WORKING_RULES, /use a complete child command path/);
   assert.match(WORKING_RULES, /"Command not found", run --help on its parent group/);
-  assert.match(WORKING_RULES, /A filtered miss does not establish absence: try one materially broader scope while preserving explicit user constraints/);
+  assert.match(WORKING_RULES, /After an empty filtered lookup, retry at most once in the same requester-authorized source/);
+  assert.match(WORKING_RULES, /Remove all restrictive filters or qualifiers you inferred/);
+  assert.match(WORKING_RULES, /retain task-relevant terms and every filter the requester supplied/);
+  assert.match(WORKING_RULES, /keep the result count bounded to what the task needs/);
+  assert.match(WORKING_RULES, /Do not search unrelated sources or treat a filtered miss as global absence/);
   assert.match(WORKING_RULES, /Do not repeat equivalent filters or superficial rewordings/);
   assert.match(WORKING_RULES, /After a successful lookup, reuse its facts/);
   assert.match(WORKING_RULES, /If group help lists subcommands, choose one and put it before its flags/);
@@ -1202,6 +1206,25 @@ test("working rules forbid guessing commands and say how to recover from Command
 
 test("working rules say to re-check a message against tool results before sending it", () => {
   assert.match(WORKING_RULES, /Before sending or submitting a message, re-read the tool results it depends on/);
+});
+
+test("initial and recovery prompts request one bounded same-source widening while preserving requester filters", () => {
+  const request = "Search the work inbox for the invoice from the vendor, unread only.";
+  const plan = { goal: request, doneCriteria: ["The requested invoice is identified."], steps: [] };
+  const verdict = { criteria: [{ criterion: "The requested invoice is identified.", status: "fail", evidence: "The filtered lookup returned no records." }] };
+  const attempts = [{ command: "mail inbox list --query guessed-subject --unread", source: '{"messages":[],"resultSizeEstimate":0}' }];
+  const prompts = [
+    composeExecuteQuestion(request, plan),
+    composeDiagnoseQuestion(plan, verdict, attempts, request)
+  ];
+  for (const prompt of prompts) {
+    assert.ok(prompt.includes(request), "the request, including its explicit unread constraint, remains available");
+    assert.match(prompt, /retry at most once in the same requester-authorized source/);
+    assert.match(prompt, /Remove all restrictive filters or qualifiers you inferred/);
+    assert.match(prompt, /retain task-relevant terms and every filter the requester supplied/);
+    assert.match(prompt, /keep the result count bounded to what the task needs/);
+    assert.match(prompt, /Do not search unrelated sources/);
+  }
 });
 
 test("findCommands aggregates pkger ranks across queries and leaves out the agent's own commands", () => {
