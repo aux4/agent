@@ -26,6 +26,110 @@ function canonicalCommand(command) {
   return JSON.stringify(parts[0] === "aux4" ? parts.slice(1) : parts);
 }
 
+function optionValue(command, name) {
+  const words = commandWords(command) || [];
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === name) return words[i + 1] || "";
+    if (words[i].startsWith(`${name}=`)) return words[i].slice(name.length + 1);
+  }
+  return "";
+}
+
+function normalizedUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.href;
+  } catch { return ""; }
+}
+
+function browserRunParts(command) {
+  const words = commandWords(command) || [];
+  const unprefixed = words[0] === "aux4" ? words.slice(1) : words;
+  if (unprefixed[0] !== "agent" || unprefixed[1] !== "browser" || unprefixed[2] !== "run") return null;
+  const goal = optionValue(command, "--goal").trim();
+  const url = optionValue(command, "--url");
+  const session = optionValue(command, "--session");
+  const fields = enteredValues(command)
+    .filter(entry => !/^confirm$/i.test(entry.label))
+    .map(entry => [entry.label.trim().toLowerCase(), entry.value])
+    .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+  let data = null;
+  const rawData = optionValue(command, "--data");
+  if (rawData) data = rawData;
+  return { goal, resource: normalizedUrl(url), session, fields, data };
+}
+
+function submittedBrowserWorkflows(attempts) {
+  const sessions = new Map();
+  const workflows = [];
+  for (let index = 0; index < attempts.length; index++) {
+    const attempt = attempts[index];
+    if (attempt.failed || attempt.completed === false) continue;
+    const result = parseJSONLoose(String(attempt.source ?? attempt.result ?? ""), null);
+    if (!result || typeof result !== "object" || Array.isArray(result)) continue;
+    const attemptParts = browserRunParts(attempt.command);
+    const inheritedResource = attemptParts?.resource || sessions.get(attemptParts?.session) || "";
+    const observedResource = inheritedResource || normalizedUrl(result.startUrl || result.finalUrl || result.url || "");
+    const observedSessions = [attemptParts?.session, result.session].filter(value => typeof value === "string" && value.trim());
+    if (observedResource) for (const session of observedSessions) sessions.set(session, observedResource);
+    if (!isChangeCommand(attempt.command) || result.submitted !== true
+      || !["done", "completed", "success", "succeeded", "incomplete", "needs-input", "needs-confirmation"].includes(String(result.status || "").trim().toLowerCase())) continue;
+    const completedParts = attemptParts;
+    if (!completedParts) continue;
+    const completedCommand = canonicalCommand(attempt.command);
+    let origin = null;
+    for (let prior = index - 1; prior >= 0; prior--) {
+      const candidate = attempts[prior];
+      if (candidate.failed) continue;
+      const priorResult = parseJSONLoose(String(candidate.source ?? candidate.result ?? ""), null);
+      if (!priorResult || typeof priorResult !== "object" || Array.isArray(priorResult)) continue;
+      const next = priorResult?.confirmation?.next;
+      if (typeof next === "string" && canonicalCommand(next) === completedCommand) {
+        origin = candidate;
+        break;
+      }
+    }
+    const originParts = origin ? browserRunParts(origin.command) : null;
+    const resource = completedParts.resource || originParts?.resource || sessions.get(completedParts.session)
+      || normalizedUrl(result.startUrl || result.finalUrl || result.url || "");
+    const goal = completedParts.goal || originParts?.goal || String(result.goal || "").trim();
+    const fields = completedParts.fields.length ? completedParts.fields : originParts?.fields || [];
+    const data = completedParts.data ?? originParts?.data ?? null;
+    let target = typeof result.target === "string" ? result.target.trim() : "";
+    if (!target && origin) {
+      const originResult = parseJSONLoose(String(origin.source ?? origin.result ?? ""), null);
+      target = typeof originResult?.confirmation?.target === "string" ? originResult.confirmation.target.trim() : "";
+    }
+    const identity = resource && goal && target ? { resource, goal, fields, data, target } : null;
+    const session = String(result.session || completedParts.session || "").trim();
+    if (session && identity) sessions.set(session, identity.resource);
+    workflows.push({ identity });
+  }
+  return { workflows, sessions };
+}
+
+function submittedWorkflowReplay(command, attempts) {
+  const proposed = browserRunParts(command);
+  const { workflows, sessions } = submittedBrowserWorkflows(attempts);
+  if (!proposed) return false;
+  const resource = proposed.resource || sessions.get(proposed.session) || "";
+  if (!resource || !proposed.goal) return false;
+  return workflows.some(workflow => {
+    const prior = workflow.identity;
+    if (!prior || prior.resource !== resource || prior.goal !== proposed.goal) return false;
+    const proposedEvidence = `${proposed.goal} ${JSON.stringify(proposed.fields)} ${JSON.stringify(proposed.data)}`
+      .replace(/\s+/g, " ").toLowerCase();
+    const target = prior.target.replace(/\s+/g, " ").toLowerCase();
+    if (!target || !proposedEvidence.includes(target)) return false;
+    // Require the same entered values to avoid blocking a distinct operation
+    // on the same page. When no values are present, the exact target and goal
+    // are the operation identity available from the recorded contract.
+    if (!proposed.fields.length && proposed.data === null) return true;
+    return JSON.stringify(prior.fields) === JSON.stringify(proposed.fields)
+      && JSON.stringify(prior.data) === JSON.stringify(proposed.data);
+  });
+}
+
 function scopeDenialReason(attempt) {
   const text = String(attempt?.source ?? attempt?.result ?? "");
   const marker = /ACTION_CHECK_SCOPE_DENIED:\s*/i.exec(text);
@@ -197,6 +301,9 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     return !state || state.explicitCompletion;
   })) {
     return {allow: false, reason: "This exact change already succeeded. Reuse its result instead of performing it again."};
+  }
+  if (submittedWorkflowReplay(command, attempts)) {
+    return {allow: false, reason: "This browser operation was already submitted for the same resource and operation data. Inspect its result or continue with a distinct requested operation instead of replaying it."};
   }
   const repeatedDenial = repeatedScopeDenial(command, attempts);
   if (repeatedDenial) {

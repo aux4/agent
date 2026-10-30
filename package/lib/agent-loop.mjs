@@ -417,13 +417,41 @@ export function compactResult(text, limit = RESULT_LIMIT) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return raw.slice(0, limit);
   const short = (v, n) => (typeof v === "string" && v.length > n ? `${v.slice(0, n)}…` : v);
   const out = {};
-  const priority = ["status", "submitted", "confirmation", "needsInput", "missing", "reason", "lastFormControlStates", "observations", "stepsText", "finalUrl", "answer", "summary"];
+  const priority = ["status", "submitted", "confirmation", "needsInput", "missing", "reason", "lastFormControlStates", "preSubmitFieldState", "observations", "stepsText", "finalUrl", "answer", "summary"];
   const keys = [...priority.filter(key => Object.hasOwn(value, key)), ...Object.keys(value).filter(key => !priority.includes(key))];
   for (const key of keys) {
     const v = value[key];
     if (v === null || typeof v !== "object") out[key] = short(v, 240);
     else if (key === "lastFormControlStates" && !Array.isArray(v)) {
       out[key] = { url: short(v.url, 160), controls: Array.isArray(v.controls) ? v.controls.slice(0, 12).map(x => short(x, 160)) : [] };
+    }
+    else if (key === "preSubmitFieldState" && Array.isArray(v)) {
+      // Keep only live, non-sensitive observations from the browser's
+      // explicitly pre-submit read-back contract. Never treat desired tool
+      // arguments, hidden controls, or an unobserved value as field evidence.
+      out[key] = v.slice(0, 32).flatMap(record => {
+        if (!record || typeof record !== "object" || Array.isArray(record)) return [];
+        const controlType = typeof record.controlType === "string" ? record.controlType.trim().toLowerCase() : "";
+        if (["password", "hidden", "file"].includes(controlType)) return [];
+        const status = record.status === "observed" ? "observed"
+          : record.status === "unavailable" ? "unavailable" : "";
+        const label = typeof record.label === "string" ? record.label.trim() : "";
+        const phase = typeof record.phase === "string" ? record.phase : "";
+        if (!status || !label || phase !== "immediately-before-submit") return [];
+        const item = {
+          url: short(record.url, 180), label: short(label, 140),
+          ...(typeof record.context === "string" ? { context: short(record.context, 140) } : {}),
+          controlType: short(controlType, 40),
+          ...(Number.isInteger(record.step) ? { step: record.step } : {}),
+          phase, status
+        };
+        if (status === "observed") {
+          if (typeof record.value === "string") item.value = short(record.value, 180);
+          if (typeof record.checked === "boolean") item.checked = record.checked;
+          if (!Object.hasOwn(item, "value") && !Object.hasOwn(item, "checked")) return [];
+        } else if (typeof record.reason === "string") item.reason = short(record.reason, 100);
+        return [item];
+      });
     }
     else if (key === "observations" && !Array.isArray(v)) {
       const size = Math.min(1600, Math.max(120, Math.floor((limit - 250) / 2)));
@@ -1736,7 +1764,7 @@ export function hasConfirmationContract(value) {
 
 // Return an unresolved structured confirmation from this round. A later blocked
 // confirm=yes call does not make the earlier pending confirmation disappear.
-export function pendingConfirmation(attempts) {
+export function pendingConfirmation(attempts, { allowSubmitted = false } = {}) {
   const last = attempts[attempts.length - 1];
   if (!last) return null;
   const readPending = attempt => {
@@ -1744,8 +1772,10 @@ export function pendingConfirmation(attempts) {
     const text = String(attempt.source ?? attempt.result ?? attempt.resultSummary ?? "");
     const parsed = parseJSONLoose(text, null);
     const status = typeof parsed?.status === "string" ? parsed.status.trim().toLowerCase() : "";
-    if (status && !["needs-input", "needs-confirmation"].includes(status)) return null;
-    if (parsed?.submitted === true) return null;
+    const submittedPendingStage = allowSubmitted && parsed?.submitted === true
+      && ["needs-input", "needs-confirmation", "incomplete"].includes(status);
+    if (status && !["needs-input", "needs-confirmation"].includes(status) && !submittedPendingStage) return null;
+    if (parsed?.submitted === true && !submittedPendingStage) return null;
     const contract = readConfirmationContract(text);
     if (!contract) return null;
     const reason = typeof parsed?.reason === "string"
@@ -1775,6 +1805,53 @@ export function pendingConfirmation(attempts) {
     return readPending(prior);
   }
   return null;
+}
+
+function parseCommandResult(attempt) {
+  const result = parseJSONLoose(String(attempt?.source ?? attempt?.result ?? ""), null);
+  return result && typeof result === "object" && !Array.isArray(result) ? result : null;
+}
+
+function hasSubmittedEffect(attempt) {
+  const result = parseCommandResult(attempt);
+  return Boolean(attempt && attempt.completed !== false && !attempt.failed
+    && isChangeCommand(attempt.command) && result?.submitted === true
+    && ["done", "completed", "success", "succeeded", "incomplete", "needs-input", "needs-confirmation"]
+      .includes(String(result.status || "").trim().toLowerCase()));
+}
+
+function isSingleCommandLine(command) {
+  const text = String(command || "");
+  let quote = "";
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (quote !== "'" && (ch === "`" || (ch === "$" && text[i + 1] === "("))) return false;
+    if (ch === "\\" && quote !== "'") { escaped = true; continue; }
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (";|&<>`\n\r".includes(ch) || (ch === "$" && text[i + 1] === "(")) return false;
+  }
+  return !quote && !escaped && Boolean(commandWords(text)?.length);
+}
+
+// A tool may report that an irreversible effect was submitted while its
+// overall workflow remains incomplete. A declared next read is accepted only
+// as one parsed, single read command. For browser run results with no declared
+// read, a same-session inspect is the sole synthesized fallback.
+export function submittedReadOnlyVerificationCommand(attempt) {
+  if (!hasSubmittedEffect(attempt)) return "";
+  const result = parseCommandResult(attempt);
+  const declared = typeof result?.next === "string" ? result.next.trim() : "";
+  if (declared && isSingleCommandLine(declared) && isReadCommand(declared) && !isChangeCommand(declared)) return declared;
+  const words = commandWords(attempt.command) || [];
+  if (words[0] === "aux4") words.shift();
+  if (words[0] !== "agent" || words[1] !== "browser" || words[2] !== "run") return "";
+  const session = typeof result?.session === "string" ? result.session.trim() : "";
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(session)) return "";
+  const inspect = `agent browser inspect --session '${session}'`;
+  return isSingleCommandLine(inspect) && isReadCommand(inspect) && !isChangeCommand(inspect) ? inspect : "";
 }
 
 function hasPendingConfirmationAttempt(attempt) {
@@ -2030,17 +2107,27 @@ export function hasConfirmationActionCheckHook(options, history, pendingCommand 
   }
 }
 
-export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "") {
+export function runVerify(options, plan, finalAnswer, attempts, verifyHistory = "", freshReadAttempt = null) {
   const payload = verifyPayload(plan, finalAnswer, attempts, options.request);
   const readBack = readBackCandidates(attempts);
   const hasState = (plan.stateCriteria || plan.doneCriteria).length > 0;
   // The harness reads the current state itself when it safely can.
   let readNow = null;
+  const suppliedFreshRead = freshReadAttempt && attempts.includes(freshReadAttempt)
+    && !freshReadAttempt.failed && isConclusiveAttempt(freshReadAttempt)
+    && isReadCommand(freshReadAttempt.command) ? freshReadAttempt : null;
+  if (suppliedFreshRead) {
+    readNow = {
+      command: suppliedFreshRead.command,
+      output: String(suppliedFreshRead.source ?? suppliedFreshRead.result ?? ""),
+      source: String(suppliedFreshRead.source ?? suppliedFreshRead.result ?? "")
+    };
+  }
   // Only when there are successful actions can their own results be the
   // evidence; with nothing done, a pass can only be trust in the answer.
   const anySuccess = attempts.some(a => !a.failed);
   let noReadPossible = anySuccess && !readBack.some(isReadCommand);
-  if (hasState && readBack.length) {
+  if (!readNow && hasState && readBack.length) {
     const pick = pickReadBack(plan, readBack);
     const command = pick.command;
     if (anySuccess && !isSafeReadBack(pick.command, readBack)) noReadPossible = true;
@@ -2188,7 +2275,8 @@ function sameConfirmationCommand(actual, expected) {
 }
 
 function completedConfirmationCommand(attempts, pending) {
-  return attempts.some(attempt => !attempt.failed && isConclusiveAttempt(attempt)
+  return attempts.some(attempt => !attempt.failed
+    && (isConclusiveAttempt(attempt) || hasSubmittedEffect(attempt))
     && sameConfirmationCommand(attempt.command, pending.next));
 }
 
@@ -3275,6 +3363,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
   let recoveryHint = "";
   let confirmationYielded = false;
   let yieldedPending = null;
+  let submittedEffectThisRun = false;
   const done = (stopped, attempt, note = "") => {
     if (scopedContinuationFile) fs.rmSync(scopedContinuationFile, { force: true });
     metrics.stopped = stopped;
@@ -3282,10 +3371,18 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     metrics.total = [metrics.plan, metrics.actionChecks, ...metrics.rounds.flatMap(r => [r.execute, r.verify || {}])]
       .reduce((acc, s) => addStats(acc, s), {});
     saveMetrics(history, metrics);
-    const rawContent = executionProofContent(stripFailureClass(String(lastContent || "").trim() ? lastContent : lastAnswer), lastVerdict, extractAttemptLog(history));
+    const response = String(lastContent || "").trim() ? lastContent : lastAnswer;
+    const truthfulResponse = stopped !== "pass" && submittedEffectThisRun
+      ? appendStatusNote(response, "A submitted action was recorded, but the requested outcome remains unverified.")
+      : response;
+    const rawContent = executionProofContent(stripFailureClass(truthfulResponse), lastVerdict, extractAttemptLog(history));
     const summarizedContent = composeEvidenceSummary(rawContent, lastVerdict, plan);
+    const submittedNote = stopped !== "pass" && submittedEffectThisRun
+      && !/submitted action was recorded, but the requested outcome remains unverified/i.test(summarizedContent)
+      ? "A submitted action was recorded, but the requested outcome remains unverified."
+      : "";
     return {
-      content: appendStatusNote(summarizedContent, summarizedContent === rawContent ? note : ""),
+      content: appendStatusNote(summarizedContent, submittedNote || (summarizedContent === rawContent ? note : "")),
       plan,
       verdict: lastVerdict,
       stopped,
@@ -3300,10 +3397,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     confirmationYielded = false;
     lastExecutionPending = null;
     const result = await executor(...args);
+    if (extractAttemptLog(history).slice(beforeRun).some(hasSubmittedEffect)) submittedEffectThisRun = true;
     if (result && typeof result === "object" && !Array.isArray(result)) {
       innerStopReason = String(result.stopReason || "");
       if (innerStopReason === "confirmation") {
-        lastExecutionPending = pendingConfirmation(extractAttemptLog(history).slice(beforeRun));
+        lastExecutionPending = pendingConfirmation(extractAttemptLog(history).slice(beforeRun), { allowSubmitted: true });
       }
       return String(result.content ?? "");
     }
@@ -3403,9 +3501,10 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     // A fresh confirmation yield takes priority: this recovery turn could
     // propose a different action before the validated `next` is handled.
     const freshRoundAttempts = extractAttemptLog(history).slice(before);
-    let pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(freshRoundAttempts);
+    let pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(freshRoundAttempts, { allowSubmitted: true });
     const pendingGuard = unresolvedActionGuard(freshRoundAttempts);
-    if (!pushedPastBlocked && !pendingBeforeGuardRecovery && !confirmationYielded && pendingGuard) {
+    const submittedThisRound = freshRoundAttempts.find(hasSubmittedEffect) || null;
+    if (!pushedPastBlocked && !pendingBeforeGuardRecovery && !submittedThisRound && !confirmationYielded && pendingGuard) {
       pushedPastBlocked = true;
       lastContent = await runExecution("The last proposed change was stopped before it ran. That does not establish that the request needs user input. An unrelated question or documentation call did not resolve the missing evidence. Read the guard's reason and obtain the missing evidence with an actual available lookup before asking the requester; if that lookup cannot establish it, report what is missing. Preserve every exclusion and do not repeat a successful change.\n\nUnresolved guard and available lookup contract:\n" + String(pendingGuard.source ?? pendingGuard.result ?? "").slice(0, 5000), history, deniedCommands, false, deniedPatterns);
       if (String(lastContent || "").trim()) lastAnswer = lastContent;
@@ -3414,10 +3513,10 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       if (innerStop) return innerStop;
       // Guard recovery can itself return a new pending contract without a
       // monitor stop reason; refresh before interpreting its prose as BLOCKED.
-      pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(extractAttemptLog(history).slice(before));
+      pendingBeforeGuardRecovery = yieldedPending || pendingConfirmation(extractAttemptLog(history).slice(before), { allowSubmitted: true });
     }
 
-    if (!pendingBeforeGuardRecovery && !confirmationYielded && isBlocked(lastContent)) {
+    if (!pendingBeforeGuardRecovery && !submittedThisRound && !confirmationYielded && isBlocked(lastContent)) {
       const currentLog = extractAttemptLog(history);
       const offered = allowedCommandsOffered(currentLog);
       if (pushedPastBlocked || !offered) return done("blocked", attempt);
@@ -3458,7 +3557,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     // continuation in this round only when the request clearly asks for it, or
     // when the generated action-check before-hook covers that browser command.
     // Otherwise stop and ask; a missing or unrelated hook cannot open the gate.
-    let pending = yieldedPending || (attempts.length > before ? pendingConfirmation(attempts.slice(before)) : null);
+    let pending = yieldedPending || (attempts.length > before ? pendingConfirmation(attempts.slice(before), { allowSubmitted: true }) : null);
+    let submittedEffectAttempt = attempts.slice(before).find(hasSubmittedEffect) || null;
     const yieldedActionCompleted = Boolean(yieldedPending && completedConfirmationCommand(attempts.slice(before), yieldedPending));
     if (yieldedActionCompleted) pending = null;
     if (confirmationYielded && !pending && !yieldedActionCompleted) {
@@ -3469,7 +3569,9 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     const confirmationStepLimit = RETRY_BUDGET + 1;
     const stopPending = (current, note, requested = true) => {
       round.confirmation = { command: current.command, next: current.next, requested };
-      lastContent = `The action has not been submitted. Confirmation is still pending for ${current.label || "the requested action"}.`;
+      lastContent = attempts.slice(before).some(hasSubmittedEffect)
+        ? `A prior action was submitted, but confirmation is still pending for ${current.label || "the requested action"}; completion is not verified.`
+        : `The action has not been submitted. Confirmation is still pending for ${current.label || "the requested action"}.`;
       return done("needs-confirmation", attempt, note);
     };
     while (pending) {
@@ -3557,9 +3659,18 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         lastContent = "The exact confirmation command returned an error. Its completion state is unknown and was not verified; check the current state before retrying.";
         return done("needs-confirmation", attempt, "The continuation failed, so its side effect and completion state are unknown. No automatic retry was made.");
       }
-      const nextPending = lastExecutionPending || pendingConfirmation(fresh);
+      const exactSubmitted = Boolean(exactAttempt && hasSubmittedEffect(exactAttempt));
+      if (exactSubmitted) {
+        submittedEffectAttempt = exactAttempt;
+        deniedCommands = [...new Set([...deniedCommands, pending.command, pending.next, exactAttempt.command])];
+      }
+      const nextPending = lastExecutionPending || pendingConfirmation(fresh, { allowSubmitted: true });
       confirmationSteps++;
       if (nextPending) {
+        if (exactSubmitted && confirmationSignature(nextPending) === signature) {
+          pending = null;
+          break;
+        }
         if (confirmationSignature(nextPending) === signature) {
           return stopPending(nextPending, "The tool returned the same pending confirmation without advancing; no completion was verified.", !actionCheckRequired);
         }
@@ -3568,22 +3679,53 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         continue;
       }
       if (completedConfirmationCommand(fresh, pending)) {
+        submittedEffectAttempt = exactAttempt && hasSubmittedEffect(exactAttempt)
+          ? exactAttempt : fresh.find(hasSubmittedEffect) || submittedEffectAttempt;
         pending = null;
         break;
       }
-      // A read or unrelated tool call does not consume the pending action.
-      // Preserve it and give the exact continuation another bounded turn.
-      if (confirmationYielded && previousPendingSignature === signature) {
-        return stopPending(pending, "The confirmation continuation did not advance after a fresh pending result.");
+      // The dispatcher was asked to run this exact consequential command. If
+      // it returned without a fresh pending contract or explicit completion,
+      // the side effect may have happened; never repeat it to resolve the
+      // ambiguity.
+      if (!exactAttempt || !isConclusiveAttempt(exactAttempt)) {
+        lastContent = "The confirmation command returned without an explicit submission or completion result. Its effect is unknown; inspect the current state before any retry.";
+        return done("needs-confirmation", attempt, "The continuation outcome is unknown. No automatic retry was made.");
       }
+      // A conclusive read or unrelated tool result still does not consume the
+      // pending action. Preserve it for the next bounded exact dispatch.
       previousPendingSignature = signature;
       if (confirmationSteps >= confirmationStepLimit) {
         return stopPending(pending, "The bounded confirmation continuation limit was reached; no success was assumed.");
       }
     }
 
+    // A submitted effect is an acknowledgement of that operation, even when
+    // the browser workflow itself remains incomplete. Verify once through a
+    // bounded read-only command; keep the submitted tool result as evidence,
+    // and never retry the submitted operation just to collect a stronger
+    // completion label.
+    let submittedReadAttempt = null;
+    if (submittedEffectAttempt) {
+      deniedCommands = [...new Set([...deniedCommands, submittedEffectAttempt.command])];
+      const readCommand = submittedReadOnlyVerificationCommand(submittedEffectAttempt);
+      if (readCommand && typeof executeContinuation === "function") {
+        const answerBeforeRead = lastContent;
+        const readBefore = attempts.length;
+        lastContent = await runContinuation(readCommand, history, deniedCommands, false, deniedPatterns);
+        round.execute = { ...historyStats(history, messagesBefore, usageBefore), ms: Date.now() - executeStart, pushed: "submitted-read-verification" };
+        const innerStop = stopAfterExecution(attempt);
+        if (innerStop) return innerStop;
+        attempts = extractAttemptLog(history);
+        submittedReadAttempt = attempts.slice(readBefore).find(entry => entry.command === readCommand
+          && !entry.failed && isConclusiveAttempt(entry) && isReadCommand(entry.command)) || null;
+        // The read is evidence for verification, not a replacement answer.
+        lastContent = answerBeforeRead;
+      }
+    }
+
     const verifyStart = Date.now();
-    lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt));
+    lastVerdict = runVerify(options, plan, lastContent, attempts, verifyHistoryPath(history, attempt), submittedReadAttempt);
     round.verify = { ...historyStats(verifyHistoryPath(history, attempt)), ms: Date.now() - verifyStart };
     saveVerdict(history, attempt, attempts, { ...lastVerdict, ms: { execute: verifyStart - executeStart, verify: Date.now() - verifyStart } });
 
@@ -3627,7 +3769,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     lookFirst = askedWithoutLooking(lastContent, round.execute.toolCalls);
     const newlyFailed = attempts.filter(a => a.failed && !a.declined).map(a => a.command);
     // A change that already went through must not be repeated by a retry.
-    const completed = attempts.filter(a => isConclusiveAttempt(a) && isChangeCommand(a.command));
+    const completed = attempts.filter(a => (isConclusiveAttempt(a) || hasSubmittedEffect(a)) && isChangeCommand(a.command));
     const doneChanges = completed.map(a => a.command);
     deniedCommands = [...new Set([...deniedCommands, ...newlyFailed, ...doneChanges])];
     deniedPatterns = [...new Set([...deniedPatterns, ...completed.flatMap(a => changeDenyPatterns(a.command))])];

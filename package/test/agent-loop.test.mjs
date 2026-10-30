@@ -86,10 +86,12 @@ import {
   hasConfirmationActionCheckHook,
   writeCheckValuesHooksFile,
   compactResult,
+  submittedReadOnlyVerificationCommand,
   composeRunNextQuestion,
   composeNeedsConfirmationAnswer
 } from "../lib/agent-loop.mjs";
 import { scopedContinuationGuardMessage } from "../lib/check-values.mjs";
+import { authorizeAction } from "../lib/action-check.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -2660,7 +2662,7 @@ test("monitored confirmation continuations advance two pending steps before veri
     const next = "agent browser run --session 's1' --goal 'Save the selected record' --field 'confirm=yes'";
     const contracts = [
       { status: "needs-input", step: 1, confirmation: { action: "Save record", target: "record A", emptyFields: [], next } },
-      { status: "needs-input", step: 2, confirmation: { action: "Save record", target: "record A", emptyFields: [], next } }
+      { status: "needs-input", submitted: true, step: 2, confirmation: { action: "Save record", target: "record A", emptyFields: [], next } }
     ];
     const modelTurns = [];
     const dispatched = [];
@@ -2687,6 +2689,87 @@ test("monitored confirmation continuations advance two pending steps before veri
   });
 });
 
+test("a submitted but incomplete action gets one read-only verification and is not replayed", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("submitted-incomplete-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const request = "Save record R-11.";
+    const options = { ...baseOptions({ request }), hooksSupported: true, hooksFile: "normal-hooks.json" };
+    const origin = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11'";
+    const next = "agent browser run --session s-before --goal 'Save record R-11' --field 'confirm=yes'";
+    const inspect = "agent browser inspect --session s-after";
+    const dispatched = [];
+    let modelTurns = 0;
+    const outcome = await runLoop(options, history, (_question, h) => {
+      modelTurns++;
+      appendExecutionResult(h, origin, JSON.stringify({ status: "needs-input", submitted: false, session: "s-before", confirmation: {
+        action: "Save record", target: "record R-11", emptyFields: [], next
+      } }), "origin-pending");
+      return { content: "The save is awaiting its final confirmation.", stopReason: "confirmation" };
+    }, "", async (command, h, _denied, _retry, _patterns) => {
+      dispatched.push(command);
+      if (dispatched.length === 1) {
+        assert.equal(command, next, "the pending action is dispatched exactly as supplied");
+        appendExecutionResult(h, command, JSON.stringify({ status: "incomplete", submitted: true, session: "s-after", next: inspect, confirmation: {
+          action: "Save record", target: "record R-11", emptyFields: [], next
+        } }), "submitted-incomplete");
+        return "The action was submitted; the page workflow is incomplete.";
+      }
+      assert.equal(command, inspect, "after submission, only the bounded read-only handoff is dispatched");
+      assert.match(command, /--session s-after/);
+      assert.equal(options.hooksFile, "normal-hooks.json", "normal hook configuration remains in place");
+      appendExecutionResult(h, command, JSON.stringify({ status: "done", session: "s-after", finalUrl: "https://example.test/records/#/record/R-11", page: "Record R-11 is present." }), "submitted-readback");
+      return "Record R-11 is present.";
+    });
+    assert.equal(modelTurns, 1, "known submission does not request another mutation decision before read-back");
+    assert.deepEqual(dispatched, [next, inspect]);
+    assert.equal(outcome.stopped, "pass", "the verifier, not submitted=true alone, determines task completion");
+    assert.equal(extractAttemptLog(history).filter(item => item.command === next).length, 1, "the submitted operation is not repeated");
+    assert.ok(outcome.metrics.rounds[0].verify);
+  });
+});
+
+test("an unverified submission cannot replay its origin or confirmation on the next outer round", async () => {
+  const fake = planVerifyFake({ verifyStatus: "fail" });
+  const history = tmpFile("submitted-unverified-replay.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const request = "Save record R-11.";
+    const options = { ...baseOptions({ request }), packageDir: PACKAGE_DIR };
+    const origin = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11'";
+    const next = "agent browser run --session s-before --goal 'Save record R-11' --field 'confirm=yes'";
+    const inspect = "agent browser inspect --session s-after";
+    const dispatched = [];
+    let modelTurns = 0;
+    const outcome = await runLoop(options, history, (_question, h) => {
+      modelTurns++;
+      if (modelTurns === 1) {
+        appendExecutionResult(h, origin, JSON.stringify({ status: "needs-input", submitted: false, session: "s-before", confirmation: {
+          action: "Save record", target: "record R-11", emptyFields: [], next
+        } }), "outer-origin");
+        return "A confirmation is pending.";
+      }
+      const attempts = extractAttemptLog(h);
+      assert.equal(authorizeAction(options, origin, attempts, request).allow, false, "the original workflow is guarded after its submitted continuation");
+      assert.equal(authorizeAction(options, next, attempts, request).allow, false, "the submitted confirmation cannot be replayed in a later outer round");
+      return "The verification criteria remain unmet.";
+    }, "", async (command, h) => {
+      dispatched.push(command);
+      if (command === next) {
+        appendExecutionResult(h, command, JSON.stringify({ status: "incomplete", submitted: true, session: "s-after", next: inspect }), "outer-submit");
+      } else {
+        assert.equal(command, inspect);
+        appendExecutionResult(h, command, JSON.stringify({ status: "done", session: "s-after", page: "The current record is visible." }), "outer-inspect");
+      }
+      return "The command completed.";
+    });
+    assert.equal(modelTurns, 2, "the next outer attempt only rechecks failed verification; exact writes are refused before execution");
+    assert.deepEqual(dispatched, [next, inspect]);
+    assert.notEqual(outcome.stopped, "pass", "submitted=true cannot substitute for the verifier's unsupported criteria");
+    assert.match(outcome.content, /submitted action was recorded, but the requested outcome remains unverified/i);
+    assert.equal(extractAttemptLog(history).filter(item => item.command === next).length, 1);
+  });
+});
+
 test("a repeated identical pending confirmation stops without verification", async () => {
   const fake = planVerifyFake({ verifyStatus: "pass" });
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
@@ -2710,6 +2793,30 @@ test("a repeated identical pending confirmation stops without verification", asy
     assert.equal(outcome.stopped, "needs-confirmation");
     assert.equal(outcome.metrics.rounds[0].verify, undefined, "a pending action is never passed to the verifier as completed");
     assert.match(outcome.content, /has not been submitted/);
+  });
+});
+
+test("a continuation with no recorded terminal result is not automatically retried", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("missing-continuation-result.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const next = "records save --recordId item-11 --field confirm=yes";
+    let dispatches = 0;
+    const outcome = await runLoop({ ...baseOptions(), request: "Save record item-11." }, history, (_question, h) => {
+      appendExecutionResult(h, "records save --recordId item-11", JSON.stringify({ status: "needs-input", confirmation: {
+        action: "Save record", target: "record item-11", emptyFields: [], next
+      } }), "pending-before-dispatch");
+      return { content: "A confirmation is pending.", stopReason: "confirmation" };
+    }, "", async command => {
+      dispatches++;
+      assert.equal(command, next);
+      return "The dispatcher returned without a tool result.";
+    });
+    assert.equal(dispatches, 1);
+    assert.equal(outcome.stopped, "needs-confirmation");
+    assert.equal(outcome.metrics.rounds[0].verify, undefined);
+    assert.match(outcome.content, /effect is unknown/i);
+    assert.doesNotMatch(outcome.content, /has not been submitted/i);
   });
 });
 
@@ -3139,6 +3246,33 @@ test("compactResult keeps the structured confirmation contract when a long field
   assert.deepEqual(parsed.stepsText, ['select "Plan" = Pro', 'fill "Comments" = Hi']);
   assert.deepEqual(parsed.steps, ["{1 fields}", "{1 fields}"]);
   assert.equal(compactResult("plain text " + "y".repeat(900), 800).length, 800);
+});
+
+test("compactResult preserves bounded observed pre-submit state and omits sensitive controls", () => {
+  const source = JSON.stringify({ status: "incomplete", submitted: true, reason: "x".repeat(1500), preSubmitFieldState: [
+    { url: "https://example.test/form", label: "Email", context: "Contact", controlType: "email", step: 2, phase: "immediately-before-submit", status: "observed", value: "person@example.test" },
+    { url: "https://example.test/form", label: "Password", controlType: "password", phase: "immediately-before-submit", status: "observed", value: "secret" },
+    { url: "https://example.test/form", label: "Phone", controlType: "tel", phase: "immediately-before-submit", status: "unavailable", reason: "read-back-failed" }
+  ] });
+  const result = JSON.parse(compactResult(source, 1000));
+  assert.deepEqual(result.preSubmitFieldState, [
+    { url: "https://example.test/form", label: "Email", context: "Contact", controlType: "email", step: 2, phase: "immediately-before-submit", status: "observed", value: "person@example.test" },
+    { url: "https://example.test/form", label: "Phone", controlType: "tel", phase: "immediately-before-submit", status: "unavailable", reason: "read-back-failed" }
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /secret/);
+});
+
+test("submitted read verification rejects shell substitutions even inside double quotes", () => {
+  const base = { command: "records save --id item-11", completed: true, failed: false };
+  for (const next of [
+    'records inspect --query "$(touch /tmp/not-run)"',
+    'records inspect --query "`touch /tmp/not-run`"'
+  ]) {
+    assert.equal(submittedReadOnlyVerificationCommand({ ...base, source: JSON.stringify({ status: "incomplete", submitted: true, next }) }), "");
+  }
+  assert.equal(submittedReadOnlyVerificationCommand({ ...base, source: JSON.stringify({
+    status: "incomplete", submitted: true, next: "records inspect --query 'literal $(text)'"
+  }) }), "records inspect --query 'literal $(text)'");
 });
 
 test("compactResult keeps each result row's text from a list of objects", () => {

@@ -380,6 +380,43 @@ console.log(JSON.stringify({allow:true,reason:'The requested continuation is sup
   }
 });
 
+test("a submitted browser workflow is bound to its resource and operation across transient sessions", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "submitted-browser-replay-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    fs.writeFileSync(fake, `#!/usr/bin/env node\nconsole.log(JSON.stringify({allow:true,reason:'A distinct requested operation is allowed.'}));\n`, { mode: 0o755 });
+    process.env.AUX4_BIN = fake;
+    const options = { configFile: "/local.yaml", packageDir: PACKAGE_DIR };
+    const origin = "agent browser run --url 'https://example.test/records/#/record/R-11' --goal 'Save record R-11'";
+    const next = "agent browser run --session s-before --goal 'Save record R-11' --field 'confirm=yes'";
+    const submitted = "agent browser run --session s-before --goal \"Save record R-11\" --field \"confirm=yes\"";
+    const attempts = [
+      { command: origin, completed: true, failed: false, source: JSON.stringify({ status: "needs-input", confirmation: {
+        action: "Save record", target: "record R-11", emptyFields: [], next
+      } }) },
+      { command: submitted, completed: true, failed: false, source: JSON.stringify({
+        status: "incomplete", submitted: true, session: "s-after", finalUrl: "https://example.test/records/#/record/R-11"
+      }) }
+    ];
+    const sameOperationNewSession = "agent browser run --session s-after --goal 'Save record R-11' --field 'confirm=yes'";
+    const blocked = authorizeAction(options, sameOperationNewSession, attempts, "Save record R-11.");
+    assert.equal(blocked.allow, false);
+    assert.match(blocked.reason, /already submitted/);
+
+    const sameResourceFreshSession = "agent browser run --url 'https://example.test/records/#/record/R-11' --session s-unrelated --goal 'Save record R-11' --field \"confirm=yes\"";
+    assert.equal(authorizeAction(options, sameResourceFreshSession, attempts, "Save record R-11.").allow, false,
+      "a fresh transient session does not make the same resource and operation new");
+
+    const differentFragment = "agent browser run --url 'https://example.test/records/#/record/R-12' --session s-new --goal 'Save record R-11' --field 'confirm=yes'";
+    const distinct = authorizeAction(options, differentFragment, attempts, "Save record R-11.");
+    assert.equal(distinct.allow, true, "the same goal and fields on a different fragment resource is a distinct operation");
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 
 test("malformed guard replies get one bounded re-evaluation and valid denials are never retried", () => {
   const original=process.env.AUX4_BIN;

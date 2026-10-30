@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.63
+
+- Treat an explicit submitted result as an acknowledged effect even when the workflow is incomplete. Run one validated read-only follow-up when available, keep task verification separate, and block replay of the same browser operation on the same URL/resource while allowing distinct resources and actions.
+
 ## 4.1.62
 
 - Refine a discovered mock-preset service by searching its route alone, so unrelated task terms do not hide that service's commands; retain original searches and their bounded catalog merge.
