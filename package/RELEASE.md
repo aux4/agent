@@ -1,5 +1,11 @@
 # Release notes
 
+## 4.1.50
+
+- Build terminal summaries from verified state and answer criteria: preserve verified partial outcomes and verified answer facts, label failed versus unconfirmed outcomes, and omit unsupported executor claims. Fully passing answers remain unchanged.
+- Allow one continuation from a scoped operation that explicitly reports an unverified goal and a changed fresh current observation. Re-observe the current page, use fresh controls, and keep the completed operation denied so it cannot be replayed.
+- Include matched parent help alongside nested command help in command references.
+
 ## 4.1.49
 
 - Separate scoped-operation completion receipts from goal verification. Use fresh current observations to assess every state criterion, honor contradictions, and require complete source coverage before claiming absence.

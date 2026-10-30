@@ -100,12 +100,17 @@ needs more pages.
    That re-run does not go back through ai-agent's runtime ask/deny prompt, which is why only
    commands that already ran successfully, and read, qualify. A single short verifier call (no tools) then judges
    every criterion against the request, the answer, each action's raw result, and that fresh
-   read. Two criteria are always added: the answer covers every part of the request, and it
-   describes what the actions actually did. A claim in the final answer alone cannot prove that
+   read. Three criteria are always added: the answer covers every part of the request, it
+   accurately describes what the actions did, and anything sent, submitted, or saved agrees with
+   the tool results. A claim in the final answer alone cannot prove that
    something was sent, submitted, saved or changed; the write must have a successful action result
    or direct read-back evidence. With no read possible, `state` criteria are judged from the
    actions' own results; with no successful action at all, a `state` pass becomes
    `unverifiable`. A reply cut off mid-JSON is salvaged; an unparseable one is asked once more.
+   Final output is rebuilt from criterion outcomes whenever a requested state or answer-accuracy
+   criterion is not a pass: verified partial state and verified answer facts remain, failed outcomes
+   are labeled `Failed`, and unknown outcomes are `Not confirmed`. Unsupported executor prose is
+   omitted; an all-pass answer is returned unchanged.
 4. **Retry.** If anything is not a pass: when only `answer` criteria failed and any requested
    state change is supported by action evidence, the agent rewrites its answer without acting
    again; otherwise it gets the unmet criteria, the attempt log, any list of
@@ -113,7 +118,10 @@ needs more pages.
    fix the problem by acting. If an inner run stops after identical results repeat, the harness
    verifies what it has and gives a bounded retry an alternate-action hint. Failed actions, and
    changes that already went through, are denied for the retry (`--policy` `deny`), and a retry
-   runs on a 10-call tool budget.
+   runs on a 10-call tool budget. One bounded continuation is allowed when the latest relevant
+   scoped operation reports `goalVerified: false` and its fresh string `observations.current`
+   differs from `firstObserved`, with only read-only attempts after it. The agent must re-observe
+   the current page and choose fresh controls; the completed operation remains denied.
 5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
    failure with nothing new tried), the requester declining a confirmation, or a reply beginning
    with the uppercase `BLOCKED` token (an optional colon is accepted). Generated replies are
