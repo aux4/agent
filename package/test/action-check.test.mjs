@@ -204,6 +204,7 @@ console.log(JSON.stringify({allow:false,reason:'The requested action target is o
 
     const revised = authorizeAction(options, "records archive --recordId rec-18", [
       initialRead,
+      denial,
       { command: "records get --id rec-18", source: '{"id":"rec-18","status":"selected"}', completed: true, failed: false }
     ], request, "", reference);
     assert.equal(revised.allow, false);
