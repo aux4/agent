@@ -28,7 +28,8 @@ alternate-action hint. Failed actions and changes that
 already went through are denied, and retries run on a 10-call budget. It stops on a
 pass, 2 spent retries, no progress, a declined confirmation, or a reply beginning
 with the uppercase `BLOCKED` token (an optional colon is accepted), and says plainly
-what is not confirmed. Plans, verdicts and per-phase metrics (calls,
+what is not confirmed. Generated replies are instructed to use the canonical
+`BLOCKED:` form. Plans, verdicts and per-phase metrics (calls,
 tokens, wasted calls, timings) are kept next to the history (`<history>.plan.json`,
 `.verify.json`, `.metrics.json`).
 

@@ -116,7 +116,8 @@ needs more pages.
    runs on a 10-call tool budget.
 5. **Stop.** On an all-pass verdict, a spent retry budget (2 retries), no progress (the same
    failure with nothing new tried), the requester declining a confirmation, or a reply beginning
-   with the uppercase `BLOCKED` token (an optional colon is accepted)
+   with the uppercase `BLOCKED` token (an optional colon is accepted). Generated replies are
+   instructed to use the canonical `BLOCKED:` form.
    (only after the agent searched the help and any allowed-command list). Transient session IDs
    and confidence scores do not count as new results. Otherwise the answer says plainly what is
    not confirmed, and the harness label never reaches the requester.
