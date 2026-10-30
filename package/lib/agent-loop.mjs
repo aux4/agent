@@ -2614,6 +2614,11 @@ function normalizeBrowserFind(data) {
       }).sort(compareCanonicalEvidence);
     } else if (key === "actions" && Array.isArray(data.actions)) {
       normalized.actions = normalizeFindActionList(data.actions);
+    } else if (key === "next" && typeof data.next === "string") {
+      // findOutcome.Next hoists the same generated resume command as the
+      // first actionable match. Normalize only its ephemeral session handle;
+      // the actual target and remaining command arguments stay significant.
+      normalized.next = normalizeFindContinuation(data.next);
     } else {
       normalized[key] = canonicalEvidenceValue(data[key]);
     }

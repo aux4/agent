@@ -1423,11 +1423,12 @@ test("typed browser-find facts ignore ranking/session jitter, order, and previou
     score,
     location: { url: "https://example.test/orders/rec-52", selector: "#row-52", ref: 5 }
   });
-  const attempt = (matches, session, answerScore) => ({
+  const attempt = (matches, session, answerScore, nextTarget = "#row-41") => ({
     command,
     source: JSON.stringify({
       question: "find the requested order", answered: false, answerScore, session,
       sessionClosed: session === "closed", url: "https://example.test/orders",
+      next: `aux4 agent browser run --session '${session}' --goal 'cancel rec-41' --target '{"selector":"${nextTarget}","recordId":"rec-41"}'`,
       rankCalls: 3, usage: { input: 12 }, wallMs: 4, blocks: 10,
       matches
     })
@@ -1436,6 +1437,9 @@ test("typed browser-find facts ignore ranking/session jitter, order, and previou
   const jitterAndPermutation = [attempt([rowB(0.98), rowA("s2", 0.77)], "s2", 0.89)];
   assert.equal(sameReadEvidence(jitterAndPermutation, prior), true);
   assert.equal(sameReadFacts(jitterAndPermutation, prior), true);
+
+  const changedHoistedTarget = [attempt([rowA("s2")], "s2", 0.2, "#row-41-confirm")];
+  assert.equal(sameReadFacts(changedHoistedTarget, prior), false, "the hoisted continuation keeps its target significant");
 
   const subset = [attempt([rowA("s3", 0.11)], "s3", 0.09)];
   assert.equal(sameReadFacts(subset, prior), true, "a subset of rows and actions already observed is not new evidence");
@@ -1636,6 +1640,7 @@ test("runAux4Monitored refuses jittered browser-find repetitions through persist
         answerScore: [0.27, 0.29, 0.28][i],
         session: `session-${i}`,
         sessionClosed: i === 2,
+        next: `aux4 agent browser run --session 'session-${i}' --goal 'cancel rec-41' --target '{"selector":"#row-41","recordId":"rec-41"}'`,
         url: "https://example.test/orders",
         title: "Records",
         granularity: "block",
