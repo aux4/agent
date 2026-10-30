@@ -1,8 +1,9 @@
 # Release notes
 
-## Unreleased
+## 4.1.52
 
 - Anchor the bounded scoped-operation continuation to its returned session or observed URL. A per-call guard requires a successful fresh read there before any further change; the prompt excludes consumed target descriptors and confirmation values.
+- Initialize the guard sidecar as inactive when writing hook files so callers that do not enter `runLoop` retain normal command behavior.
 
 ## 4.1.51
 

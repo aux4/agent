@@ -1744,6 +1744,10 @@ export function checkValuesHooksFile(packageDir, requestFile = "", guardOptionsF
 // not the round's composed question, which also carries the harness's own criteria text.
 export function writeCheckValuesHooksFile(packageDir, history, request = "", options = null) {
   const file = `${history}.hooks.json`;
+  const scopedContinuationFile = path.resolve(`${history}.scoped-continuation.json`);
+  // Hooks may be consumed by callers outside runLoop too. Start inactive so
+  // ordinary commands are not blocked before a bounded continuation is set.
+  fs.writeFileSync(scopedContinuationFile, JSON.stringify({ active: false }), "utf8");
   // Absolute: hook steps run from a scratch directory, not the agent's own.
   const ownRequestFile = path.resolve(`${history}.request.txt`);
   fs.writeFileSync(ownRequestFile, String(request || ""));
@@ -1754,7 +1758,7 @@ export function writeCheckValuesHooksFile(packageDir, history, request = "", opt
     history: path.resolve(history),
     delegatedPrefixes: (options.delegations || []).map(d => d.via.replace(/:/g, " "))
   }, null, 2));
-  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile, guardFile, `${history}.scoped-continuation.json`), null, 2));
+  fs.writeFileSync(file, JSON.stringify(checkValuesHooksFile(packageDir, requestFile, guardFile, scopedContinuationFile), null, 2));
   return file;
 }
 
@@ -2643,7 +2647,7 @@ export async function runLoop(options, history, execute, recovery = "") {
   savePlan(history, { ...plan, ms: Date.now() - planStart });
   const metrics = { plan: { ...historyStats(planHistory), ms: Date.now() - planStart }, rounds: [] };
   const previousActionChecks = new Set(actionCheckFiles(history));
-  const scopedContinuationFile = history ? `${history}.scoped-continuation.json` : "";
+  const scopedContinuationFile = history ? path.resolve(`${history}.scoped-continuation.json`) : "";
   if (scopedContinuationFile) fs.writeFileSync(scopedContinuationFile, JSON.stringify({ active: false }), "utf8");
 
   let deniedCommands = [];

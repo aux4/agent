@@ -2673,7 +2673,7 @@ if (command.includes("loop-plan.md")) {
   process.stdout.write(JSON.stringify({ page: "Confirmation page with next control", complete: true }));
 }
 `);
-  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  const history = path.relative(process.cwd(), tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} })));
   await withAux4Bin(fake, async () => {
     let calls = 0;
     let firstCommand = "";

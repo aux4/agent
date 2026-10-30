@@ -65,16 +65,25 @@ test("the command hook blocks an invented recipient and allows recovery after a 
 test("the live tool hook requires a fresh read in the returned session before allowing changes", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoped-continuation-hook-"));
   try {
-    const history = path.join(dir, "history.json");
-    const contextFile = `${history}.scoped-continuation.json`;
+    const history = path.relative(process.cwd(), path.join(dir, "history.json"));
+    const historyAbs = path.resolve(history);
+    const contextFile = path.resolve(`${history}.scoped-continuation.json`);
     const context = { operationCallId: "op", operationCommand: "agent browser run --session s1", session: "s1", finalUrl: "https://example.test/confirm" };
+    const hooksFile = writeCheckValuesHooksFile("/pkg", history, "Continue the original request.");
+    assert.ok(fs.existsSync(path.resolve(hooksFile)));
+    const hookConfig = JSON.parse(fs.readFileSync(path.resolve(hooksFile), "utf8"));
+    const scopedPath = hookConfig.hooks[0].before[0].match(/--scopedContinuationFile '([^']+)'/)?.[1];
+    assert.equal(scopedPath, contextFile, "relative histories produce an absolute hook-sidecar path");
+    assert.deepEqual(JSON.parse(fs.readFileSync(contextFile, "utf8")), { active: false }, "hook generation starts with an inactive sidecar for non-loop callers");
+    const run = command => spawnSync(process.execPath, [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
+      "--history", historyAbs, "--command", command, "--scopedContinuationFile", contextFile], { encoding: "utf8", cwd: dir });
+    const normalMode = run("records:workspace:archive/delete --recordId r7");
+    assert.equal(normalMode.status, 0, normalMode.stdout + normalMode.stderr);
     writeHistory(history, [
       { role: "assistant_with_tool", content: { tool_calls: [{ id: "op", name: "executeAux4", args: { command: context.operationCommand } }] } },
       { role: "tool", tool_call_id: "op", name: "executeAux4", content: JSON.stringify({ status: "done", scopedOperation: { goalVerified: false }, session: "s1", finalUrl: context.finalUrl, observations: { firstObserved: "page", current: "confirm page" } }) }
     ]);
-    fs.writeFileSync(contextFile, JSON.stringify(context));
-    const run = command => spawnSync(process.execPath, [path.resolve("package/lib/check-values.mjs"), "--repeatReadGuard", "true",
-      "--history", history, "--command", command, "--scopedContinuationFile", contextFile], { encoding: "utf8" });
+    fs.writeFileSync(contextFile, JSON.stringify({ ...context, active: true }));
     const outOfSession = run("agent browser run --session s2 --goal 'continue'");
     assert.equal(outOfSession.status, 1);
     assert.match(outOfSession.stdout, /returned live session \(s1\)/);
@@ -94,6 +103,8 @@ test("the live tool hook requires a fresh read in the returned session before al
     fs.writeFileSync(history, JSON.stringify(data));
     const freshControl = run("agent browser run --session s1 --target '{\"role\":\"button\",\"name\":\"Continue\"}'");
     assert.equal(freshControl.status, 0, freshControl.stdout + freshControl.stderr);
+    const releasedNestedMutation = run("records:workspace:archive/delete --recordId r7");
+    assert.equal(releasedNestedMutation.status, 0, releasedNestedMutation.stdout + releasedNestedMutation.stderr);
     fs.writeFileSync(contextFile, JSON.stringify({ active: false }));
     const inactive = run("records:workspace:archive/delete --recordId r7");
     assert.equal(inactive.status, 0, inactive.stdout + inactive.stderr);
