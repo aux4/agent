@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.53
+
+- Add concise, bounded verifier evidence to failed or unconfirmed outcome summaries while preserving verified partial facts and suppressing unsupported executor claims.
+- Stop retries when outcomes and evidence have not changed; ignore browser-find score/session/order jitter and seen subsets while recognizing newly observed rows and action targets.
+
 ## 4.1.52
 
 - Anchor the bounded scoped-operation continuation to its returned session or observed URL. A per-call guard requires a successful fresh read there before any further change; the prompt excludes consumed target descriptors and confirmation values.

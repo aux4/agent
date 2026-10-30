@@ -131,9 +131,10 @@ needs more pages.
    failure with nothing new tried), the requester declining a confirmation, or a reply beginning
    with the uppercase `BLOCKED` token (an optional colon is accepted). Generated replies are
    instructed to use the canonical `BLOCKED:` form.
-   (only after the agent searched the help and any allowed-command list). Transient session IDs
-   and confidence scores do not count as new results. Otherwise the answer says plainly what is
-   not confirmed, and the harness label never reaches the requester.
+   (only after the agent searched the help and any allowed-command list). For structured browser
+   find results, session and score jitter, row reordering, and previously observed subsets do not
+   count as new facts; newly observed row or action-target details do. Otherwise the answer says
+   plainly what is not confirmed, and the harness label never reaches the requester.
 
 Command references include help for matched nested groups and their matched parent groups. This preserves commands listed directly by a parent service group as well as commands under a nested group, while the reference keeps its shared size and lookup limits.
 
