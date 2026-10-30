@@ -143,7 +143,7 @@ When a pending action's label uses different wording from the requested outcome,
    count as new facts; newly observed row or action-target details do. Otherwise the answer says
    plainly what is not confirmed, and the harness label never reaches the requester.
 
-Command references include help for matched nested groups and their matched parent groups. This preserves commands listed directly by a parent service group as well as commands under a nested group, while the reference keeps its shared size and lookup limits.
+Command references include help for matched nested groups and their matched parent groups. When a search result identifies a mock-preset service, the runner makes one bounded follow-up search for that service route alone, so terms from another requested capability cannot hide its commands. Original task searches still contribute to the same bounded catalog.
 
 Each run also writes `<history>.metrics.json`: model calls, tokens (input, cached, output), tool
 calls, and the calls that bought nothing (failed, repeated, help lookups, empty replies) for the

@@ -1,5 +1,9 @@
 # Release notes
 
+## 4.1.62
+
+- Refine a discovered mock-preset service by searching its route alone, so unrelated task terms do not hide that service's commands; retain original searches and their bounded catalog merge.
+
 ## 4.1.61
 
 - Check a proposed change against the requested resource and effect, not just compatible values; require email identity values in consequential command arguments to come from the request or a successful read.

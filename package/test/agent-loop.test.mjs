@@ -1278,7 +1278,7 @@ const args = process.argv.slice(2);
 const q = args[args.indexOf("--query") + 1] || "";
 const out = q === "manage the inbox"
   ? [{command:"aux4 mock preset acme inbox",description:"Configure the inbox mock."}]
-  : q.startsWith("acme inbox ")
+  : q === "acme inbox"
     ? [{command:"aux4 acme inbox list",description:"List inbox messages."}]
     : [];
 console.log(JSON.stringify(out));
@@ -1294,6 +1294,54 @@ console.log(JSON.stringify(out));
   }
 });
 
+test("findCommands refines a discovered service alone without losing original results or the lookup bound", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-service-refinement-"));
+  const bin = path.join(dir, "aux4");
+  const callsFile = path.join(dir, "queries.json");
+  fs.writeFileSync(callsFile, "[]");
+  fs.writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const query = args[args.indexOf("--query") + 1] || "";
+const callsFile = ${JSON.stringify(callsFile)};
+const calls = JSON.parse(fs.readFileSync(callsFile, "utf8"));
+calls.push(query);
+fs.writeFileSync(callsFile, JSON.stringify(calls));
+let out = [];
+if (query === "read the schedule") out = [
+  {command:"aux4 mock preset acme inbox",description:"Configure the inbox fixture."},
+  {command:"aux4 acme calendar freebusy",description:"Check free time."}
+];
+else if (query === "reply to the attendee about the selected time") out = [
+  {command:"aux4 mock preset other contacts",description:"Configure another fixture."}
+];
+else if (query === "acme inbox") out = [
+  {command:"aux4 acme inbox reply",description:"Reply to an inbox message."},
+  {command:"aux4 other contacts reply",description:"Reply through another service."}
+];
+// The former pooled query (service + unrelated task terms) intentionally
+// returns no results, reproducing the ranking failure without a model.
+console.log(JSON.stringify(out));
+`, { mode: 0o755 });
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = bin;
+  try {
+    const found = findCommands(["read the schedule", "reply to the attendee about the selected time"]);
+    const commands = found.map(item => item.command);
+    assert.ok(commands.includes("aux4 acme calendar freebusy"), "the original query still supplies the calendar capability");
+    assert.ok(commands.includes("aux4 acme inbox reply"), "service-only refinement adds the discovered service command");
+    assert.equal(commands.includes("aux4 other contacts reply"), false, "the refinement remains constrained to the discovered service prefix");
+    assert.deepEqual(JSON.parse(fs.readFileSync(callsFile, "utf8")), [
+      "read the schedule",
+      "reply to the attendee about the selected time",
+      "acme inbox"
+    ], "the original searches stay intact and only the first discovered preset gets a follow-up lookup");
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("findCommands does not promote another service from a preset service search", () => {
   const fake = makeFakeAux4(`const args = process.argv.slice(2);
 const q = args[args.indexOf('--query') + 1] || '';
@@ -1303,7 +1351,7 @@ if (q === 'check calendar for time') out = [
   {command:'aux4 google calendar events list',description:'List calendar events.'},
   {command:'aux4 google calendar freebusy',description:'Query availability.'}
 ];
-else if (q.startsWith('google calendar ')) out = [
+else if (q === 'google calendar') out = [
   {command:'aux4 google gmail send',description:'Send an email.'},
   ...Array.from({length:14}, (_, i) => ({command:'aux4 google gmail unrelated-' + i,description:'Unrelated Gmail operation.'})),
   {command:'aux4 google calendar events list',description:'List calendar events.'}

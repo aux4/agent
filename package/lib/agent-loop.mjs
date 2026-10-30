@@ -2409,15 +2409,6 @@ export function findQuery(text) {
   return String(text || "").replace(/https?:\/\/\S+/gi, "web page").trim().slice(0, 300);
 }
 
-const FIND_STOP_WORDS = new Set("a an and are as at be been but by can do does for from go had has have he her here him his how i if in into is it its me my no not of on or our she so that the their them there they this to up us was we were what when where which who why will with you your".split(" "));
-
-function compactFindTerms(queries) {
-  return [...new Set(String(queries || "").toLowerCase().match(/[a-z0-9]+/g) || [])]
-    .filter(word => !FIND_STOP_WORDS.has(word))
-    .slice(0, 24)
-    .join(" ");
-}
-
 // pkger-finder prints human-readable command rows, not JSON. Keep accepting
 // JSON too for older/local find implementations, but parse the documented
 // text form so the agent can actually receive installed command references.
@@ -2464,18 +2455,14 @@ export function findCommands(queries) {
   }
 
   // A matching mock preset names the service it configures (for example,
-  // "aux4 mock preset <service>"). Search that service plus the same task
-  // terms so the indexed setup command does not crowd out the service's actual
-  // commands. The service name is discovered from pkger results.
+  // "aux4 mock preset <service>"). Search the discovered service route alone
+  // so unrelated task terms cannot crowd out that service's actual commands.
   const presetServices = [...new Set(lists.flatMap(list => list
     .map(item => item.command.match(/^aux4 mock preset\s+(.+)$/)?.[1]?.trim())
     .filter(service => service && !/\b(?:auth|oauth|credentials?)\b/i.test(service))))].slice(0, MAX_PRESET_LOOKUPS);
-  const taskTerms = compactFindTerms([cleanQueries[0], cleanQueries.at(-1)].filter(Boolean).join(" "));
   for (const service of presetServices) {
-    // The full task terms can match unrelated packages (e.g. Gmail commands
-    // in a Calendar request). Promote only commands on the discovered service
-    // route; other search results remain eligible through their own queries.
-    search(findQuery(`${service} ${taskTerms}`), true, `aux4 ${service}`);
+    // Keep the route filter so unrelated results cannot enter this refinement.
+    search(findQuery(service), true, `aux4 ${service}`);
   }
 
   // A command that ranks well for several distinct task phrases is a better
