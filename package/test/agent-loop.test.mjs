@@ -49,6 +49,7 @@ import {
   fallbackVerdict,
   runLoop,
   runVerify,
+  retainUnchangedStateOutcome,
   requireOwnObservation,
   verifyPayload,
   salvageVerdict,
@@ -1183,6 +1184,35 @@ test("pickReadBack picks by word overlap with the state criteria, or nothing", (
   const plan = { stateCriteria: ["the Budget review meeting is cancelled on the calendar"] };
   assert.equal(pickReadBack(plan, ["x mail list", "x calendar events list", "x calendar events delete 7"]).command, "x calendar events list");
   assert.equal(pickReadBack({ stateCriteria: ["the reply is on the same thread"] }, ["x calendar events list"]).none, true);
+});
+
+test("pickReadBack binds reads to the relevant latest action context", () => {
+  const criterion = "Record R1 is removed from the records list.";
+  const plan = { stateCriteria: [criterion] };
+  const before = { tool: "executeAux4", command: "agent browser inspect --session s1", source: '{"session":"s1","text":"Record R1 is active"}' };
+  const remove = { tool: "executeAux4", command: "agent browser run --session s1 --goal remove Record R1", source: '{"status":"done","session":"s1","finalUrl":"https://app.test/confirm","scopedOperation":{"goalVerified":false}}' };
+  const after = { tool: "executeAux4", command: "agent browser inspect --session s1", source: '{"status":"done","session":"s1","finalUrl":"https://app.test/result","text":"Record R1 removed"}' };
+  const unrelatedWrite = { tool: "executeAux4", command: "calendar events update --id e9", source: '{"status":"done","updated":"Event E9"}' };
+  const unrelatedRead = { tool: "executeAux4", command: "calendar events list", source: '{"events":[{"id":"e9"}]}' };
+  const attempts = [before, remove, after, unrelatedWrite, unrelatedRead];
+  const candidates = attempts.map(a => a.command);
+  assert.equal(pickReadBack(plan, candidates, attempts).command, after.command,
+    "same-session read survives an action redirect and a later unrelated write does not invalidate it");
+
+  const wrongSession = { ...after, command: "agent browser inspect --session s2", source: '{"status":"done","session":"s2","text":"Record R1 removed"}' };
+  assert.equal(pickReadBack(plan, [wrongSession.command], [remove, wrongSession]).none, true,
+    "a read from another session cannot verify the action");
+
+  const urlAction = { tool: "executeAux4", command: "agent browser run --url https://app.test/record", source: '{"status":"done","finalUrl":"https://app.test/record"}' };
+  const urlRead = { tool: "executeAux4", command: "agent browser inspect --url https://app.test/record", source: '{"finalUrl":"https://app.test/record","text":"Record R1 removed"}' };
+  assert.equal(pickReadBack(plan, [urlRead.command], [urlAction, urlRead]).command, urlRead.command,
+    "without a session, the exact returned URL binds the readback");
+
+  const mailCriterion = "The sent mail is present in the mailbox.";
+  const mailWrite = { tool: "executeAux4", command: "mail send --to a@example.test", source: '{"id":"m1","label":"sent"}' };
+  const mailRead = { tool: "executeAux4", command: "mail get --id m1", source: '{"id":"m1","label":"sent"}' };
+  assert.equal(pickReadBack({ stateCriteria: [mailCriterion] }, [mailWrite.command, mailRead.command], [mailWrite, mailRead]).command, mailRead.command,
+    "legacy non-browser writes can still use a later successful readback");
 });
 
 test("isReadCommand needs a read verb among the command words and no change verb", () => {
@@ -4014,6 +4044,128 @@ if(command.includes("loop-verify.md")){
     const result = runVerify(baseOptions(), plan, "done", [earlierObservation, laterMutation]);
     assert.equal(result.criteria[0].status, "unverifiable", "an earlier current observation cannot be relabeled as fresh after a later mutation");
   });
+});
+
+test("answer rewrites cannot upgrade unchanged state evidence, while new facts can", async () => {
+  const state = "Record R1 is present in the records list.";
+  const answer = "The record count is 1.";
+  const fake = makeFakeAux4(`
+const args=process.argv.slice(2), command=args.join(" ");
+if(command.includes("loop-verify.md")){
+  const q=args[args.indexOf("--question")+1]||"", payload=JSON.parse(q.slice(q.indexOf("{")));
+  const corrected=payload.finalAnswer==="corrected answer";
+  process.stdout.write(JSON.stringify({results:payload.criteria.map(c=>({criterion:c.criterion,status:c.criterion===${JSON.stringify(state)}?(corrected?"pass":"unverifiable"):c.criterion===${JSON.stringify(answer)}?(corrected?"pass":"fail"):"pass",evidence:"read result assessed",basis:c.kind==="state"?"currentState":"answer",relation:"supports",claim:"other"}))}));
+} else if(command.startsWith("records list")){
+  const revision=command.includes("revision v2");
+  process.stdout.write(JSON.stringify({status:"done",session:command.includes("session s2")?"s2":"s1",timestamp:Date.now(),items:revision?[{"id":"r1","name":"R1"}]:[]}));
+}
+`);
+  const plan = { doneCriteria: [state, answer], stateCriteria: [state] };
+  const attempts = [{ tool: "executeAux4", command: "records list --session s1", source: '{"status":"done","session":"s1","timestamp":1,"items":[]}', failed: false }];
+  await withAux4Bin(fake, async () => {
+    const first = runVerify(baseOptions(), plan, "initial answer", attempts);
+    const second = runVerify(baseOptions(), plan, "corrected answer", attempts);
+    const retained = retainUnchangedStateOutcome(first, second, plan);
+    assert.equal(retained.criteria.find(c => c.criterion === state).status, "unverifiable");
+    assert.equal(retained.criteria.find(c => c.criterion === answer).status, "pass", "answer criteria may still be corrected");
+
+    const third = runVerify(baseOptions(), plan, "corrected answer", attempts);
+    const retainedAgain = retainUnchangedStateOutcome(retained, third, plan);
+    assert.equal(retainedAgain.criteria.find(c => c.criterion === state).status, "unverifiable",
+      "retained evidence metadata survives subsequent answer-only rewrites");
+
+    const metadataOnly = runVerify(baseOptions(), plan, "corrected answer", [{
+      ...attempts[0], command: "records list --session s2",
+      source: '{"status":"done","session":"s2","timestamp":999,"items":[]}'
+    }]);
+    assert.equal(retainUnchangedStateOutcome(retainedAgain, metadataOnly, plan).criteria.find(c => c.criterion === state).status, "unverifiable",
+      "session and timestamp changes do not count as new state facts");
+
+    const unrelatedCompleted = runVerify(baseOptions(), plan, "corrected answer", [{
+      tool: "executeAux4", command: "calendar events update --id E9",
+      source: '{"status":"done","goal":"Update event E9","scopedOperation":{"goalVerified":true}}'
+    }]);
+    assert.equal(retainUnchangedStateOutcome(retainedAgain, unrelatedCompleted, plan).criteria.find(c => c.criterion === state).status, "unverifiable",
+      "a completed operation with a different structured goal cannot upgrade this state criterion");
+
+    const verifiedState = "Record R1 was deleted.";
+    const verifiedPlan = { goal: verifiedState, doneCriteria: [verifiedState], stateCriteria: [verifiedState] };
+    const verifiedReceipt = { tool: "executeAux4", command: "records delete --id R1", source: JSON.stringify({
+      status: "done", goal: verifiedState, scopedOperation: { goalVerified: true }
+    }) };
+    const receiptFake = makeFakeAux4(`
+const args=process.argv.slice(2), command=args.join(" ");
+if(command.includes("loop-verify.md")){
+  const q=args[args.indexOf("--question")+1]||"", payload=JSON.parse(q.slice(q.indexOf("{")));
+  const pass=payload.finalAnswer==="corrected answer";
+  process.stdout.write(JSON.stringify({results:payload.criteria.map(c=>({criterion:c.criterion,status:pass?"pass":"unverifiable",evidence:"goal-specific completion result",basis:"actionResult",relation:"supports",claim:"other"}))}));
+}
+`);
+    await withAux4Bin(receiptFake, async () => {
+      const unverifiedReceipt = { ...verifiedReceipt, source: JSON.stringify({
+        status: "done", goal: verifiedState, scopedOperation: { goalVerified: false }
+      }) };
+      const stillUnknown = runVerify(baseOptions(), verifiedPlan, "initial answer", [unverifiedReceipt]);
+      const completedAfter = runVerify(baseOptions(), verifiedPlan, "corrected answer", [verifiedReceipt]);
+      assert.equal(completedAfter.criteria.find(c => c.criterion === verifiedState).status, "pass", "the explicit goal-linked receipt is assessable by the verifier");
+      assert.equal(retainUnchangedStateOutcome(stillUnknown, completedAfter, verifiedPlan).criteria.find(c => c.criterion === verifiedState).status, "pass",
+        "a new explicit completion receipt linked to the criterion can establish the state");
+      const initialUnknown = runVerify(baseOptions(), verifiedPlan, "initial answer", [verifiedReceipt]);
+      const duplicateReceipts = runVerify(baseOptions(), verifiedPlan, "corrected answer", [verifiedReceipt, { ...verifiedReceipt }]);
+      assert.equal(retainUnchangedStateOutcome(initialUnknown, duplicateReceipts, verifiedPlan).criteria.find(c => c.criterion === verifiedState).status, "unverifiable",
+        "duplicating an unchanged authoritative receipt cannot upgrade a nonpassing verdict");
+    });
+
+    const changedAttempt = [{ ...attempts[0], command: "records list --revision v2", source: '{"status":"done","session":"s2","timestamp":2,"items":[{"id":"r1","name":"R1"}]}' }];
+    const changed = runVerify(baseOptions(), plan, "corrected answer", changedAttempt);
+    assert.equal(retainUnchangedStateOutcome(retained, changed, plan).criteria.find(c => c.criterion === state).status, "pass",
+      "a substantive new observation may change the state verdict");
+  });
+});
+
+test("a supplied pre-write read from another session is not treated as fresh", async () => {
+  const criterion = "Record R1 is deleted.";
+  const plan = { doneCriteria: [criterion], stateCriteria: [criterion] };
+  const fake = makeFakeAux4(`
+const args=process.argv.slice(2), command=args.join(" ");
+if(command.includes("loop-verify.md")){
+  const q=args[args.indexOf("--question")+1]||"", payload=JSON.parse(q.slice(q.indexOf("{")));
+  process.stdout.write(JSON.stringify({results:payload.criteria.map(c=>({criterion:c.criterion,status:"pass",evidence:"evaluated",basis:payload.currentState?"currentState":"actionResult",relation:"supports",claim:"other"}))}));
+}
+`);
+  const staleRead = { tool: "executeAux4", command: "agent browser inspect --session old", source: '{"session":"old","text":"Record R1 is active"}' };
+  const laterWrite = { tool: "executeAux4", command: "agent browser run --session fresh --goal delete R1", source: '{"status":"done","session":"fresh","finalUrl":"https://app.test/confirm","scopedOperation":{"goalVerified":false}}' };
+  await withAux4Bin(fake, async () => {
+    const result = runVerify(baseOptions(), plan, "done", [staleRead, laterWrite], "", staleRead);
+    assert.deepEqual(result.checks, [], "the pre-write read is not included in currentState");
+    assert.equal(result.criteria[0].status, "unverifiable");
+  });
+});
+
+test("only authoritative completed action evidence can replace an unchanged state assessment", async () => {
+  const criterion = "Record R1 was deleted.";
+  const plan = { doneCriteria: [criterion], stateCriteria: [criterion] };
+  const assessedPass = { overall: "pass", criteria: [{ criterion, status: "pass", basis: "actionResult", relation: "supports" }] };
+  const attempt = source => [{ tool: "executeAux4", command: "records delete --id R1", source }];
+  const incomplete = applyExecutionProof(assessedPass, plan, attempt('{"status":"incomplete","submitted":true,"preSubmitFieldState":{"checked":true}}'));
+  assert.equal(incomplete.criteria[0].status, "unverifiable", "submission and pre-submit values do not prove persistence");
+  const falseReceipt = applyExecutionProof(assessedPass, plan, attempt('{"status":"done","success":true,"scopedOperation":{"goalVerified":false}}'));
+  assert.equal(falseReceipt.criteria[0].status, "unverifiable", "a generic success flag cannot override goalVerified:false");
+  const unrelatedLaterCompletion = applyExecutionProof(assessedPass, plan, [
+    ...attempt('{"status":"done","scopedOperation":{"goalVerified":false}}'),
+    { tool: "executeAux4", command: "calendar events update --id E9", source: '{"status":"done","goal":"Update event E9","scopedOperation":{"goalVerified":true}}' }
+  ]);
+  assert.equal(unrelatedLaterCompletion.criteria[0].status, "unverifiable", "a later unrelated completion cannot override an earlier explicit unverified receipt");
+  const genericSuccess = applyExecutionProof(assessedPass, plan, attempt('{"status":"done","success":true}'));
+  assert.equal(genericSuccess.criteria[0].status, "unverifiable", "success:true alone is not an authoritative completion receipt");
+  const substantiveSuccess = applyExecutionProof(assessedPass, plan, attempt('{"status":"done","success":true,"deleted":{"id":"R1"}}'));
+  assert.equal(substantiveSuccess.criteria[0].status, "pass", "success plus substantive outcome fields remains assessable");
+  const preSubmitOnly = applyExecutionProof({ overall: "pass", criteria: [{ criterion, status: "pass", basis: "currentState", relation: "supports" }] }, plan, [], {
+    source: '{"preSubmitFieldState":{"values":{"name":"R1"}}}'
+  });
+  assert.equal(preSubmitOnly.criteria[0].status, "unverifiable", "pre-submit field snapshots do not prove persisted state");
+  const explicit = applyExecutionProof(assessedPass, plan, attempt('{"status":"done","scopedOperation":{"goalVerified":true}}'));
+  assert.equal(explicit.criteria[0].status, "pass", "explicit goal-level completion remains eligible");
 });
 
 

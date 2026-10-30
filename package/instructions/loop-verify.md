@@ -15,10 +15,12 @@ Judge each criterion by its kind:
 - `state`: the raw results come from before or during the work, so they do
   not prove the current state. When `currentState` is given, it was read just
   now, after the work: judge from it. Otherwise judge from the actions' own
-  results (a send or change that returned success did happen; one that
-  returned an error did not). A final answer saying that something was sent,
-  submitted, saved or changed is not evidence that it happened. Require a
-  successful action result or a later read that directly confirms the state.
+  results. An explicit `goalVerified: true` result can confirm its stated goal;
+  a generic `success: true` flag, a submission acknowledgement, or an
+  incomplete workflow cannot prove persisted state by itself. A final answer
+  saying that something was sent, submitted, saved or changed is not evidence
+  that it happened. Require a conclusive action result or a later read that
+  directly confirms the state.
   A successful lookup, a promise to act, or a tool call that only prepared a
   form does not prove a requested write happened.
   Visible checked boxes or filled inputs prove the current form values, not
@@ -62,6 +64,12 @@ A contradiction in fresh currentState overrides an earlier successful receipt.
 Keep evidence concise; it need not be an exact quote. These annotations help
 the harness reduce the assessment but are not guarantees that the interpretation
 is true.
+
+Do not upgrade a state criterion solely because the final answer was rewritten.
+If the current facts and any authoritative completion evidence are unchanged,
+keep the same nonpassing state assessment. A new substantive observation or an
+explicit completion receipt for the stated goal may change it. Answer criteria
+can still be corrected from the recorded facts.
 
 If a completed scoped operation reports `goalVerified: false` and the harness
 offers one continuation, treat it as an intermediate operation result, not task
