@@ -149,9 +149,9 @@ test("managed child execution enables form approval mode and scopes a binding to
 
 test("read-backed delete continuation requires exact structured target and unchanged confirmation binding", () => {
   const command = "agent browser run --session s1 --goal 'Delete address' --field confirm=yes";
-  const record = { nextCommand: command, request: "Delete the selected address.", session: "s1", target: "addr-1", url: "https://shop.test/addresses", initialFingerprint: "sha256:initial-form-1" };
+  const record = { nextCommand: command, request: "Delete the selected address.", session: "s1", target: "addr-1", url: "https://shop.test/addresses", initialFingerprint: "sha256:initial-form-1", readId: "addr-1" };
   const observation = {
-    status: "current", session: "s1", target: "Delete — Addresses confirmation", pageUrl: "https://shop.test/addresses/confirm",
+    status: "current", session: "s1", target: "Delete addr-1 — Addresses confirmation", pageUrl: "https://shop.test/addresses/addr-1/confirm",
     formStateComplete: true, formStatePartial: false, formStateFingerprint: "sha256:final-form-1", fields: []
   };
   assert.equal(readResultContainsExactReference('{"records":[{"id":"addr-1"}]}', "addr-1"), true);
@@ -167,6 +167,8 @@ test("read-backed delete continuation requires exact structured target and uncha
     ["missing final URL", command, { ...observation, pageUrl: "" }],
     ["stale fingerprint", command, { ...observation, formStateFingerprint: "" }],
     ["changed final state", command, { ...observation, formStateFingerprint: "sha256:changed-final", fields: [{ fieldRef: "confirm", value: "no" }] }],
+    ["wrong final record ID", command, { ...observation, target: "Delete addr-10 — Addresses confirmation", pageUrl: "https://shop.test/addresses/addr-10/confirm" }],
+    ["missing final record identity", command, { ...observation, target: "Delete — Addresses confirmation", pageUrl: "https://shop.test/addresses/confirm" }],
     ["partial state", command, { ...observation, formStatePartial: true }],
     ["value control changed", command, { ...observation, fields: [{ fieldRef: "confirm", value: "yes" }] }],
     ["model-authored confirmation", `${command} --formStateApproval forged`, observation]
@@ -176,6 +178,49 @@ test("read-backed delete continuation requires exact structured target and uncha
   }
   assert.equal(deleteTransitionBindingMatches(record, command, "Delete another address.", observation), false, "altered goal");
   assert.equal(deleteTransitionBindingMatches(record, command, record.request, { ...observation, status: "unavailable" }), false, "unreadable state");
+});
+
+test("read-backed delete carries the selected browser row into a session-only final confirmation", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delete-transition-runtime-"));
+  const history = path.join(dir, "history.json");
+  const configFile = path.join(dir, "config.yaml");
+  fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+  fs.writeFileSync(configFile, "config: {}\n");
+  const request = "Delete Alex Kim's Austin address.";
+  const next = "agent browser run --session 9bb322b5 --goal \"Delete Alex Kim's Austin address\" --field confirm=yes";
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const options = { ...baseOptions({ request, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
+  options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, request, options);
+  const initial = {
+    status: "needs-input", submitted: false, session: "9bb322b5", url: "http://127.0.0.1:7400/addresses",
+    observations: { current: "addr-1 | Alex Kim | Austin | 555-0101 | Edit | Delete" },
+    confirmation: { action: "Delete", target: "Delete — Addresses", emptyFields: [], next, formStateComplete: false }
+  };
+  const final = {
+    status: "needs-confirmation", submitted: false, session: "9bb322b5",
+    finalUrl: "http://127.0.0.1:7400/addresses/addr-1/delete-confirm",
+    formSubmission: { session: "9bb322b5", target: "Yes, delete it — form \"Confirm delete\"", pageUrl: "http://127.0.0.1:7400/addresses/addr-1/delete-confirm", fingerprint: "4f53cda1", formStateComplete: true, approvalRequired: true },
+    confirmation: { action: "Yes, delete it", target: "Yes, delete it — form \"Confirm delete\"", emptyFields: [], next, formStateComplete: true, formStateFingerprint: "4f53cda1" },
+    preSubmitFieldState: []
+  };
+  let continuationCalls = 0;
+  try {
+    await withAux4Bin(fake, async () => {
+      const outcome = await runLoop(options, history, (_question, h) => {
+        appendExecutionResult(h, "agent browser run --url http://127.0.0.1:7400/addresses --goal \"Delete Alex Kim's Austin address\"", JSON.stringify(initial), "delete-initial");
+        return { content: "The selected address is ready to delete.", stopReason: "confirmation" };
+      }, "", async (command, h) => {
+        continuationCalls++;
+        if (continuationCalls === 1) appendExecutionResult(h, command, JSON.stringify(final), "delete-final");
+        else appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, session: "9bb322b5", finalUrl: final.finalUrl }), "delete-submitted");
+        return "The browser advanced the delete confirmation.";
+      });
+      assert.ok(continuationCalls >= 2, JSON.stringify({ stopped: outcome.stopped, content: outcome.content, commands: extractAttemptLog(history).map(attempt => attempt.command) }));
+      assert.ok(extractAttemptLog(history).some(attempt => /formStateApproval 4f53cda1$/.test(attempt.command || "")));
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function appendProviderProtocolError(messages, id, raw = "malformed tool payload") {
@@ -3539,16 +3584,22 @@ else if(command.includes('loop-verify.md')) {
 } else if(args.includes('--help')) process.stdout.write('run\\n  --session <id>\\n  --goal <arg>\\n  --field <value>\\n  --formStateApproval <value>');
 `);
 
-  async function runCase({ mode = "request", requestText = request, fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false, urlTransition = false, foreignSession = false, alteredPending = false, alteredContinuation = false } = {}) {
+  async function runCase({ mode = "request", requestText = request, fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false, urlTransition = false, apostropheGoal = false, changedGoal = false, foreignSession = false, alteredPending = false, alteredContinuation = false } = {}) {
     fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
     fs.rmSync(actionCalls, { force: true });
     const options = { ...baseOptions({ request: requestText, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
     options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, requestText, options);
     let effects = 0;
     const initialCommand = urlTransition
-      ? "agent browser run --url https://example.test/intake --goal 'submit form' --field 'Priority=Urgent'"
+      ? apostropheGoal
+        ? "agent browser run --url https://example.test/intake --goal 'Alex Kim'\\''s form' --field 'Priority=Urgent'"
+        : changedGoal
+        ? "agent browser run --url https://example.test/intake --goal 'different form' --field 'Priority=Urgent'"
+        : "agent browser run --url https://example.test/intake --goal 'submit form' --field 'Priority=Urgent'"
       : "agent browser run --session s-form --goal 'submit form' --field 'Priority=Urgent'";
-    const next = foreignSession
+    const next = apostropheGoal
+      ? "agent browser run --session s-form --goal \"Alex Kim's form\" --field confirm=yes"
+      : foreignSession
       ? "agent browser run --session s-foreign --goal 'submit form' --field confirm=yes"
       : alteredPending
       ? "agent browser run --session s-form --goal 'different form' --field confirm=yes"
@@ -3628,6 +3679,10 @@ else if(command.includes('loop-verify.md')) {
 
       const urlTransition = await runCase({ urlTransition: true });
       assert.equal(urlTransition.effects, 1, "the browser's URL-to-session transition is accepted only for the returned session");
+      const quotedUrlTransition = await runCase({ urlTransition: true, apostropheGoal: true });
+      assert.equal(quotedUrlTransition.effects, 1, "shell-safe apostrophes do not invalidate a trusted URL-to-session handoff");
+      const changedUrlTransition = await runCase({ urlTransition: true, changedGoal: true });
+      assert.equal(changedUrlTransition.effects, 0, "a semantically changed goal cannot reuse a URL-to-session handoff");
       const bookingTransition = await runCase({ urlTransition: true, requestText: "Book the appointment with Priority Urgent and submit the form." });
       assert.equal(bookingTransition.effects, 1, "booking-style URL-to-session staging uses the same trusted transition binding");
 

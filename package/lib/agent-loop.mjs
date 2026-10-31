@@ -2531,6 +2531,12 @@ export function readResultContainsExactReference(source, reference) {
   return Boolean(reference) && structuredReferenceValues(source).includes(String(reference));
 }
 
+function exactReferenceInMetadata(reference, ...metadata) {
+  if (!reference) return false;
+  const escaped = String(reference).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return metadata.some(value => new RegExp(`(?:^|[^A-Za-z0-9_-])${escaped}(?:$|[^A-Za-z0-9_-])`).test(String(value || "")));
+}
+
 export function deleteTransitionBindingMatches(record, command, request, observation) {
   if (!record || record.request !== request || !sameConfirmationCommand(record.nextCommand, command)) return false;
   if (record.session && record.session !== commandOptionValue(command, "--session")) return false;
@@ -2549,6 +2555,7 @@ export function deleteTransitionBindingMatches(record, command, request, observa
     && observation.target.length > 0
     && typeof observation.pageUrl === "string"
     && observation.pageUrl.length > 0
+    && (!record.readId || exactReferenceInMetadata(record.readId, observation.target, observation.pageUrl))
     && typeof observation.formStateFingerprint === "string"
     && observation.formStateFingerprint.length > 0
     && Array.isArray(observation.fields)
@@ -4675,6 +4682,64 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         return targets.every(target => readResultContainsExactReference(source, target));
       });
     };
+    const readBackIdForMetadata = (availableAttempts, target, url) => {
+      const candidates = new Set();
+      for (const entry of availableAttempts) {
+        if (entry.failed || entry.completed === false || !isReadCommand(entry.command) || !isConclusiveAttempt(entry)) continue;
+        for (const value of structuredReferenceValues(String(entry.source ?? entry.result ?? ""))) {
+          if (exactReferenceInMetadata(value, target, url)) candidates.add(value);
+        }
+      }
+      return candidates.size === 1 ? [...candidates][0] : "";
+    };
+    const browserRecordIdForRequest = (availableAttempts, request) => {
+      const ignored = new Set(["delete", "remove", "address", "addresses", "the", "a", "an", "my", "at", "for", "from", "use", "only", "and"]);
+      const terms = [...new Set(String(request || "").toLowerCase().match(/[a-z0-9]+/g) || [])]
+        .filter(term => term.length > 2 && !ignored.has(term));
+      const candidates = new Set();
+      const visit = value => {
+        if (typeof value === "string") {
+          const lower = value.toLowerCase();
+          if (terms.every(term => lower.includes(term))) {
+            for (const match of value.matchAll(/\b[A-Za-z][A-Za-z0-9_-]*-\d+\b/g)) candidates.add(match[0]);
+          }
+          return;
+        }
+        if (Array.isArray(value)) { for (const item of value) visit(item); return; }
+        if (value && typeof value === "object") {
+          const strings = Object.values(value).filter(item => typeof item === "string");
+          const combined = strings.join(" | ").toLowerCase();
+          if (terms.every(term => combined.includes(term))) {
+            for (const item of strings) for (const match of item.matchAll(/\b[A-Za-z][A-Za-z0-9_-]*-\d+\b/g)) candidates.add(match[0]);
+          }
+          for (const item of Object.values(value)) visit(item);
+        }
+      };
+      for (const entry of availableAttempts) {
+        if (entry.failed || entry.completed === false) continue;
+        const path = (commandWords(entry.command) || []).slice(0, 3).join(" ").toLowerCase();
+        if (path !== "agent browser run" && path !== "agent browser inspect") continue;
+        const result = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
+        const pendingObservation = result?.confirmation?.next && (result?.observations || result?.page || result?.blocks || result?.records);
+        if (!isConclusiveAttempt(entry) && !pendingObservation) continue;
+        visit(result);
+      }
+      return candidates.size === 1 ? [...candidates][0] : "";
+    };
+    const trustedPendingMetadata = (command, availableAttempts) => {
+      const key = JSON.stringify(commandWords(command) || []);
+      for (const entry of [...availableAttempts].reverse()) {
+        if (entry.failed || entry.completed === false) continue;
+        const result = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
+        if (!result || JSON.stringify(commandWords(result.confirmation?.next) || []) !== key) continue;
+        const submission = result.formSubmission && typeof result.formSubmission === "object" ? result.formSubmission : {};
+        const session = String(submission.session || result.session || "").trim();
+        const pageUrl = String(submission.pageUrl || result.finalUrl || result.url || result.needsInput?.page?.url || "").trim();
+        const target = String(submission.target || result.confirmation?.target || "").trim();
+        if (session && pageUrl && target) return { session, pageUrl, target, formStateFingerprint: String(submission.fingerprint || result.confirmation?.formStateFingerprint || "").trim() };
+      }
+      return null;
+    };
     const commandOption = (command, name) => {
       const words = commandWords(command) || [];
       const index = words.indexOf(name);
@@ -4730,12 +4795,16 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const formObservation = pendingBrowserFieldObservation(pending.next, attempts);
       const formApprovalRequired = formObservation?.approvalRequired === true;
       const actionCheckRequired = formApprovalRequired || !isClearlyRequestedAction(pending.label, options.request);
+      const trustedTransitionObservation = formObservation?.status === "current"
+        ? formObservation : trustedPendingMetadata(pending.next, attempts);
       if (!formApprovalRequired && deleteAction(pending.label)
         && isClearlyRequestedAction(pending.label, options.request)
-        && hasReadBackTarget(pending.next, attempts)
-        && formObservation?.status === "current"
-        && formObservation.target
-        && formObservation.pageUrl) {
+        && (hasReadBackTarget(pending.next, attempts)
+          || (trustedTransitionObservation
+            && (readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl)
+              || browserRecordIdForRequest(attempts, options.request))))
+        && trustedTransitionObservation?.target
+        && trustedTransitionObservation?.pageUrl) {
         deleteTransitionRecord = {
           command: pending.next,
           request: options.request,
@@ -4744,9 +4813,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           // Session-only browser continuations are common.  These identity
           // values come only from the browser's complete staged metadata;
           // command text and model prose are never accepted as substitutes.
-          target: formObservation.target,
-          url: formObservation.pageUrl,
-          initialFingerprint: formObservation?.formStateFingerprint || "",
+          target: trustedTransitionObservation.target,
+          url: trustedTransitionObservation.pageUrl,
+          initialFingerprint: trustedTransitionObservation.formStateFingerprint || "",
+          readId: readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl)
+            || browserRecordIdForRequest(attempts, options.request),
           nextCommand: ""
         };
       }
@@ -4798,6 +4869,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
               .map(entry => `${entry.label}\u0000${entry.value}`).sort();
             return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session"), fields };
           };
+          const canonicalGoal = value => String(value || "").normalize("NFKC")
+            .replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
           const currentIdentity = actionIdentity(pending.next);
           if (!sameAction || revalidated?.allow !== true
             || currentIdentity.goal !== record.pendingIdentity.goal
@@ -4836,6 +4909,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
               .map(entry => `${entry.label}\u0000${entry.value}`).sort();
             return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session"), fields };
           };
+          const canonicalGoal = value => String(value || "").normalize("NFKC")
+            .replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
           const stagedIdentity = actionIdentity(stagedCommand);
           const pendingIdentity = actionIdentity(pending.next);
           const stagedResult = stagedAttempt ? parseJSONLoose(String(stagedAttempt.source ?? stagedAttempt.result ?? ""), null) : null;
@@ -4849,7 +4924,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
             && formObservation.session === returnedSession
             && formObservation.pageUrl === returnedPageUrl);
           const sameSession = stagedIdentity.session === pendingIdentity.session || urlToSession;
-          if (stagedAttempt && (stagedIdentity.goal !== pendingIdentity.goal
+          if (stagedAttempt && (canonicalGoal(stagedIdentity.goal) !== canonicalGoal(pendingIdentity.goal)
             || !sameSession
             || (stagedIdentity.url !== pendingIdentity.url && !urlToSession))) {
             round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
