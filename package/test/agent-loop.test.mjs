@@ -3528,6 +3528,14 @@ else if(command.includes('loop-verify.md')) {
       return { content: "The form is ready for submission.", stopReason: "confirmation" };
     }, "", async (command, h, _denied, _retry, _patterns, binding) => {
       const isFormDispatch = command.includes("--formStateApproval");
+      if (isFormDispatch) {
+        // ai-agent writes the current controller tool call before invoking
+        // before-hooks. Keep that live, result-less call in the fixture so
+        // approval binding is tested against the real history shape.
+        const live = JSON.parse(fs.readFileSync(h, "utf8"));
+        live.messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: "live-confirmation", name: "executeAux4", args: { command } }] } });
+        fs.writeFileSync(h, JSON.stringify(live));
+      }
       if (!isFormDispatch) {
         appendExecutionResult(h, command, JSON.stringify({ status: "ok", session: "s-form", url: "https://example.test/intake", text: "Submission result" }), "verify-form");
         return "The current page was inspected.";

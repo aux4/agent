@@ -444,7 +444,11 @@ export function pendingBrowserFieldObservation(command, attempts) {
   let pending = null;
   let latestBrowserRun = -1;
   for (let i = attempts.length - 1; i >= 0; i--) {
-    if (browserRunParts(attempts[i]?.command || "")) { latestBrowserRun = i; break; }
+    // The live ai-agent history records the controller's current tool call
+    // before its before-hooks run.  That call is incomplete and must not
+    // shadow the completed staged operation whose confirmation it carries.
+    if (!attempts[i]?.failed && attempts[i]?.completed !== false
+      && browserRunParts(attempts[i]?.command || "")) { latestBrowserRun = i; break; }
   }
   for (let i = attempts.length - 1; i >= 0; i--) {
     const attempt = attempts[i];
@@ -619,7 +623,8 @@ export function isTrustedFormApprovalDispatch(command, attempts, binding) {
     const next = result?.confirmation?.next;
     if (typeof next !== "string" || JSON.stringify(formDispatchWords(next)) !== JSON.stringify(originalWords)) continue;
     const latestBrowserRun = attempts.reduce((latest, candidate, candidateIndex) =>
-      browserRunParts(candidate?.command || "") ? candidateIndex : latest, -1);
+      (!candidate?.failed && candidate?.completed !== false && browserRunParts(candidate?.command || ""))
+        ? candidateIndex : latest, -1);
     if (index !== latestBrowserRun || attempts.slice(index + 1).some(later =>
       !later.failed && later.completed !== false && isChangeCommand(later.command || ""))) return false;
     const observed = pendingBrowserFieldObservation(next, attempts);

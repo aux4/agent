@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { authorizeAction, actionCheckFiles, actionCheckStats, buildTrustedLiteralSubmissionAssessment, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
+import { authorizeAction, actionCheckFiles, actionCheckStats, buildTrustedLiteralSubmissionAssessment, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, pendingBrowserFieldObservation, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
 import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -84,6 +84,27 @@ test("controller literal assessment is created only from request-backed staged v
     ambiguous,
     "Fill Name with Priya and submit the form."
   ), null, "an ambiguous short label cannot select first versus last name");
+});
+
+test("trusted form dispatch ignores the live incomplete controller call in hook history", () => {
+  const pendingCommand = "agent browser run --session s-form --goal 'submit form' --field confirm=yes";
+  const stagedCommand = "agent browser run --url https://example.test/form --goal 'submit form' --field 'Priority=Urgent'";
+  const stagedResult = {
+    status: "needs-input", submitted: false,
+    confirmation: { next: pendingCommand, target: "target-1", formStateFingerprint: "sha256:form-1", formStateComplete: true },
+    formSubmission: { session: "s-form", target: "target-1", pageUrl: "https://example.test/form", fingerprint: "sha256:form-1", formStateComplete: true, partial: false, approvalRequired: true },
+    preSubmitFieldState: [{ fieldRef: "field-priority", label: "Priority", value: "Urgent", context: "form Intake", controlType: "text", origin: "goal-derived", changed: true, required: true, empty: false, status: "observed", phase: "before-confirmation", url: "https://example.test/form" }]
+  };
+  const attempts = [
+    { command: stagedCommand, completed: true, failed: false, source: JSON.stringify(stagedResult) },
+    { command: `aux4 ${pendingCommand}`, completed: false, failed: false, source: "" }
+  ];
+  const observed = pendingBrowserFieldObservation(pendingCommand, attempts);
+  assert.equal(observed.status, "current");
+  observed.approvalRequired = true;
+  const dispatch = createFormApprovalDispatch(pendingCommand, observed);
+  assert.ok(dispatch);
+  assert.equal(isTrustedFormApprovalDispatch(dispatch.command, attempts, dispatch.binding), true);
 });
 
 test("typed form assessment verifies an exact request anchor against the bound observed control", () => {
