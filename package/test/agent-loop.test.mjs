@@ -48,6 +48,9 @@ import {
   freshScopedContinuation,
   freshScopedReadAttempt,
   hasFreshReadEvidence,
+  analyzeBoundedDetailRead,
+  composeBoundedDetailReadChoiceQuestion,
+  parseBoundedDetailReadChoice,
   resolveBoundedDetailRead,
   composeExecuteQuestion,
   incompleteNote,
@@ -5285,6 +5288,25 @@ test("bounded detail-read resolver fails closed without exact help metadata or p
   assert.equal(resolveBoundedDetailRead(lookup, [], new Set(), '{"allow":["records *"]}'), null);
   assert.equal(resolveBoundedDetailRead({ command: lookup.command, source: '{"records":[]}' }, [], new Set(["records get"]), '{"allow":["records *"]}'), null);
   assert.equal(resolveBoundedDetailRead(lookup, [lookup], new Set(["records get"]), '{"allow":["records *"]}'), null);
+});
+
+test("bounded detail-route chooser accepts only a frozen candidate index", () => {
+  const candidates = [
+    { index: 0, leaf: "records get", selector: "recordId", help: "read one record" },
+    { index: 1, leaf: "records attachments", selector: "recordId", help: "read attachments" }
+  ];
+  assert.equal(parseBoundedDetailReadChoice('{"index":1}', candidates), candidates[1]);
+  assert.equal(parseBoundedDetailReadChoice('{"index":1,"leaf":"evil"}', candidates), null);
+  assert.equal(parseBoundedDetailReadChoice('{"index":0} trailing route records delete', candidates), null);
+  assert.equal(parseBoundedDetailReadChoice('{"index":-1}', candidates), null);
+  const question = composeBoundedDetailReadChoiceQuestion(
+    "find the requested record detail", "the priority is still missing",
+    { reference: { name: "id", value: "r7" }, candidates }
+  );
+  assert.match(question, /Original request: find the requested record detail/);
+  assert.match(question, /Missing fact: the priority is still missing/);
+  assert.match(question, /records attachments/);
+  assert.doesNotMatch(question, /message body|arbitrary text/i);
 });
 
 test("runLoop takes at most one fresh scoped continuation and does not replay the completed command", async () => {

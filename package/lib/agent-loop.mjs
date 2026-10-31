@@ -861,7 +861,7 @@ export function changeDenyPatterns(command) {
 // An allowlist, not a denylist: a command is re-run only when one of its
 // command words (before the first flag) is a read verb and none is a change
 // verb. A change verb nobody listed then simply means "not re-run".
-const READ_VERB = new Set(["get", "list", "show", "view", "read", "find", "search", "describe", "fetch", "status", "count", "info", "inspect", "query", "freebusy", "ls", "cat"]);
+const READ_VERB = new Set(["get", "list", "show", "view", "read", "find", "search", "describe", "fetch", "status", "count", "info", "inspect", "query", "freebusy", "ls", "cat", "detail", "details", "attachments"]);
 
 export function isReadCommand(command) {
   if (!command || isChangeCommand(command)) return false;
@@ -3389,7 +3389,7 @@ function documentedSiblingLeaves(lookupCommand) {
   return [];
 }
 
-export function resolveBoundedDetailRead(lookupAttempt, priorAttempts, catalogCommands, permissionsJSON) {
+export function analyzeBoundedDetailRead(lookupAttempt, priorAttempts, catalogCommands, permissionsJSON) {
   const output = parseJSONLoose(lookupAttempt?.source ?? lookupAttempt?.result, null);
   if (!output || typeof output !== "object" || Array.isArray(output)) return null;
   const references = structuredReferenceSlots(output);
@@ -3427,18 +3427,66 @@ export function resolveBoundedDetailRead(lookupAttempt, priorAttempts, catalogCo
       const selectors = [...String(help || "").matchAll(/--([A-Za-z][A-Za-z0-9_-]*Id)\b/g)].map(match => match[1]);
       return selectors.length === 1;
     });
-    if (leafCandidates.length !== 1) return null;
-    const leaf = leafCandidates[0];
-    const help = commandHelp(`aux4 ${leaf}`);
-    const selector = [...String(help || "").matchAll(/--([A-Za-z][A-Za-z0-9_-]*Id)\b/g)][0]?.[1];
-    if (!selector) return null;
+    const analyzed = leafCandidates.map(leaf => {
+      const help = commandHelp(`aux4 ${leaf}`);
+      const selector = [...String(help || "").matchAll(/--([A-Za-z][A-Za-z0-9_-]*Id)\b/g)][0]?.[1] || "";
+      return { leaf, selector, help: String(help || "").slice(0, 320) };
+    }).filter(candidate => candidate.selector);
+    if (!analyzed.length) return null;
+    const selectors = new Set(analyzed.map(candidate => candidate.selector));
+    if (analyzed.length > 1 && selectors.size === 1) {
+      return { kind: "ambiguous", reference: idRefs[0], selector: analyzed[0].selector,
+        candidates: analyzed.map((candidate, index) => ({ index, ...candidate })) };
+    }
+    if (analyzed.length !== 1) return null;
+    const { leaf, selector } = analyzed[0];
     const command = `${leaf} --${selector} ${shellQuote(idRefs[0].value)}`;
-    return commandWords(command) ? command : null;
+    return commandWords(command) ? { kind: "resolved", command } : null;
   }
-  if (candidates.length !== 1) return null;
+  if (candidates.length !== 1) {
+    if (novel.length !== 1) return null;
+    const selectors = new Set(candidates.map(candidate => candidate.ref.name));
+    if (selectors.size !== 1) return null;
+    return { kind: "ambiguous", reference: novel[0], selector: novel[0].name,
+      candidates: candidates.map(({ leaf, ref }, index) => {
+        const help = commandHelp(`aux4 ${leaf}`);
+        return { index, leaf, selector: ref.name, help: String(help || "").slice(0, 320) };
+      }) };
+  }
   const { leaf, ref } = candidates[0];
   const command = `${leaf} --${ref.name} ${shellQuote(ref.value)}`;
-  return commandWords(command) ? command : null;
+  return commandWords(command) ? { kind: "resolved", command } : null;
+}
+
+export function resolveBoundedDetailRead(lookupAttempt, priorAttempts, catalogCommands, permissionsJSON) {
+  const analysis = analyzeBoundedDetailRead(lookupAttempt, priorAttempts, catalogCommands, permissionsJSON);
+  return analysis?.kind === "resolved" ? analysis.command : null;
+}
+
+export function composeBoundedDetailReadChoiceQuestion(request, missingFact, analysis) {
+  const candidates = (analysis?.candidates || []).map(candidate => ({
+    index: candidate.index,
+    command: candidate.leaf,
+    selector: `--${candidate.selector}`,
+    help: candidate.help
+  }));
+  return [
+    "Choose exactly one documented read-only detail route for the one returned reference.",
+    `Original request: ${String(request || "").slice(0, 2000)}`,
+    `Missing fact: ${String(missingFact || "the requested detail remains unresolved").slice(0, 500)}`,
+    `Reference: ${JSON.stringify(analysis?.reference || {})}`,
+    "The candidate list below is trusted controller metadata. Return ONLY exact JSON of the form {\"index\":0}; do not return a route, flag, value, or any other field. If none is suitable, return {\"index\":-1}.",
+    JSON.stringify(candidates)
+  ].join("\n\n");
+}
+
+export function parseBoundedDetailReadChoice(content, candidates) {
+  let parsed;
+  try { parsed = JSON.parse(String(content || "").trim()); } catch { return null; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || Object.keys(parsed).length !== 1 || !Object.hasOwn(parsed, "index")
+    || !Number.isInteger(parsed.index) || parsed.index < 0 || parsed.index >= (candidates?.length || 0)) return null;
+  return candidates[parsed.index] || null;
 }
 
 function toolsAllowExecuteAux4(tools) {
@@ -4439,7 +4487,43 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           || !hasUsableSuccessfulReadLookup(recoveryAttempts)) {
           return done("blocked", attempt, "The single bounded read-only lookup did not produce a usable result; no further lookup will be attempted.");
         }
-        const detailCommand = resolveBoundedDetailRead(lookupAttempt, blockedAttempts, commandCatalog, options.permissions);
+        const detailAnalysis = analyzeBoundedDetailRead(lookupAttempt, blockedAttempts, commandCatalog, options.permissions);
+        let detailCommand = detailAnalysis?.kind === "resolved" ? detailAnalysis.command : null;
+        if (detailAnalysis?.kind === "ambiguous") {
+          const choicePriorTools = options.tools;
+          const choicePriorPermissions = options.permissions;
+          let choiceContent = "";
+          try {
+            // Route selection is a bounded planning decision. It sees only
+            // trusted help metadata and the one returned reference; it cannot
+            // author a command, selector, value, or permission flag.
+            options.tools = PLAN_TOOLS;
+            options.permissions = readOnly.permissions;
+            const missingFact = (priorVerdict?.criteria || [])
+              .filter(criterion => criterion?.status !== "pass")
+              .map(criterion => String(criterion.criterion || "").trim())
+              .filter(Boolean).slice(0, 2).join("; ") || "the requested fact remains unresolved after the lookup";
+            choiceContent = await runExecution(
+              composeBoundedDetailReadChoiceQuestion(options.request, missingFact, detailAnalysis),
+              history,
+              deniedCommands,
+              false,
+              deniedPatterns
+            );
+          } finally {
+            options.tools = choicePriorTools;
+            options.permissions = choicePriorPermissions;
+          }
+          const chosen = parseBoundedDetailReadChoice(choiceContent, detailAnalysis.candidates);
+          if (!chosen) {
+            return done("blocked", attempt, "The bounded detail-route chooser did not return one valid candidate; no detail read was dispatched.");
+          }
+          const chosenCommand = `${chosen.leaf} --${chosen.selector} ${shellQuote(detailAnalysis.reference.value)}`;
+          detailCommand = commandWords(chosenCommand) ? chosenCommand : null;
+          if (!detailCommand) {
+            return done("blocked", attempt, "The bounded detail-route candidate could not be reconstructed from trusted metadata; no detail read was dispatched.");
+          }
+        }
         if (detailCommand) {
           const detailStart = extractAttemptLog(history).length;
           lastContent = await runContinuation(detailCommand, history, deniedCommands, false, deniedPatterns);

@@ -182,9 +182,15 @@ allowed; do not require its exact prose to appear in earlier results.
 
 Bounded detail reads are controller-dispatched only when a successful read exposes
 one novel structured reference, its field name exactly matches one documented
-selector flag, and exactly one permitted read-only leaf supports that selector.
-Empty, repeated, ambiguous, undocumented, denied, or confirmation-gated routes are
-blocked. Never infer a route from free-form text or a scenario name.
+selector flag, and exactly one permitted read-only leaf supports that selector. If
+multiple permitted documented sibling leaves share that one unique `*Id` selector,
+the controller may ask for one exact JSON candidate index using only concise trusted
+help summaries and the frozen candidate list. The model cannot author a route, flag,
+value, or permission. The controller inserts the exact reference and dispatches at
+most one read through normal permissions, policy, hooks, confirmation, and budgets.
+Empty, repeated, ambiguous-reference, undocumented, denied, confirmation-gated,
+invalid-choice, empty-result, and no-progress paths are blocked. Never infer a route
+from free-form text or a scenario name.
 
 Respond with only one valid JSON object. Give a brief evidence summary first
 (one sentence, at most 160 characters, without quoting the action or message),

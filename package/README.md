@@ -103,10 +103,13 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
    before running it through the normal hooks. It does not repeat a prior successful lookup or
    guess a value. If the reference, permission rules, or result cannot support a suitable lookup,
    the task remains blocked for the missing information. When the lookup returns an unambiguous
-   record reference instead of the fact itself, the next normal agent turn may follow a documented
-   read-only detail command with that returned reference through the structured tool call, then
-   continue the original task. The one-shot proposal format ends after the first lookup. Existing
-   permissions, hooks, and budgets still apply; ambiguous results remain blocked.
+   record reference instead of the fact itself, the controller may make one strict route-index
+   choice only when multiple permitted documented read-only sibling leaves share one unique
+   selector. The model sees trusted help summaries and the frozen candidate list, never arbitrary
+   result text, and cannot author a route, flag, or value. The controller inserts the exact fresh
+   reference and dispatches one detail read through the normal permissions, hooks, confirmation,
+   and budgets. Invalid choices, stale or ambiguous references, denied routes, empty results, and
+   no progress remain blocked; no extra retry or budget is added.
 
    When a registered page capability is paired with other planned operations, their supplemental
    installed-command reference is a compact index of discovered paths, groups, descriptions, and
