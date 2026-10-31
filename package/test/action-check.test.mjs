@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { authorizeAction, actionCheckFiles, actionCheckStats, buildTrustedLiteralSubmissionAssessment, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, pendingBrowserFieldObservation, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
+import { authorizeAction, actionCheckFiles, actionCheckStats, buildTrustedLiteralSubmissionAssessment, buildTrustedReadBackedSubmissionAssessment, buildTrustedCheckboxSubmissionAssessment, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, pendingBrowserFieldObservation, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
 import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -84,6 +84,61 @@ test("controller literal assessment is created only from request-backed staged v
     ambiguous,
     "Fill Name with Priya and submit the form."
   ), null, "an ambiguous short label cannot select first versus last name");
+});
+
+test("controller source assessment binds a pre-fill account read to the exact code control", () => {
+  const request = "Find your account reference code at https://example.test/account, then redeem it at https://example.test/redeem.";
+  const pending = "agent browser run --session s-redeem --goal 'redeem the account reference code REF-48213' --field confirm=yes";
+  const staged = "agent browser run --url https://example.test/redeem --goal 'redeem the account reference code REF-48213' --field 'referenceCode=REF-48213'";
+  const result = { status: "needs-input", confirmation: { next: pending }, formSubmission: { session: "s-redeem", target: "Redeem — form", pageUrl: "https://example.test/redeem", fingerprint: "fp-redeem", formStateComplete: true }, preSubmitFieldState: [] };
+  const observed = { status: "current", session: "s-redeem", target: "Redeem — form", pageUrl: "https://example.test/redeem", formStateFingerprint: "fp-redeem", formStateComplete: true, formStatePartial: false,
+    fields: [{ fieldRef: "ref-code", label: "Reference code", value: "REF-48213", controlType: "text", origin: "explicit-input", status: "observed", changed: true, required: false, empty: false }] };
+  const attempts = [
+    { callId: "read-account", command: "agent browser inspect --url https://example.test/account", source: JSON.stringify({ status: "ok", completeWithinScope: true, blocks: [{ text: "Account reference code: REF-48213" }] }), completed: true, failed: false },
+    { callId: "stage-redeem", command: staged, source: JSON.stringify(result), completed: true, failed: false }
+  ];
+  const assessment = buildTrustedReadBackedSubmissionAssessment(staged, observed, request, attempts);
+  assert.equal(validateSubmissionAssessment(assessment, observed, request, attempts).allow, true);
+  assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request.replace("reference code", "account token"), attempts), null);
+  assert.equal(validateSubmissionAssessment(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, attempts), { ...observed, formStateFingerprint: "changed" }, request, attempts).allow, false);
+  assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, { ...observed, fields: [{ ...observed.fields[0], fieldRef: "a" }, { ...observed.fields[0], fieldRef: "b" }] }, request, attempts), null);
+});
+
+test("controller source assessment binds Gmail code plus literal shipping fields", () => {
+  const request = "Save the shipping details at https://example.test/shipping for Jamie Fox at 1 Main St. The confirmation code required on that form is not given here -- check the inbox for it.";
+  const pending = "agent browser run --session s-ship --goal 'save shipping details' --field confirm=yes";
+  const staged = "agent browser run --url https://example.test/shipping --goal 'save shipping details' --field 'Name=Jamie Fox' --field 'Address=1 Main St' --field 'Confirmation Code=QZ-58213'";
+  const result = { status: "needs-input", confirmation: { next: pending }, formSubmission: { session: "s-ship", target: "Save — form", pageUrl: "https://example.test/shipping", fingerprint: "fp-ship", formStateComplete: true } };
+  const observed = { status: "current", session: "s-ship", target: "Save — form", pageUrl: "https://example.test/shipping", formStateFingerprint: "fp-ship", formStateComplete: true, formStatePartial: false, fields: [
+    { fieldRef: "name", label: "Name", value: "Jamie Fox", controlType: "text", origin: "explicit-input", status: "observed", changed: true },
+    { fieldRef: "address", label: "Address", value: "1 Main St", controlType: "text", origin: "explicit-input", status: "observed", changed: true },
+    { fieldRef: "code", label: "Confirmation Code", value: "QZ-58213", controlType: "text", origin: "explicit-input", status: "observed", changed: true }
+  ] };
+  const attempts = [
+    { callId: "mail-read", command: "google gmail get --messageId msg-ship-9f21 --format full", source: JSON.stringify({ id: "msg-ship-9f21", payload: { headers: [{ name: "Subject", value: "Your confirmation code" }], body: { data: "Your shipping confirmation code is QZ-58213." } } }), completed: true, failed: false },
+    { callId: "stage-ship", command: staged, source: JSON.stringify(result), completed: true, failed: false }
+  ];
+  assert.equal(validateSubmissionAssessment(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, attempts), observed, request, attempts).allow, true);
+  assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request.replace("confirmation code", "tracking number"), attempts), null);
+  assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, [{ ...attempts[0], command: "agent browser run --goal 'fake source'" }, attempts[1]]), null);
+  assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, [{ ...attempts[0], source: attempts[0].source.replace("msg-ship-9f21", "msg-other") }, attempts[1]]), null);
+});
+
+test("controller checkbox assessment binds every complete checked state to explicit include/exclude intent", () => {
+  const request = "On the notification preferences page, subscribe to only the Security alerts and Billing topics. Leave Marketing, Product updates and Social unchecked.";
+  const pending = "agent browser run --session s-pref --goal 'set preferences' --field confirm=yes";
+  const staged = "agent browser run --url https://example.test/preferences --goal 'set preferences'";
+  const result = { status: "needs-input", confirmation: { next: pending }, formSubmission: { session: "s-pref", target: "Save preferences — form", pageUrl: "https://example.test/preferences", fingerprint: "fp-pref", formStateComplete: true } };
+  const labels = [["Security alerts", true], ["Billing", true], ["Marketing", false], ["Product updates", false], ["Social", false]];
+  const observed = { status: "current", session: "s-pref", target: "Save preferences — form", pageUrl: "https://example.test/preferences", formStateFingerprint: "fp-pref", formStateComplete: true, formStatePartial: false,
+    fields: labels.map(([label, checked], index) => ({ fieldRef: `pref-${index}`, label, controlType: "checkbox", checked, origin: checked ? "unknown" : "preexisting", status: "observed", changed: checked })) };
+  const attempts = [{ callId: "stage-pref", command: staged, source: JSON.stringify(result), completed: true, failed: false }];
+  const assessment = buildTrustedCheckboxSubmissionAssessment(staged, observed, request, attempts);
+  assert.equal(validateSubmissionAssessment(assessment, observed, request, attempts).allow, true);
+  assert.equal(buildTrustedCheckboxSubmissionAssessment(staged, observed, request.replace("Billing", "Marketing"), attempts), null);
+  assert.equal(buildTrustedCheckboxSubmissionAssessment(staged, { ...observed, fields: observed.fields.map(field => field.label === "Security alerts" ? { ...field, checked: undefined } : field) }, request, attempts), null);
+  const stale = buildTrustedCheckboxSubmissionAssessment(staged, observed, request, attempts);
+  assert.equal(validateSubmissionAssessment(stale, { ...observed, formStateFingerprint: "stale" }, request, attempts).allow, false);
 });
 
 test("controller literal assessment grounds an explicit phone-number Save value", () => {

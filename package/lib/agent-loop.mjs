@@ -4865,7 +4865,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       // A managed browser form submission has a stricter controller gate than
       // ordinary pending confirmation: current controls must be assessed
       // against the request and independent evidence before approval.
-      const { pendingBrowserFieldObservation, authorizeAction, buildTrustedLiteralSubmissionAssessment, createFormApprovalDispatch, isTrustedFormApprovalDispatch, validateSubmissionAssessment } =
+      const { pendingBrowserFieldObservation, authorizeAction, buildTrustedLiteralSubmissionAssessment, buildTrustedReadBackedSubmissionAssessment, buildTrustedCheckboxSubmissionAssessment, createFormApprovalDispatch, isTrustedFormApprovalDispatch, validateSubmissionAssessment } =
         await import("./action-check.mjs");
       const formObservation = pendingBrowserFieldObservation(pending.next, attempts);
       const formApprovalRequired = formObservation?.approvalRequired === true;
@@ -5021,9 +5021,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           // model-backed action checker. This covers only values independently
           // grounded in the original request; source/preserve/default cases
           // remain fail-closed and require the normal semantic assessment.
-          const trustedLiteralAssessment = buildTrustedLiteralSubmissionAssessment(stagedCommand, formObservation, options.request);
-          const verdict = trustedLiteralAssessment
-            ? { allow: true, reason: "Controller-validated literal request values.", submissionAssessmentValidated: true, submissionAssessment: trustedLiteralAssessment }
+          const trustedAssessment = buildTrustedLiteralSubmissionAssessment(stagedCommand, formObservation, options.request)
+            || buildTrustedReadBackedSubmissionAssessment(stagedCommand, formObservation, options.request, attempts)
+            || buildTrustedCheckboxSubmissionAssessment(stagedCommand, formObservation, options.request, attempts);
+          const verdict = trustedAssessment
+            ? { allow: true, reason: "Controller-validated request/read-backed form values.", submissionAssessmentValidated: true, submissionAssessment: trustedAssessment }
             : authorizeAction(options, pending.next, attempts, options.request, history);
           if (!verdict?.allow || verdict.submissionAssessmentValidated !== true || !verdict.submissionAssessment) {
             round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };

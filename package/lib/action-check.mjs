@@ -207,6 +207,17 @@ export function trustedLiteralDateNormalization(observedFields, request) {
   return dates[0];
 }
 
+function requestCheckboxIntent(request, label, checked) {
+  const text = String(request || "").normalize("NFKC");
+  const escaped = escapePattern(String(label || "").trim());
+  if (!escaped) return false;
+  const negative = new RegExp(`\\b(?:leave|keep|remain|stay)\\b[^.!?;]{0,100}\\b${escaped}\\b[^.!?;]{0,60}\\b(?:unchecked|off|disabled)\\b`, "i").test(text)
+    || new RegExp(`\\b${escaped}\\b[^.!?;]{0,60}\\b(?:unchecked|off|disabled)\\b`, "i").test(text);
+  const positive = new RegExp(`\\b(?:subscribe|enable|turn\\s+on|check|select)\\b[^.!?;]{0,100}\\b${escaped}\\b`, "i").test(text)
+    || new RegExp(`\\bonly\\b[^.!?;]{0,100}\\b${escaped}\\b`, "i").test(text);
+  return checked ? positive && !negative : negative;
+}
+
 function evidenceSupportsField(evidence, review, observed, basis, request, attempts, allObserved = []) {
   if (!Array.isArray(evidence) || evidence.length === 0) return false;
   return evidence.every(ref => {
@@ -215,9 +226,16 @@ function evidenceSupportsField(evidence, review, observed, basis, request, attem
       if (!onlyKeys(ref, new Set(["kind", "excerpt", "fieldText", "valueText", "anchor"])) || ref.kind !== "request") return false;
       if (typeof ref.excerpt !== "string" || !ref.excerpt || ref.excerpt.length > 600 || !request.includes(ref.excerpt)
         || typeof ref.fieldText !== "string" || !fieldLabelBinds(ref.fieldText, observed, allObserved)
-        || (ref.anchor !== "grammar" && !ref.excerpt.toLowerCase().includes(ref.fieldText.toLowerCase()))) return false;
+        || (!["grammar", "literal-field", "checkbox-intent"].includes(ref.anchor)
+          && !ref.excerpt.toLowerCase().includes(ref.fieldText.toLowerCase()))) return false;
       if (ref.anchor === "grammar" && !requestFieldGrammarAnchor(ref.fieldText, ref.valueText, request)) return false;
       if (typeof ref.valueText !== "string") return false;
+      if (observed.controlType === "checkbox" && ref.anchor === "checkbox-intent") {
+        return requestCheckboxIntent(request, observed.label, ref.valueText === "true");
+      }
+      if (ref.anchor === "literal-field") {
+        return countLiteral(request, ref.valueText) === 1;
+      }
       const direct = ref.valueText === observedFieldValueText(observed) && ref.excerpt.includes(ref.valueText);
       const normalized = canonicalExplicitDate(request, observed);
       const dateParts = normalized && ref.valueText.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
@@ -249,7 +267,7 @@ function evidenceSupportsField(evidence, review, observed, basis, request, attem
     return typeof ref.excerpt === "string" && ref.excerpt.length > 0 && ref.excerpt.length <= 600
       && source.includes(ref.excerpt)
       && typeof ref.fieldText === "string" && fieldLabelBinds(ref.fieldText, observed, allObserved)
-      && ref.excerpt.includes(ref.fieldText)
+      && ref.excerpt.toLocaleLowerCase().includes(ref.fieldText.toLocaleLowerCase())
       && typeof ref.valueText === "string" && ref.valueText === observedFieldValueText(observed)
       && ref.excerpt.includes(ref.valueText);
   });
@@ -441,6 +459,115 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
     fields
   };
   return validateSubmissionAssessment(assessment, observedFields, request, [])?.allow === true ? assessment : null;
+}
+
+function countLiteral(text, value) {
+  const source = String(text || "");
+  const needle = String(value || "");
+  if (!needle) return 0;
+  let count = 0;
+  let offset = 0;
+  while ((offset = source.indexOf(needle, offset)) >= 0) { count++; offset += needle.length; }
+  return count;
+}
+
+function sourceResultMatchesCommand(attempt) {
+  const words = commandWords(attempt?.command || "") || [];
+  const messageIndex = words.indexOf("--messageId");
+  if (messageIndex >= 0) {
+    const parsed = parseJSONLoose(String(attempt.source ?? attempt.result ?? ""), null);
+    if (parsed && typeof parsed.id === "string" && parsed.id !== words[messageIndex + 1]) return false;
+  }
+  const urlIndex = words.indexOf("--url");
+  if (urlIndex >= 0) {
+    const parsed = parseJSONLoose(String(attempt.source ?? attempt.result ?? ""), null);
+    if (parsed && typeof parsed.url === "string" && normalizedUrl(parsed.url) !== normalizedUrl(words[urlIndex + 1])) return false;
+  }
+  return true;
+}
+
+function sourceIntentForField(request, label) {
+  const text = String(request || "").toLocaleLowerCase();
+  const field = String(label || "").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (!field || !/(?:code|reference|token)\b/i.test(field) || !text.includes(field)) return false;
+  return /\b(?:find|look\s+up|retrieve|read|check|use|from|in|on|required|not\s+given|account|inbox|email|message)\b/i.test(text);
+}
+
+function stagedAttemptIndex(command, attempts) {
+  const key = canonicalCommand(command);
+  return attempts.findIndex(entry => {
+    if (!entry || entry.failed || entry.completed === false) return false;
+    if (canonicalCommand(entry.command || "") === key) return true;
+    const parsed = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
+    return parsed?.confirmation?.next && canonicalCommand(parsed.confirmation.next) === key;
+  });
+}
+
+// Controller-owned mixed literal/read assessment. Read-backed values must come
+// from a conclusive read preceding the browser fill that staged this exact
+// continuation; remaining values must be unique request literals bound to one
+// observed field each.
+export function buildTrustedReadBackedSubmissionAssessment(command, observedFields, request, attempts = []) {
+  if (!observedFields || observedFields.status !== "current" || observedFields.formStateComplete !== true
+    || observedFields.formStatePartial === true || !observedFields.session || !observedFields.target
+    || !observedFields.pageUrl || !observedFields.formStateFingerprint || !Array.isArray(observedFields.fields)
+    || !observedFields.fields.length) return null;
+  const supplied = enteredValues(command).filter(entry => !/^confirm$/i.test(entry.label));
+  if (!supplied.length) return null;
+  const beforeFill = stagedAttemptIndex(command, attempts);
+  if (beforeFill < 0) return null;
+  const requestText = String(request || "");
+  const used = new Set();
+  const fields = [];
+  for (const observed of observedFields.fields) {
+    if (!observed || typeof observed.fieldRef !== "string" || !observed.fieldRef || observed.status !== "observed") return null;
+    const actual = observedFieldValueText(observed);
+    if (actual === null || observed.empty === true || observed.redacted === true || observed.valueRedacted === true) return null;
+    const matches = supplied.map((entry, index) => ({ entry, index })).filter(({ entry, index }) => !used.has(index)
+      && String(entry.value) === actual
+      && (fieldIdentity(entry.label) === fieldIdentity(observed.label) || labelAliasMatches(entry.label, observed.label)));
+    if (matches.length !== 1) return null;
+    const { entry, index } = matches[0];
+    const reads = attempts.slice(0, beforeFill).filter(attempt => eligibleReadAttempt(attempt) && sourceResultMatchesCommand(attempt)
+      && countLiteral(String(attempt.source ?? attempt.result ?? ""), actual) === 1
+      && sourceIntentForField(requestText, observed.label));
+    const source = reads[0];
+    if (reads.length > 1 && new Set(reads.map(attempt => attempt.callId)).size > 1) return null;
+    if (source) {
+      const raw = String(source.source ?? source.result ?? "");
+      const at = raw.indexOf(actual);
+      const excerpt = raw.slice(Math.max(0, at - 220), Math.min(raw.length, at + actual.length + 220));
+      fields.push({ fieldRef: observed.fieldRef, status: "verified", requirement: "source-value", basis: "read", relation: "assigns-value",
+        evidence: [{ kind: "attempt", attemptRef: source.callId, excerpt, fieldText: observed.label, valueText: actual }] });
+    } else {
+      if (countLiteral(requestText, actual) !== 1) return null;
+      fields.push({ fieldRef: observed.fieldRef, status: "verified", requirement: "literal-value", basis: "request", relation: "assigns-value",
+        evidence: [{ kind: "request", excerpt: requestText, fieldText: observed.label, valueText: actual, anchor: "literal-field" }] });
+    }
+    used.add(index);
+  }
+  if (used.size !== supplied.length) return null;
+  const assessment = { version: 1,
+    binding: { session: observedFields.session, target: observedFields.target, pageUrl: observedFields.pageUrl, formStateFingerprint: observedFields.formStateFingerprint }, fields };
+  return validateSubmissionAssessment(assessment, observedFields, request, attempts)?.allow === true ? assessment : null;
+}
+
+export function buildTrustedCheckboxSubmissionAssessment(command, observedFields, request, attempts = []) {
+  if (!observedFields || observedFields.status !== "current" || observedFields.formStateComplete !== true
+    || observedFields.formStatePartial === true || !observedFields.session || !observedFields.target
+    || !observedFields.pageUrl || !observedFields.formStateFingerprint || !Array.isArray(observedFields.fields)
+    || !observedFields.fields.length || observedFields.fields.some(field => field.controlType !== "checkbox")) return null;
+  if (stagedAttemptIndex(command, attempts) < 0) return null;
+  const fields = [];
+  for (const observed of observedFields.fields) {
+    if (!observed.fieldRef || observed.status !== "observed" || typeof observed.checked !== "boolean"
+      || !requestCheckboxIntent(request, observed.label, observed.checked)) return null;
+    fields.push({ fieldRef: observed.fieldRef, status: "verified", requirement: "literal-value", basis: "request", relation: "assigns-value",
+      evidence: [{ kind: "request", excerpt: String(request), fieldText: observed.label, valueText: String(observed.checked), anchor: "checkbox-intent" }] });
+  }
+  const assessment = { version: 1,
+    binding: { session: observedFields.session, target: observedFields.target, pageUrl: observedFields.pageUrl, formStateFingerprint: observedFields.formStateFingerprint }, fields };
+  return validateSubmissionAssessment(assessment, observedFields, request, attempts)?.allow === true ? assessment : null;
 }
 
 // A pending browser confirmation may carry a live control snapshot. Keep it
