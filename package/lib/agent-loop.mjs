@@ -4679,7 +4679,9 @@ export async function runLoop(options, history, execute, recovery = "", executeC
             const words = commandWords(value) || [];
             const unprefixed = words[0] === "aux4" ? words.slice(1) : words;
             const readOption = name => { const index = unprefixed.indexOf(name); return index >= 0 ? unprefixed[index + 1] || "" : ""; };
-            return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session") };
+            const fields = enteredValues(value).filter(entry => !/^confirm$/i.test(entry.label))
+              .map(entry => `${entry.label}\u0000${entry.value}`).sort();
+            return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session"), fields };
           };
           const currentIdentity = actionIdentity(pending.next);
           if (!sameAction || revalidated?.allow !== true
@@ -4715,13 +4717,26 @@ export async function runLoop(options, history, execute, recovery = "", executeC
             const words = commandWords(value) || [];
             const unprefixed = words[0] === "aux4" ? words.slice(1) : words;
             const readOption = name => { const index = unprefixed.indexOf(name); return index >= 0 ? unprefixed[index + 1] || "" : ""; };
-            return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session") };
+            const fields = enteredValues(value).filter(entry => !/^confirm$/i.test(entry.label))
+              .map(entry => `${entry.label}\u0000${entry.value}`).sort();
+            return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session"), fields };
           };
           const stagedIdentity = actionIdentity(stagedCommand);
           const pendingIdentity = actionIdentity(pending.next);
+          const stagedResult = stagedAttempt ? parseJSONLoose(String(stagedAttempt.source ?? stagedAttempt.result ?? ""), null) : null;
+          const stagedSubmission = stagedResult?.formSubmission && typeof stagedResult.formSubmission === "object" ? stagedResult.formSubmission : {};
+          const returnedSession = String(stagedSubmission.session || stagedResult?.session || "");
+          const returnedPageUrl = String(stagedSubmission.pageUrl || stagedResult?.finalUrl || stagedResult?.url || "");
+          const urlToSession = Boolean(stagedAttempt && stagedIdentity.url && !stagedIdentity.session
+            && pendingIdentity.session && !pendingIdentity.url
+            && returnedSession === pendingIdentity.session
+            && returnedPageUrl === stagedIdentity.url
+            && formObservation.session === returnedSession
+            && formObservation.pageUrl === returnedPageUrl);
+          const sameSession = stagedIdentity.session === pendingIdentity.session || urlToSession;
           if (stagedAttempt && (stagedIdentity.goal !== pendingIdentity.goal
-            || stagedIdentity.url !== pendingIdentity.url
-            || stagedIdentity.session !== pendingIdentity.session)) {
+            || !sameSession
+            || (stagedIdentity.url !== pendingIdentity.url && !urlToSession))) {
             round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
             lastContent = "The pending form continuation does not match the original staged browser action.";
             return done("needs-confirmation", attempt, "The controller rejected an altered form action before dispatch.");

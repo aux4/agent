@@ -3506,14 +3506,18 @@ else if(command.includes('loop-verify.md')) {
 } else if(args.includes('--help')) process.stdout.write('run\\n  --session <id>\\n  --goal <arg>\\n  --field <value>\\n  --formStateApproval <value>');
 `);
 
-  async function runCase({ mode = "request", requestText = request, fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false, alteredPending = false, alteredContinuation = false } = {}) {
+  async function runCase({ mode = "request", requestText = request, fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false, urlTransition = false, foreignSession = false, alteredPending = false, alteredContinuation = false } = {}) {
     fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
     fs.rmSync(actionCalls, { force: true });
     const options = { ...baseOptions({ request: requestText, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
     options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, requestText, options);
     let effects = 0;
-    const initialCommand = "agent browser run --session s-form --goal 'submit form' --field 'Priority=Urgent'";
-    const next = alteredPending
+    const initialCommand = urlTransition
+      ? "agent browser run --url https://example.test/intake --goal 'submit form' --field 'Priority=Urgent'"
+      : "agent browser run --session s-form --goal 'submit form' --field 'Priority=Urgent'";
+    const next = foreignSession
+      ? "agent browser run --session s-foreign --goal 'submit form' --field confirm=yes"
+      : alteredPending
       ? "agent browser run --session s-form --goal 'different form' --field confirm=yes"
       : forged ? `${pendingCommand} --formStateApproval sha256:forged` : pendingCommand;
     const pendingResult = snapshot(fingerprint, partial);
@@ -3581,6 +3585,11 @@ else if(command.includes('loop-verify.md')) {
       assert.equal(requestBacked.authCalls, 0, "controller-grounded literal values do not require a model semantic assessment");
       assert.equal(requestBacked.payload, null, "the trusted controller path must not fabricate a model authorization payload");
 
+      const urlTransition = await runCase({ urlTransition: true });
+      assert.equal(urlTransition.effects, 1, "the browser's URL-to-session transition is accepted only for the returned session");
+      const bookingTransition = await runCase({ urlTransition: true, requestText: "Book the appointment with Priority Urgent and submit the form." });
+      assert.equal(bookingTransition.effects, 1, "booking-style URL-to-session staging uses the same trusted transition binding");
+
       process.env.FORM_ASSESSMENT_MODE = "read";
       const readBacked = await runCase({ preRead: true, requestText: "Use the assigned Priority from the record and submit the form." });
       assert.equal(readBacked.effects, 1);
@@ -3603,6 +3612,9 @@ else if(command.includes('loop-verify.md')) {
       const alteredPending = await runCase({ alteredPending: true });
       assert.equal(alteredPending.effects, 0, "an altered pending goal is denied before dispatch");
       assert.match(String(alteredPending.outcome.content), /altered|match|original/i);
+
+      const foreignSession = await runCase({ urlTransition: true, foreignSession: true });
+      assert.equal(foreignSession.effects, 0, "a URL-to-foreign-session transition cannot reuse approval");
 
       const alteredContinuation = await runCase({ alteredContinuation: true });
       assert.equal(alteredContinuation.effects, 1, "a changed continuation cannot reuse the first trusted assessment");
