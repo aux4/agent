@@ -3499,7 +3499,7 @@ else if(command.includes('loop-verify.md')) {
 } else if(args.includes('--help')) process.stdout.write('run\\n  --session <id>\\n  --goal <arg>\\n  --field <value>\\n  --formStateApproval <value>');
 `);
 
-  async function runCase({ mode = "request", fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false } = {}) {
+  async function runCase({ mode = "request", fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false, alteredContinuation = false } = {}) {
     fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
     fs.rmSync(actionCalls, { force: true });
     const options = { ...baseOptions({ request, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
@@ -3548,6 +3548,12 @@ else if(command.includes('loop-verify.md')) {
         }
       }
       effects++;
+      if (alteredContinuation && effects === 1) {
+        const altered = snapshot(fingerprint);
+        altered.confirmation.next = "agent browser run --session s-form --goal 'different form' --field confirm=yes";
+        appendExecutionResult(h, command, JSON.stringify(altered), "altered-pending-form");
+        return "The browser returned a changed pending confirmation.";
+      }
       appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, session: "s-form", finalUrl: "https://example.test/intake" }), "submitted-form");
       return "The form was submitted.";
     });
@@ -3585,6 +3591,10 @@ else if(command.includes('loop-verify.md')) {
       const forged = await runCase({ forged: true });
       assert.equal(forged.effects, 0, "a model-authored approval flag is never accepted");
       assert.equal(forged.authCalls, 0, "forged approval is denied before the semantic action check");
+
+      const alteredContinuation = await runCase({ alteredContinuation: true });
+      assert.equal(alteredContinuation.effects, 1, "a changed continuation cannot reuse the first trusted assessment");
+      assert.match(String(alteredContinuation.outcome.content), /stale|changed|binding/i);
     });
   } finally {
     if (oldMode === undefined) delete process.env.FORM_ASSESSMENT_MODE; else process.env.FORM_ASSESSMENT_MODE = oldMode;

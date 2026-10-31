@@ -4599,6 +4599,9 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     let confirmationSteps = 0;
     let previousPendingSignature = "";
     const confirmationStepLimit = RETRY_BUDGET + 1;
+    // Controller-owned provenance for a managed form. A model confirmation is
+    // only a signal; every continuation must revalidate this original record.
+    let formApprovalRecord = null;
     const stopPending = (current, note, requested = true) => {
       round.confirmation = { command: current.command, next: current.next, requested };
       lastContent = attempts.slice(before).some(hasSubmittedEffect)
@@ -4643,7 +4646,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       // A managed browser form submission has a stricter controller gate than
       // ordinary pending confirmation: current controls must be assessed
       // against the request and independent evidence before approval.
-      const { pendingBrowserFieldObservation, authorizeAction, createFormApprovalDispatch, isTrustedFormApprovalDispatch } =
+      const { pendingBrowserFieldObservation, authorizeAction, createFormApprovalDispatch, isTrustedFormApprovalDispatch, validateSubmissionAssessment } =
         await import("./action-check.mjs");
       const formObservation = pendingBrowserFieldObservation(pending.next, attempts);
       const formApprovalRequired = formObservation?.approvalRequired === true;
@@ -4667,13 +4670,43 @@ export async function runLoop(options, history, execute, recovery = "", executeC
 
       let formDispatch = null;
       if (formApprovalRequired) {
-        const verdict = authorizeAction(options, pending.next, attempts, options.request, history);
-        if (!verdict?.allow || verdict.submissionAssessmentValidated !== true || !verdict.submissionAssessment) {
-          round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
-          lastContent = `The form was not submitted because its field values could not be grounded to the request and successful evidence: ${verdict?.reason || "the typed field assessment was missing or invalid"}`;
-          return done("needs-confirmation", attempt, "The form submission assessment was incomplete or unsupported. No submission was dispatched.");
+        const commandKey = value => JSON.stringify(commandWords(value) || []);
+        if (formApprovalRecord) {
+          const record = formApprovalRecord;
+          const revalidated = validateSubmissionAssessment(record.assessment, formObservation, options.request, attempts);
+          const sameAction = commandKey(record.originalCommand) === commandKey(pending.next);
+          if (!sameAction || revalidated?.allow !== true
+            || record.binding.session !== formObservation.session
+            || record.binding.target !== formObservation.target
+            || record.binding.pageUrl !== formObservation.pageUrl
+            || record.binding.fingerprint !== formObservation.formStateFingerprint) {
+            round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
+            lastContent = "The form approval record no longer matches the exact pending action, source evidence, or complete current form snapshot.";
+            return done("needs-confirmation", attempt, "The controller form approval binding became stale or changed. No submission was dispatched.");
+          }
+          formDispatch = createFormApprovalDispatch(pending.next, formObservation);
+          if (!formDispatch || formDispatch.binding.dispatchSha256 !== record.binding.dispatchSha256) {
+            round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
+            lastContent = "The form approval record could not be rebound to the exact pending continuation.";
+            return done("needs-confirmation", attempt, "The controller form approval binding was altered. No submission was dispatched.");
+          }
+        } else {
+          const verdict = authorizeAction(options, pending.next, attempts, options.request, history);
+          if (!verdict?.allow || verdict.submissionAssessmentValidated !== true || !verdict.submissionAssessment) {
+            round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
+            lastContent = `The form was not submitted because its field values could not be grounded to the request and successful evidence: ${verdict?.reason || "the typed field assessment was missing or invalid"}`;
+            return done("needs-confirmation", attempt, "The form submission assessment was incomplete or unsupported. No submission was dispatched.");
+          }
+          formDispatch = createFormApprovalDispatch(pending.next, formObservation);
+          if (formDispatch) {
+            formApprovalRecord = {
+              originalCommand: pending.next,
+              assessment: verdict.submissionAssessment,
+              binding: formDispatch.binding,
+              reason: verdict.reason
+            };
+          }
         }
-        formDispatch = createFormApprovalDispatch(pending.next, formObservation);
         if (!formDispatch || !isTrustedFormApprovalDispatch(formDispatch.command, attempts, formDispatch.binding)) {
           round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
           lastContent = "The form was not submitted because the controller could not bind approval to the exact current form continuation.";
