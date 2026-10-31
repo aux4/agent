@@ -4692,40 +4692,6 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       }
       return candidates.size === 1 ? [...candidates][0] : "";
     };
-    const browserRecordIdForRequest = (availableAttempts, request) => {
-      const ignored = new Set(["delete", "remove", "address", "addresses", "the", "a", "an", "my", "at", "for", "from", "use", "only", "and"]);
-      const terms = [...new Set(String(request || "").toLowerCase().match(/[a-z0-9]+/g) || [])]
-        .filter(term => term.length > 2 && !ignored.has(term));
-      const candidates = new Set();
-      const visit = value => {
-        if (typeof value === "string") {
-          const lower = value.toLowerCase();
-          if (terms.every(term => lower.includes(term))) {
-            for (const match of value.matchAll(/\b[A-Za-z][A-Za-z0-9_-]*-\d+\b/g)) candidates.add(match[0]);
-          }
-          return;
-        }
-        if (Array.isArray(value)) { for (const item of value) visit(item); return; }
-        if (value && typeof value === "object") {
-          const strings = Object.values(value).filter(item => typeof item === "string");
-          const combined = strings.join(" | ").toLowerCase();
-          if (terms.every(term => combined.includes(term))) {
-            for (const item of strings) for (const match of item.matchAll(/\b[A-Za-z][A-Za-z0-9_-]*-\d+\b/g)) candidates.add(match[0]);
-          }
-          for (const item of Object.values(value)) visit(item);
-        }
-      };
-      for (const entry of availableAttempts) {
-        if (entry.failed || entry.completed === false) continue;
-        const path = (commandWords(entry.command) || []).slice(0, 3).join(" ").toLowerCase();
-        if (path !== "agent browser run" && path !== "agent browser inspect") continue;
-        const result = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
-        const pendingObservation = result?.confirmation?.next && (result?.observations || result?.page || result?.blocks || result?.records);
-        if (!isConclusiveAttempt(entry) && !pendingObservation) continue;
-        visit(result);
-      }
-      return candidates.size === 1 ? [...candidates][0] : "";
-    };
     const trustedPendingMetadata = (command, availableAttempts) => {
       const key = JSON.stringify(commandWords(command) || []);
       for (const entry of [...availableAttempts].reverse()) {
@@ -4797,12 +4763,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const actionCheckRequired = formApprovalRequired || !isClearlyRequestedAction(pending.label, options.request);
       const trustedTransitionObservation = formObservation?.status === "current"
         ? formObservation : trustedPendingMetadata(pending.next, attempts);
+      const trustedReadIdentity = trustedTransitionObservation
+        && readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl);
       if (!formApprovalRequired && deleteAction(pending.label)
         && isClearlyRequestedAction(pending.label, options.request)
-        && (hasReadBackTarget(pending.next, attempts)
-          || (trustedTransitionObservation
-            && (readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl)
-              || browserRecordIdForRequest(attempts, options.request))))
+        && (hasReadBackTarget(pending.next, attempts) || trustedReadIdentity)
         && trustedTransitionObservation?.target
         && trustedTransitionObservation?.pageUrl) {
         deleteTransitionRecord = {
@@ -4816,8 +4781,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           target: trustedTransitionObservation.target,
           url: trustedTransitionObservation.pageUrl,
           initialFingerprint: trustedTransitionObservation.formStateFingerprint || "",
-          readId: readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl)
-            || browserRecordIdForRequest(attempts, options.request),
+          readId: readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl),
           nextCommand: ""
         };
       }

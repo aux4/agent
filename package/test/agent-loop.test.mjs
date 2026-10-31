@@ -180,7 +180,7 @@ test("read-backed delete continuation requires exact structured target and uncha
   assert.equal(deleteTransitionBindingMatches(record, command, record.request, { ...observation, status: "unavailable" }), false, "unreadable state");
 });
 
-test("read-backed delete carries the selected browser row into a session-only final confirmation", async () => {
+test("delete stays fail-closed without structured browser row metadata", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "delete-transition-runtime-"));
   const history = path.join(dir, "history.json");
   const configFile = path.join(dir, "config.yaml");
@@ -215,8 +215,8 @@ test("read-backed delete carries the selected browser row into a session-only fi
         else appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, session: "9bb322b5", finalUrl: final.finalUrl }), "delete-submitted");
         return "The browser advanced the delete confirmation.";
       });
-      assert.ok(continuationCalls >= 2, JSON.stringify({ stopped: outcome.stopped, content: outcome.content, commands: extractAttemptLog(history).map(attempt => attempt.command) }));
-      assert.ok(extractAttemptLog(history).some(attempt => /formStateApproval 4f53cda1$/.test(attempt.command || "")));
+      assert.equal(continuationCalls, 1, JSON.stringify({ stopped: outcome.stopped, content: outcome.content, commands: extractAttemptLog(history).map(attempt => attempt.command) }));
+      assert.equal(extractAttemptLog(history).some(attempt => /formStateApproval 4f53cda1$/.test(attempt.command || "")), false);
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
