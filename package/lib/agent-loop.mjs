@@ -3369,6 +3369,26 @@ function structuredReferenceSlots(value, out = [], key = "") {
 
 function shellQuote(value) { return `'${String(value).replace(/'/g, "'\\''")}'`; }
 
+function documentedSiblingLeaves(lookupCommand) {
+  const words = commandWords(lookupCommand) || [];
+  const path = words[0] === "aux4" ? words.slice(1) : words;
+  const flag = path.findIndex(word => word.startsWith("--"));
+  const route = (flag < 0 ? path : path.slice(0, flag)).filter(word => /^[A-Za-z0-9:_-]+$/.test(word));
+  if (route.length < 2) return [];
+  // Enumerate only children returned by the installed parent's exact --help.
+  // This is metadata discovery, not reconstruction from model text.
+  for (let length = route.length - 1; length >= 1; length--) {
+    const parent = route.slice(0, length).join(" ");
+    const children = groupChildrenFromHelp(commandHelp(`aux4 ${parent}`));
+    if (!children.length) continue;
+    return children.map(child => `${parent} ${child.name}`).filter(leaf => {
+      const help = commandHelp(`aux4 ${leaf}`);
+      return Boolean(help) && groupChildrenFromHelp(help).length === 0 && isReadCommand(leaf);
+    });
+  }
+  return [];
+}
+
 export function resolveBoundedDetailRead(lookupAttempt, priorAttempts, catalogCommands, permissionsJSON) {
   const output = parseJSONLoose(lookupAttempt?.source ?? lookupAttempt?.result, null);
   if (!output || typeof output !== "object" || Array.isArray(output)) return null;
@@ -3381,14 +3401,39 @@ export function resolveBoundedDetailRead(lookupAttempt, priorAttempts, catalogCo
   }
   const novel = references.filter(ref => !priorKeys.has(`${ref.name}\0${ref.value}`));
   if (!novel.length) return null;
-  const restrictions = buildReadOnlyLookupPermissions(permissionsJSON, catalogCommands);
+  const discovered = new Set(catalogCommands || []);
+  for (const leaf of documentedSiblingLeaves(lookupAttempt.command)) discovered.add(leaf);
+  const restrictions = buildReadOnlyLookupPermissions(permissionsJSON, discovered);
   if (!restrictions) return null;
+  const lookupWords = commandWords(lookupAttempt.command) || [];
+  const lookupFlag = lookupWords.findIndex(word => word.startsWith("--"));
+  const lookupLeafPath = (lookupFlag < 0 ? lookupWords : lookupWords.slice(0, lookupFlag)).join(" ");
   const candidates = [];
   for (const leaf of restrictions.commands) {
-    if (leaf === lookupAttempt.command || !isReadCommand(leaf)) continue;
+    if (leaf === lookupLeafPath || !isReadCommand(leaf)) continue;
     const help = commandHelp(`aux4 ${leaf}`);
     const flags = [...String(help || "").matchAll(/--([A-Za-z][A-Za-z0-9_-]*)/g)].map(match => match[1]);
     for (const ref of novel) if (flags.includes(ref.name)) candidates.push({ leaf, ref });
+  }
+  if (candidates.length === 0) {
+    const idRefs = novel.filter(ref => ref.name === "id");
+    if (idRefs.length !== 1) return null;
+    const groupPrefix = (lookupFlag < 0 ? lookupWords : lookupWords.slice(0, lookupFlag));
+    const leafCandidates = restrictions.commands.filter(leaf => {
+      const leafWords = leaf.split(/\s+/);
+      if (leaf === lookupLeafPath || leafWords.length < 2
+        || leafWords.slice(0, -1).join(" ") !== groupPrefix.slice(0, -1).join(" ")) return false;
+      const help = commandHelp(`aux4 ${leaf}`);
+      const selectors = [...String(help || "").matchAll(/--([A-Za-z][A-Za-z0-9_-]*Id)\b/g)].map(match => match[1]);
+      return selectors.length === 1;
+    });
+    if (leafCandidates.length !== 1) return null;
+    const leaf = leafCandidates[0];
+    const help = commandHelp(`aux4 ${leaf}`);
+    const selector = [...String(help || "").matchAll(/--([A-Za-z][A-Za-z0-9_-]*Id)\b/g)][0]?.[1];
+    if (!selector) return null;
+    const command = `${leaf} --${selector} ${shellQuote(idRefs[0].value)}`;
+    return commandWords(command) ? command : null;
   }
   if (candidates.length !== 1) return null;
   const { leaf, ref } = candidates[0];
