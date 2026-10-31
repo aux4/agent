@@ -3482,7 +3482,12 @@ export function composeBoundedDetailReadChoiceQuestion(request, missingFact, ana
 
 export function parseBoundedDetailReadChoice(content, candidates) {
   let parsed;
-  try { parsed = JSON.parse(String(content || "").trim()); } catch { return null; }
+  let text = String(content || "").trim();
+  // Some installed agent runtimes append their exact structured tool marker
+  // after a valid JSON response. Accept only that literal marker; arbitrary
+  // prose, commands, or additional JSON remain invalid.
+  if (text.endsWith("<tool_call|>")) text = text.slice(0, -"<tool_call|>".length).trim();
+  try { parsed = JSON.parse(text); } catch { return null; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
     || Object.keys(parsed).length !== 1 || !Object.hasOwn(parsed, "index")
     || !Number.isInteger(parsed.index) || parsed.index < 0 || parsed.index >= (candidates?.length || 0)) return null;

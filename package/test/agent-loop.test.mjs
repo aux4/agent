@@ -5296,6 +5296,8 @@ test("bounded detail-route chooser accepts only a frozen candidate index", () =>
     { index: 1, leaf: "records attachments", selector: "recordId", help: "read attachments" }
   ];
   assert.equal(parseBoundedDetailReadChoice('{"index":1}', candidates), candidates[1]);
+  assert.equal(parseBoundedDetailReadChoice('{"index":1}<tool_call|>', candidates), candidates[1]);
+  assert.equal(parseBoundedDetailReadChoice('{"index":1}<tool_call|> trailing', candidates), null);
   assert.equal(parseBoundedDetailReadChoice('{"index":1,"leaf":"evil"}', candidates), null);
   assert.equal(parseBoundedDetailReadChoice('{"index":0} trailing route records delete', candidates), null);
   assert.equal(parseBoundedDetailReadChoice('{"index":-1}', candidates), null);
