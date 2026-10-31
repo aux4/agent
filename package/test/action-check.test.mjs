@@ -27,7 +27,7 @@ function fieldEvidenceAssessment({ request, fieldRef = "field-priority", label =
 function observedFormField(overrides = {}) {
   return {
     status: "current", session: "session-1", target: "target-1", pageUrl: "https://example.test/form",
-    formStateFingerprint: "sha256:form-1", formStatePartial: false,
+    formStateFingerprint: "sha256:form-1", formStatePartial: false, formStateComplete: true,
     fields: [{ fieldRef: "field-priority", label: "Priority", value: "Urgent", origin: "goal-derived", changed: true, required: true, empty: false, status: "observed" }],
     ...overrides
   };
@@ -119,8 +119,15 @@ test("preservation and default authority fail closed without independent structu
     ...observedFormField().fields[0], origin: "preexisting", changed: false, required: false
   }] });
   const noAssessmentNeeded = fieldEvidenceAssessment({ request: preserveRequest });
-  assert.equal(validateSubmissionAssessment({ ...noAssessmentNeeded, fields: [] }, preserved, preserveRequest).allow, true,
-    "an untouched optional preexisting control needs no authority claim");
+  assert.equal(validateSubmissionAssessment({ ...noAssessmentNeeded, fields: [] }, preserved, preserveRequest).allow, false,
+    "complete managed snapshots require evidence even for untouched optional controls");
+
+  const sourceOptionalRequest = "Use the Priority from the assigned record for the form.";
+  const sourceOptional = observedFormField({ fields: [{
+    ...observedFormField().fields[0], value: "Low", origin: "preexisting", changed: false, required: false
+  }] });
+  assert.equal(validateSubmissionAssessment({ ...noAssessmentNeeded, fields: [] }, sourceOptional, sourceOptionalRequest).allow, false,
+    "an optional unchanged source-required control cannot be omitted from a complete snapshot assessment");
 
   const namedRequest = "Leave Priority unchanged.";
   const namedPreserve = fieldEvidenceAssessment({ request: namedRequest, value: "Urgent", basis: "preserve-existing" });
@@ -162,8 +169,8 @@ test("action check requires a complete assessment for a root-managed pending for
     const command = "agent browser run --session session-1 --field confirm=yes";
     const snapshot = {
       status: "needs-confirmation", submitted: false, session: "session-1", finalUrl: "https://example.test/form",
-      confirmation: { action: "Submit", next: command, formStateFingerprint: "sha256:form-1" },
-      formSubmission: { session: "session-1", target: "target-1", pageUrl: "https://example.test/form", fingerprint: "sha256:form-1", partial: false, approvalRequired: true },
+      confirmation: { action: "Submit", next: command, formStateFingerprint: "sha256:form-1", formStateComplete: true },
+      formSubmission: { session: "session-1", target: "target-1", pageUrl: "https://example.test/form", fingerprint: "sha256:form-1", partial: false, formStateComplete: true, approvalRequired: true },
       preSubmitFieldState: [{
         fieldRef: "field-priority", url: "https://example.test/form", label: "Priority", context: "form Intake",
         controlType: "text", value: "Urgent", origin: "goal-derived", changed: true, required: true,
@@ -229,10 +236,10 @@ test("controller approval dispatch binds one exact pending form continuation and
     completed: true, failed: false,
     source: JSON.stringify({
       status: "needs-confirmation", submitted: false, session: observed.session,
-      confirmation: { next: pendingCommand, target: observed.target, formStateFingerprint: observed.formStateFingerprint },
+        confirmation: { next: pendingCommand, target: observed.target, formStateFingerprint: observed.formStateFingerprint, formStateComplete: true },
       formSubmission: {
         session: observed.session, target: observed.target, pageUrl: observed.pageUrl,
-        fingerprint: observed.formStateFingerprint, partial: false, approvalRequired: true
+        fingerprint: observed.formStateFingerprint, partial: false, formStateComplete: true, approvalRequired: true
       },
       needsInput: { kind: "confirm", page: { url: observed.pageUrl } },
       preSubmitFieldState: [{
@@ -385,7 +392,7 @@ console.log(JSON.stringify({allow:true,reason:'The pending form state was review
     assert.deepEqual(payload.observedFields, {
       status: "partial", session: "s-1", pageUrl: url, formContext: 'form "Intake"',
       target: 'Submit — form "Intake"',
-      formStateFingerprint: "sha256:pending-form-1", formStatePartial: true, fieldCount: 5, redactedFields: 1,
+      formStateFingerprint: "sha256:pending-form-1", formStateComplete: false, formStatePartial: true, fieldCount: 5, redactedFields: 1,
       fields: [
         { label: "Record name", value: "Morgan", controlType: "text", context: 'form "Intake"', origin: "explicit-input", phase: "before-confirmation", status: "observed", changed: true },
         { label: "Issue", value: "An unexpected charge appeared.", controlType: "textarea", context: 'form "Intake"', origin: "explicit-input", phase: "before-confirmation", status: "observed" },

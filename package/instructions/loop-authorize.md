@@ -66,7 +66,8 @@ submit in one call cannot be assumed to stop at the missing-value boundary.
 When `submissionAssessmentRequired` is true, return a `submissionAssessment`
 object in the JSON decision. It must use version 1, copy the exact `session`,
 `target`, `pageUrl`, and `formStateFingerprint` from `observedFields`, and assess
-each required or changed `fieldRef` exactly once:
+each `fieldRef` in a complete managed snapshot exactly once (and at minimum
+each required or changed `fieldRef` when a legacy snapshot is being inspected):
 
 ```json
 {"version":1,"binding":{"session":"...","target":"...","pageUrl":"...","formStateFingerprint":"..."},"fields":[{"fieldRef":"...","status":"verified","requirement":"source-value","basis":"read","relation":"assigns-value","evidence":[{"kind":"attempt","attemptRef":"...","recordPointer":"/record","fieldKey":"Priority"}]}]}
@@ -137,11 +138,13 @@ the requester's open-choice instruction. Selecting one is how that instruction
 is carried out; a concrete selection does not make it an unauthorized guess.
 A proposedField marked `unchanged=true` is not an extra change. Compare actual
 before/after values rather than treating a parameter's presence as a change.
-For this managed form gate, required or changed controls still need an exact
+For this managed form gate, a complete snapshot means every value control that
+would be submitted is listed. Every listed control therefore needs an exact
 literal-value or successful read basis; there is not yet an independent
-structured authorization path for preservation/default claims. Unchanged
-optional preexisting controls that are neither requested nor used to satisfy a
-source-dependent requirement need no assessment and may remain as-is.
+structured authorization path for preservation/default claims. This
+conservative rule blocks submissions that would merely preserve unrelated
+optional preexisting values without literal or read evidence. Missing,
+incomplete, or partial snapshots fail closed before assessment.
 
 A generic success heading or confirmation page may establish that an operation
 completed, but it does not establish the values submitted unless those values

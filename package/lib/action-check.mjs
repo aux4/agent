@@ -161,6 +161,7 @@ export function validateSubmissionAssessment(assessment, observedFields, request
     return deny("A typed submission assessment is required before the form can be submitted.");
   }
   if (!observedFields || observedFields.status !== "current" || observedFields.formStatePartial === true
+    || observedFields.formStateComplete !== true
     || !observedFields.session || !observedFields.target || !observedFields.pageUrl || !observedFields.formStateFingerprint) {
     return deny("The current form snapshot is missing, partial, or not bound to a complete target.");
   }
@@ -191,7 +192,12 @@ export function validateSubmissionAssessment(assessment, observedFields, request
   }
 
   for (const [fieldRef, observed] of byRef) {
-    const needsReview = observed.required === true || observed.changed === true;
+    // A complete managed snapshot enumerates every value control in the
+    // submitted form. Every included control therefore needs an independently
+    // grounded assessment; optional/unchanged metadata cannot hide a
+    // source-required value or provide an omission escape hatch.
+    const needsReview = observedFields.formStateComplete === true
+      || observed.required === true || observed.changed === true;
     if (!needsReview) continue;
     const review = assessments.get(fieldRef);
     if (!review) return deny(`Required or changed form control ${observed.label || fieldRef} has no assessment.`);
@@ -361,7 +367,8 @@ export function pendingBrowserFieldObservation(command, attempts) {
     : typeof result.confirmation?.target === "string" ? result.confirmation.target.trim() : "";
   const formStateFingerprint = typeof submission.fingerprint === "string" ? submission.fingerprint.trim()
     : typeof result.confirmation?.formStateFingerprint === "string" ? result.confirmation.formStateFingerprint.trim() : "";
-  if (submission.partial === true || result.confirmation?.formStatePartial === true) truncated = true;
+  const formStateComplete = submission.formStateComplete === true || result.confirmation?.formStateComplete === true;
+  if (!formStateComplete || submission.partial === true || result.confirmation?.formStatePartial === true) truncated = true;
   if (!pageUrl || contexts.length > 1) {
     return { status: "mismatched", session, ...(pageUrl ? { pageUrl } : {}), reason: "The pending browser field snapshot is missing its page or spans multiple form contexts." };
   }
@@ -374,6 +381,7 @@ export function pendingBrowserFieldObservation(command, attempts) {
     ...(contexts[0] ? { formContext: contexts[0] } : {}),
     ...(target ? { target: target.slice(0, 180) } : {}),
     ...(formStateFingerprint ? { formStateFingerprint: formStateFingerprint.slice(0, 180) } : {}),
+    formStateComplete,
     ...(submission.partial === true || result.confirmation?.formStatePartial === true ? { formStatePartial: true } : {}),
     ...(submission.approvalRequired === true ? { approvalRequired: true } : {}),
     fieldCount: rawFields.length,
@@ -385,6 +393,7 @@ export function pendingBrowserFieldObservation(command, attempts) {
 export function createFormApprovalDispatch(command, observedFields) {
   const words = formDispatchWords(command);
   if (!words || words.length < 3 || !observedFields || observedFields.status !== "current"
+    || observedFields.formStateComplete !== true
     || observedFields.approvalRequired !== true || !observedFields.session || !observedFields.target
     || !observedFields.pageUrl || !/^[A-Za-z0-9:_-]{1,180}$/.test(observedFields.formStateFingerprint || "")
     || words.some(word => word === "--formStateApproval" || word.startsWith("--formStateApproval="))) return null;
@@ -425,7 +434,7 @@ export function isTrustedFormApprovalDispatch(command, attempts, binding) {
     if (index !== latestBrowserRun || attempts.slice(index + 1).some(later =>
       !later.failed && later.completed !== false && isChangeCommand(later.command || ""))) return false;
     const observed = pendingBrowserFieldObservation(next, attempts);
-    return observed?.status === "current" && observed.approvalRequired === true
+    return observed?.status === "current" && observed.formStateComplete === true && observed.approvalRequired === true
       && observed.session === binding.session && observed.target === binding.target
       && observed.pageUrl === binding.pageUrl && observed.formStateFingerprint === binding.fingerprint;
   }
