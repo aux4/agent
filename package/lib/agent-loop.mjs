@@ -3345,6 +3345,52 @@ function hasUsableSuccessfulReadLookup(attempts) {
     && hasFreshReadEvidence(attempt.source ?? attempt.result));
 }
 
+const REFERENCE_SLOT = /^(?:id|[A-Za-z][A-Za-z0-9]*Id|url|href|link)$/;
+const REFERENCE_SKIP = new Set(["body", "content", "text", "html", "summary", "description", "message"]);
+
+function structuredReferenceSlots(value, out = [], key = "") {
+  if (Array.isArray(value)) { for (const item of value) structuredReferenceSlots(item, out, key); return out; }
+  if (!value || typeof value !== "object") return out;
+  for (const [name, child] of Object.entries(value)) {
+    if (REFERENCE_SKIP.has(name.toLowerCase())) continue;
+    if (REFERENCE_SLOT.test(name) && (typeof child === "string" || typeof child === "number") && String(child).trim()) {
+      out.push({ name, value: String(child) });
+      continue;
+    }
+    if (child && typeof child === "object") structuredReferenceSlots(child, out, name);
+  }
+  return out;
+}
+
+function shellQuote(value) { return `'${String(value).replace(/'/g, "'\\''")}'`; }
+
+export function resolveBoundedDetailRead(lookupAttempt, priorAttempts, catalogCommands, permissionsJSON) {
+  const output = parseJSONLoose(lookupAttempt?.source ?? lookupAttempt?.result, null);
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const references = structuredReferenceSlots(output);
+  if (!references.length) return null;
+  const priorKeys = new Set();
+  for (const attempt of priorAttempts || []) {
+    const priorOutput = parseJSONLoose(attempt?.source ?? attempt?.result, null);
+    for (const ref of structuredReferenceSlots(priorOutput)) priorKeys.add(`${ref.name}\0${ref.value}`);
+  }
+  const novel = references.filter(ref => !priorKeys.has(`${ref.name}\0${ref.value}`));
+  if (!novel.length) return null;
+  const restrictions = buildReadOnlyLookupPermissions(permissionsJSON, catalogCommands);
+  if (!restrictions) return null;
+  const candidates = [];
+  for (const leaf of restrictions.commands) {
+    if (leaf === lookupAttempt.command || !isReadCommand(leaf)) continue;
+    const help = commandHelp(`aux4 ${leaf}`);
+    const flags = [...String(help || "").matchAll(/--([A-Za-z][A-Za-z0-9_-]*)/g)].map(match => match[1]);
+    for (const ref of novel) if (flags.includes(ref.name)) candidates.push({ leaf, ref });
+  }
+  if (candidates.length !== 1) return null;
+  const { leaf, ref } = candidates[0];
+  const command = `${leaf} --${ref.name} ${shellQuote(ref.value)}`;
+  return commandWords(command) ? command : null;
+}
+
 function toolsAllowExecuteAux4(tools) {
   if (!tools) return true;
   const names = Array.isArray(tools) ? tools : String(tools).split(",");
@@ -4343,7 +4389,22 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           || !hasUsableSuccessfulReadLookup(recoveryAttempts)) {
           return done("blocked", attempt, "The single bounded read-only lookup did not produce a usable result; no further lookup will be attempted.");
         }
-        nextQuestion = composeMissingFactContinuationQuestion(options.request, lookupAttempt, commandReference);
+        const detailCommand = resolveBoundedDetailRead(lookupAttempt, blockedAttempts, commandCatalog, options.permissions);
+        if (detailCommand) {
+          const detailStart = extractAttemptLog(history).length;
+          lastContent = await runContinuation(detailCommand, history, deniedCommands, false, deniedPatterns);
+          if (String(lastContent || "").trim()) lastAnswer = lastContent;
+          const detailAttempts = extractAttemptLog(history).slice(detailStart);
+          const detailRead = detailAttempts.find(entry => entry.tool === "executeAux4"
+            && entry.command === detailCommand && entry.completed === true && !entry.failed
+            && isReadCommand(entry.command) && hasFreshReadEvidence(entry.source ?? entry.result));
+          if (confirmationYielded || yieldedPending || !detailRead || !hasNewReadSource(detailAttempts, recoveryAttempts)) {
+            return done("blocked", attempt, "The bounded detail read did not produce one novel usable read result; no further lookup will be attempted.");
+          }
+          nextQuestion = composeMissingFactContinuationQuestion(options.request, detailRead, commandReference);
+        } else {
+          nextQuestion = composeMissingFactContinuationQuestion(options.request, lookupAttempt, commandReference);
+        }
         if (attempt === RETRY_BUDGET + 1) missingFactContinuationCredit = 1;
       }
     }

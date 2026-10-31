@@ -48,6 +48,7 @@ import {
   freshScopedContinuation,
   freshScopedReadAttempt,
   hasFreshReadEvidence,
+  resolveBoundedDetailRead,
   composeExecuteQuestion,
   incompleteNote,
   fallbackPlan,
@@ -4484,7 +4485,7 @@ test("a successful lookup on the last ordinary attempt earns one normal continua
       assert.match(question, /treat it as a reference rather than the missing fact itself/);
       assert.match(question, /Follow a documented read-only detail command/);
       assert.match(question, /records get/);
-      assert.ok(question.includes(JSON.stringify(JSON.stringify({ records: [{ id: "r9" }] }))));
+      assert.ok(question.includes("r9"));
       assert.match(question, /lookup proposal stage is complete/);
       assert.match(question, /superseded for this turn/);
       assert.match(question, /This is normal task execution/);
@@ -4493,23 +4494,29 @@ test("a successful lookup on the last ordinary attempt earns one normal continua
       // This is the ordinary model/tool turn. Record its structured tool pair
       // through the same history shape as executeAux4, rather than having the
       // controller interpret a command string from assistant prose.
-      appendExecutionResult(h, "records get --id r9", '{"record":{"id":"r9","name":"Example"}}', "detail-read");
+      if (!extractAttemptLog(h).some(attempt => attempt.command === "records get --id 'r9'")) {
+        appendExecutionResult(h, "records get --id r9", '{"record":{"id":"r9","name":"Example"}}', "detail-read");
+      }
       return "The record details are now available.";
     }, "", (command, h) => {
       continuations++;
-      assert.equal(command, "records list --query target-reference");
-      appendExecutionResult(h, command, '{"records":[{"id":"r9"}]}', "last-read");
-      return "One matching record was found.";
+      if (command === "records list --query target-reference") {
+        appendExecutionResult(h, command, '{"records":[{"id":"r9"}]}', "last-read");
+        return "One matching record was found.";
+      }
+      assert.equal(command, "records get --id 'r9'");
+      appendExecutionResult(h, command, '{"record":{"id":"r9","name":"Example"}}', "detail-read");
+      return "The record details are now available.";
     });
     assert.equal(result.stopped, "budget", "the verifier still fails and the caller's ordinary retry budget is not widened");
     assert.equal(result.attempts, 4);
     assert.equal(executions, 5);
-    assert.equal(continuations, 1);
+    assert.equal(continuations, 2);
     assert.deepEqual(extractAttemptLog(history).filter(attempt => attempt.tool === "executeAux4").map(attempt => attempt.command), [
       "records get --id r7",
       "records search --query earlier",
       "records list --query target-reference",
-      "records get --id r9"
+      "records get --id 'r9'"
     ], "the detail read is recorded as a normal structured executeAux4 result after the one-shot lookup");
   });
 });
@@ -5269,6 +5276,13 @@ test("bounded lookup evidence stops on empty or unusable results and accepts a n
   assert.equal(hasFreshReadEvidence('{"matches":[{"id":"r7"}],"answered":false}'), true,
     "a nonempty returned reference can earn the single bounded detail-read continuation");
   assert.equal(hasFreshReadEvidence('{"records":[{"id":"r7","name":"Example"}]}'), true);
+});
+
+test("bounded detail-read resolver fails closed without exact help metadata or permissions", () => {
+  const lookup = { command: "records list --query target", source: JSON.stringify({ records: [{ messageId: "m-1" }] }) };
+  assert.equal(resolveBoundedDetailRead(lookup, [], new Set(), '{"allow":["records *"]}'), null);
+  assert.equal(resolveBoundedDetailRead({ command: lookup.command, source: '{"records":[]}' }, [], new Set(["records get"]), '{"allow":["records *"]}'), null);
+  assert.equal(resolveBoundedDetailRead(lookup, [lookup], new Set(["records get"]), '{"allow":["records *"]}'), null);
 });
 
 test("runLoop takes at most one fresh scoped continuation and does not replay the completed command", async () => {
