@@ -484,7 +484,15 @@ function sourceResultMatchesCommand(attempt) {
   const urlIndex = words.indexOf("--url");
   if (urlIndex >= 0) {
     const parsed = parseJSONLoose(String(attempt.source ?? attempt.result ?? ""), null);
-    if (parsed && typeof parsed.url === "string" && normalizedUrl(parsed.url) !== normalizedUrl(words[urlIndex + 1])) return false;
+    const unprefixed = words[0] === "aux4" ? words.slice(1) : words;
+    const browserInspect = unprefixed[0] === "agent" && unprefixed[1] === "browser" && unprefixed[2] === "inspect";
+    if (parsed && typeof parsed.url === "string") {
+      if (normalizedUrl(parsed.url) !== normalizedUrl(words[urlIndex + 1])) return false;
+    } else if (!browserInspect) {
+      // An absent result URL is safe only for the documented browser inspect
+      // route: its exact --url invocation is the trusted scope boundary.
+      return false;
+    }
   }
   return true;
 }

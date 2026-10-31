@@ -142,6 +142,17 @@ test("source-backed browser preflight admits only the exact trusted read value",
   assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...read, command: "agent browser run --url https://example.test/mail" }], request), false);
 });
 
+test("browser inspect URL invocation supplies trusted scope when result omits URL", () => {
+  const request = "Find the account reference code at https://example.test/account, then use it on the redeem form.";
+  const command = "agent browser run --url https://example.test/redeem --goal 'redeem reference code REF-48213' --field 'Reference code=REF-48213'";
+  const inspect = { callId: "account-inspect", command: "agent browser inspect --url https://example.test/account",
+    source: JSON.stringify({ blocks: [{ text: "Account reference code: REF-48213" }] }), completed: true, failed: false };
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [inspect], request), true, "inspect invocation URL is the trusted source scope");
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...inspect, command: "google account inspect --url https://example.test/account" }], request), false, "non-browser URL reads cannot omit result scope");
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...inspect, source: JSON.stringify({ url: "https://evil.example/account", blocks: [{ text: "Account reference code: REF-48213" }] }) }], request), false, "a result URL must match the invocation scope");
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...inspect, failed: true }], request), false, "failed reads are not source evidence");
+});
+
 test("controller checkbox assessment binds every complete checked state to explicit include/exclude intent", () => {
   const request = "On the notification preferences page, subscribe to only the Security alerts and Billing topics. Leave Marketing, Product updates and Social unchecked.";
   const pending = "agent browser run --session s-pref --goal 'set preferences' --field confirm=yes";
