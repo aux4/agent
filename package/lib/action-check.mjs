@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isChangeCommand, isReadCommand, runAux4, parseJSONLoose, commandWords, enteredValues, confirmsAction, unsourcedFieldValues, fieldEvidenceText, availableFieldChoices, explicitOpenChoice, observedFieldValue, isConclusiveAttempt, hasPendingWorkflowStage, sameReadEvidence } from "./agent-loop.mjs";
 export { actionCheckFiles, actionCheckStats } from "./agent-loop.mjs";
 
@@ -24,6 +24,12 @@ const escapePattern = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$
 function canonicalCommand(command) {
   const parts = commandWords(command) || [];
   return JSON.stringify(parts[0] === "aux4" ? parts.slice(1) : parts);
+}
+
+function formDispatchWords(command) {
+  const words = commandWords(command);
+  if (!words) return null;
+  return words[0] === "aux4" || words[0] === "executeAux4" ? words.slice(1) : words;
 }
 
 function optionValue(command, name) {
@@ -63,11 +69,191 @@ const OBSERVED_FIELD_ORIGINS = new Set(["explicit-input", "goal-derived", "preex
 const OBSERVED_FIELD_LIMIT = 20;
 const OBSERVED_FIELD_VALUE_LIMIT = 1200;
 
+function jsonPointerValue(root, pointer) {
+  if (typeof pointer !== "string" || !pointer.startsWith("/")) return { found: false };
+  let value = root;
+  for (const encoded of pointer.slice(1).split("/")) {
+    const part = encoded.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (Array.isArray(value)) {
+      if (!/^(?:0|[1-9]\d*)$/.test(part) || Number(part) >= value.length) return { found: false };
+      value = value[Number(part)];
+    } else if (value && typeof value === "object" && Object.hasOwn(value, part)) {
+      value = value[part];
+    } else return { found: false };
+  }
+  return { found: true, value };
+}
+
+function fieldIdentity(value) {
+  return String(value || "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function onlyKeys(value, allowed) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).every(key => allowed.has(key));
+}
+
+function requestNamesField(request, label) {
+  const words = String(label || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  const pattern = words.map(word => escapePattern(word)).join("\\s+");
+  return new RegExp(`(?:^|[^A-Za-z0-9])${pattern}(?:$|[^A-Za-z0-9])`, "i").test(String(request || ""));
+}
+
+function sourceAttemptByRef(attempts, attemptRef) {
+  if (typeof attemptRef !== "string" || !attemptRef) return null;
+  return attempts.find(attempt => typeof attempt?.callId === "string" && attempt.callId === attemptRef) || null;
+}
+
+function eligibleReadAttempt(attempt) {
+  return Boolean(attempt && !attempt.failed && attempt.completed !== false
+    && typeof attempt.callId === "string" && attempt.callId
+    && isReadCommand(attempt.command || "") && isConclusiveAttempt(attempt));
+}
+
+function observedFieldValueText(observed) {
+  if (typeof observed.value === "string") return observed.value;
+  if (Array.isArray(observed.selectedValues)) return JSON.stringify(observed.selectedValues);
+  if (typeof observed.checked === "boolean") return String(observed.checked);
+  if (typeof observed.selected === "boolean") return String(observed.selected);
+  return null;
+}
+
+function evidenceSupportsField(evidence, review, observed, basis, request, attempts) {
+  if (!Array.isArray(evidence) || evidence.length === 0) return false;
+  return evidence.every(ref => {
+    if (!ref || typeof ref !== "object" || Array.isArray(ref)) return false;
+    if (basis === "request" || basis === "authorized-default") {
+      const keys = basis === "authorized-default"
+        ? new Set(["kind", "excerpt", "fieldText"])
+        : new Set(["kind", "excerpt", "fieldText", "valueText"]);
+      if (!onlyKeys(ref, keys) || ref.kind !== "request") return false;
+      if (typeof ref.excerpt !== "string" || !ref.excerpt || ref.excerpt.length > 600 || !request.includes(ref.excerpt)
+        || typeof ref.fieldText !== "string" || fieldIdentity(ref.fieldText) !== fieldIdentity(observed.label)
+        || !ref.excerpt.includes(ref.fieldText)) return false;
+      if (basis === "authorized-default") return true;
+      return typeof ref.valueText === "string" && ref.valueText === observedFieldValueText(observed)
+        && ref.excerpt.includes(ref.valueText);
+    }
+    if (basis === "preserve-existing") {
+      if (!onlyKeys(ref, new Set(["kind", "excerpt", "fieldText"])) || ref.kind !== "request") return false;
+      return typeof ref.excerpt === "string" && ref.excerpt.length > 0 && ref.excerpt.length <= 600
+        && request.includes(ref.excerpt)
+        && typeof ref.fieldText === "string" && fieldIdentity(ref.fieldText) === fieldIdentity(observed.label)
+        && ref.excerpt.includes(ref.fieldText);
+    }
+    if (basis !== "read" || ref.kind !== "attempt") return false;
+    const attempt = sourceAttemptByRef(attempts, ref.attemptRef);
+    if (!eligibleReadAttempt(attempt)) return false;
+    const source = String(attempt.source ?? attempt.result ?? "");
+    if (ref.recordPointer !== undefined || ref.fieldKey !== undefined) {
+      if (!onlyKeys(ref, new Set(["kind", "attemptRef", "recordPointer", "fieldKey"]))
+        || typeof ref.recordPointer !== "string" || typeof ref.fieldKey !== "string" || !ref.fieldKey.trim()) return false;
+      let parsed;
+      try { parsed = JSON.parse(source); } catch { return false; }
+      const record = jsonPointerValue(parsed, ref.recordPointer);
+      if (!record.found || !record.value || typeof record.value !== "object" || Array.isArray(record.value)
+        || !Object.hasOwn(record.value, ref.fieldKey)
+        || fieldIdentity(ref.fieldKey) !== fieldIdentity(observed.label)) return false;
+      const value = record.value[ref.fieldKey];
+      return (typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+        && String(value) === observedFieldValueText(observed);
+    }
+    if (!onlyKeys(ref, new Set(["kind", "attemptRef", "excerpt", "fieldText", "valueText"]))) return false;
+    return typeof ref.excerpt === "string" && ref.excerpt.length > 0 && ref.excerpt.length <= 600
+      && source.includes(ref.excerpt)
+      && typeof ref.fieldText === "string" && fieldIdentity(ref.fieldText) === fieldIdentity(observed.label)
+      && ref.excerpt.includes(ref.fieldText)
+      && typeof ref.valueText === "string" && ref.valueText === observedFieldValueText(observed)
+      && ref.excerpt.includes(ref.valueText);
+  });
+}
+
+// Deterministic structural gate for a model's semantic assessment. This
+// validates the evidence anchors and binding; the semantic mapping from a
+// source field to a requested UI control remains an explicit model judgment.
+export function validateSubmissionAssessment(assessment, observedFields, request, attempts = []) {
+  const deny = reason => ({ allow: false, reason });
+  if (!onlyKeys(assessment, new Set(["version", "binding", "fields"]))
+    || assessment.version !== 1 || !Array.isArray(assessment.fields)) {
+    return deny("A typed submission assessment is required before the form can be submitted.");
+  }
+  if (!observedFields || observedFields.status !== "current" || observedFields.formStatePartial === true
+    || !observedFields.session || !observedFields.target || !observedFields.pageUrl || !observedFields.formStateFingerprint) {
+    return deny("The current form snapshot is missing, partial, or not bound to a complete target.");
+  }
+  const binding = assessment.binding;
+  if (!onlyKeys(binding, new Set(["session", "target", "pageUrl", "formStateFingerprint"]))
+    || binding.session !== observedFields.session || binding.target !== observedFields.target
+    || binding.pageUrl !== observedFields.pageUrl || binding.formStateFingerprint !== observedFields.formStateFingerprint) {
+    return deny("The submission assessment does not match the pending form, session, page, and fingerprint.");
+  }
+  const byRef = new Map();
+  for (const field of observedFields.fields || []) {
+    if (typeof field.fieldRef !== "string" || !field.fieldRef || byRef.has(field.fieldRef)) {
+      return deny("The observed form has missing or duplicate control references.");
+    }
+    byRef.set(field.fieldRef, field);
+  }
+  if (!byRef.size) return deny("The observed form has no referenced controls to assess.");
+
+  const assessments = new Map();
+  for (const field of assessment.fields) {
+    if (!onlyKeys(field, new Set(["fieldRef", "status", "basis", "relation", "evidence"]))
+      || typeof field.fieldRef !== "string" || !byRef.has(field.fieldRef) || assessments.has(field.fieldRef)) {
+      return deny("The assessment contains a control reference that is missing, duplicated, or outside the current form.");
+    }
+    assessments.set(field.fieldRef, field);
+  }
+
+  for (const [fieldRef, observed] of byRef) {
+    const needsReview = observed.required === true || observed.changed === true;
+    if (!needsReview) continue;
+    const review = assessments.get(fieldRef);
+    if (!review) return deny(`Required or changed form control ${observed.label || fieldRef} has no assessment.`);
+    if (observed.required === true && observed.empty === true) {
+      return deny(`Required form control ${observed.label || fieldRef} is empty.`);
+    }
+    if (observed.status !== "observed") return deny(`Form control ${observed.label || fieldRef} has no complete observation.`);
+    if (review.status !== "verified") return deny(`Form control ${observed.label || fieldRef} is ${review.status === "contradicted" ? "contradicted" : "unknown"}.`);
+    if (review.relation !== "assigns-value" && review.relation !== "authorizes-default" && review.relation !== "preserves-value") {
+      return deny(`Form control ${observed.label || fieldRef} has no recognized field/value relationship.`);
+    }
+    const redacted = observed.valueRedacted === true || observed.redacted === true;
+    const actualValue = observedFieldValueText(observed);
+    if (review.basis === "preserve-existing") {
+      if (review.relation !== "preserves-value" || observed.origin !== "preexisting" || observed.changed !== false
+        || observed.empty === true || !redacted && actualValue === null
+        || (requestNamesField(request, observed.label) && !evidenceSupportsField(review.evidence, review, observed, review.basis, String(request || ""), attempts))
+        || (review.evidence?.length && !evidenceSupportsField(review.evidence, review, observed, review.basis, String(request || ""), attempts))) {
+        return deny(`Form control ${observed.label || fieldRef} is not a verifiable unchanged preexisting value.`);
+      }
+      continue;
+    }
+    if (redacted || actualValue === null) {
+      return deny(`Form control ${observed.label || fieldRef} has no safely comparable proposed value.`);
+    }
+    if (review.basis === "authorized-default" && review.relation !== "authorizes-default") {
+      return deny(`Form control ${observed.label || fieldRef} has no request-anchored default authorization.`);
+    }
+    if (review.basis === "request" && review.relation !== "assigns-value") {
+      return deny(`Form control ${observed.label || fieldRef} has no request-anchored field/value relationship.`);
+    }
+    if (review.basis === "read" && review.relation !== "assigns-value") {
+      return deny(`Form control ${observed.label || fieldRef} has no read-backed field/value relationship.`);
+    }
+    if (!evidenceSupportsField(review.evidence, review, observed, review.basis, String(request || ""), attempts)) {
+      return deny(`Form control ${observed.label || fieldRef} has no eligible grounded field/value evidence.`);
+    }
+  }
+  return { allow: true, reason: "The required form controls have grounded assessments bound to the current form snapshot." };
+}
+
 // A pending browser confirmation may carry a live control snapshot. Keep it
 // separate from successfulActionsAndResults: the form is evidence of what is
 // currently displayed, never independent evidence of where a requested
 // value came from.
-function pendingBrowserFieldObservation(command, attempts) {
+export function pendingBrowserFieldObservation(command, attempts) {
   if (!confirmsAction(command)) return null;
   const parts = browserRunParts(command);
   if (!parts) return null;
@@ -97,8 +283,11 @@ function pendingBrowserFieldObservation(command, attempts) {
   if (!pending) return { status: "missing", reason: "No matching pending browser confirmation was found." };
 
   const { result } = pending;
-  const pageUrl = String(result.needsInput?.page?.url || result.finalUrl || result.url || "").trim();
-  const session = typeof result.session === "string" ? result.session.trim() : "";
+  const submission = result.formSubmission && typeof result.formSubmission === "object" && !Array.isArray(result.formSubmission)
+    ? result.formSubmission : {};
+  const pageUrl = String(submission.pageUrl || result.needsInput?.page?.url || result.finalUrl || result.url || "").trim();
+  const session = typeof submission.session === "string" ? submission.session.trim()
+    : typeof result.session === "string" ? result.session.trim() : "";
   const rawFields = result.preSubmitFieldState;
   if (!Array.isArray(rawFields) || rawFields.length === 0) {
     return {
@@ -106,7 +295,8 @@ function pendingBrowserFieldObservation(command, attempts) {
       reason: "No form-control snapshot was supplied.",
       ...(session ? { session } : {}),
       ...(pageUrl ? { pageUrl } : {}),
-      ...(typeof result.confirmation?.target === "string" ? { target: result.confirmation.target.slice(0, 180) } : {})
+      ...(typeof (submission.target || result.confirmation?.target) === "string" ? { target: String(submission.target || result.confirmation.target).slice(0, 180) } : {}),
+      ...(submission.approvalRequired === true ? { approvalRequired: true } : {})
     };
   }
   if (!parts.session || !session || parts.session !== session) {
@@ -119,17 +309,20 @@ function pendingBrowserFieldObservation(command, attempts) {
   for (const field of rawFields.slice(0, OBSERVED_FIELD_LIMIT)) {
     if (!field || typeof field !== "object" || Array.isArray(field)) { truncated = true; continue; }
     let label = typeof field.label === "string" ? field.label.trim() : "";
+    const fieldRef = typeof field.fieldRef === "string" ? field.fieldRef.trim() : "";
     const value = typeof field.value === "string" ? field.value : null;
     const controlType = typeof field.controlType === "string" ? field.controlType.trim().toLowerCase() : "";
     const fieldUrl = typeof field.url === "string" ? field.url.trim() : "";
     let context = typeof field.context === "string" ? field.context.trim() : "";
     if (!label || !fieldUrl || !pageUrl || fieldUrl !== pageUrl) { truncated = true; continue; }
+    if (!fieldRef) truncated = true;
     if (field.status !== "observed") truncated = true;
     if (label.length > 160) { label = `${label.slice(0, 160)}…`; truncated = true; }
     if (context.length > 180) { context = `${context.slice(0, 180)}…`; truncated = true; }
     const origin = OBSERVED_FIELD_ORIGINS.has(field.origin) ? field.origin : "unknown";
     const item = {
       label,
+      ...(fieldRef ? { fieldRef: fieldRef.slice(0, 180) } : {}),
       controlType: controlType || "unknown",
       ...(context ? { context } : {}),
       origin,
@@ -176,10 +369,11 @@ function pendingBrowserFieldObservation(command, attempts) {
     fields.push(item);
   }
   const contexts = [...new Set(fields.map(field => field.context).filter(Boolean))];
-  const target = typeof result.confirmation?.target === "string" ? result.confirmation.target.trim() : "";
-  const formStateFingerprint = typeof result.confirmation?.formStateFingerprint === "string"
-    ? result.confirmation.formStateFingerprint.trim() : "";
-  if (result.confirmation?.formStatePartial === true) truncated = true;
+  const target = typeof submission.target === "string" ? submission.target.trim()
+    : typeof result.confirmation?.target === "string" ? result.confirmation.target.trim() : "";
+  const formStateFingerprint = typeof submission.fingerprint === "string" ? submission.fingerprint.trim()
+    : typeof result.confirmation?.formStateFingerprint === "string" ? result.confirmation.formStateFingerprint.trim() : "";
+  if (submission.partial === true || result.confirmation?.formStatePartial === true) truncated = true;
   if (!pageUrl || contexts.length > 1) {
     return { status: "mismatched", session, ...(pageUrl ? { pageUrl } : {}), reason: "The pending browser field snapshot is missing its page or spans multiple form contexts." };
   }
@@ -192,11 +386,62 @@ function pendingBrowserFieldObservation(command, attempts) {
     ...(contexts[0] ? { formContext: contexts[0] } : {}),
     ...(target ? { target: target.slice(0, 180) } : {}),
     ...(formStateFingerprint ? { formStateFingerprint: formStateFingerprint.slice(0, 180) } : {}),
-    ...(result.confirmation?.formStatePartial === true ? { formStatePartial: true } : {}),
+    ...(submission.partial === true || result.confirmation?.formStatePartial === true ? { formStatePartial: true } : {}),
+    ...(submission.approvalRequired === true ? { approvalRequired: true } : {}),
     fieldCount: rawFields.length,
     ...(redactedFields ? { redactedFields } : {}),
     fields
   };
+}
+
+export function createFormApprovalDispatch(command, observedFields) {
+  const words = formDispatchWords(command);
+  if (!words || words.length < 3 || !observedFields || observedFields.status !== "current"
+    || observedFields.approvalRequired !== true || !observedFields.session || !observedFields.target
+    || !observedFields.pageUrl || !/^[A-Za-z0-9:_-]{1,180}$/.test(observedFields.formStateFingerprint || "")
+    || words.some(word => word === "--formStateApproval" || word.startsWith("--formStateApproval="))) return null;
+  if (words[0] !== "agent" || words[1] !== "browser" || words[2] !== "run") return null;
+  const approvedCommand = `${String(command).trim()} --formStateApproval ${observedFields.formStateFingerprint}`;
+  const approvedWords = formDispatchWords(approvedCommand);
+  if (!approvedWords) return null;
+  return {
+    command: approvedCommand,
+    binding: {
+      session: observedFields.session,
+      target: observedFields.target,
+      pageUrl: observedFields.pageUrl,
+      fingerprint: observedFields.formStateFingerprint,
+      dispatchSha256: createHash("sha256").update(JSON.stringify(approvedWords)).digest("hex")
+    }
+  };
+}
+
+export function isTrustedFormApprovalDispatch(command, attempts, binding) {
+  const words = formDispatchWords(command);
+  const requiredKeys = new Set(["session", "target", "pageUrl", "fingerprint", "dispatchSha256"]);
+  if (!onlyKeys(binding, requiredKeys) || !words || !/^[a-f0-9]{64}$/i.test(binding.dispatchSha256)) return false;
+  if (createHash("sha256").update(JSON.stringify(words)).digest("hex") !== binding.dispatchSha256) return false;
+  const flagIndexes = words.map((word, index) => word === "--formStateApproval" ? index : -1).filter(index => index >= 0);
+  if (flagIndexes.length !== 1) return false;
+  const flagIndex = flagIndexes[0];
+  if (words[flagIndex + 1] !== binding.fingerprint) return false;
+  if (words[0] !== "agent" || words[1] !== "browser" || words[2] !== "run") return false;
+  const originalWords = [...words.slice(0, flagIndex), ...words.slice(flagIndex + 2)];
+  for (let index = attempts.length - 1; index >= 0; index--) {
+    const attempt = attempts[index];
+    const result = parseJSONLoose(String(attempt?.source ?? attempt?.result ?? ""), null);
+    const next = result?.confirmation?.next;
+    if (typeof next !== "string" || JSON.stringify(formDispatchWords(next)) !== JSON.stringify(originalWords)) continue;
+    const latestBrowserRun = attempts.reduce((latest, candidate, candidateIndex) =>
+      browserRunParts(candidate?.command || "") ? candidateIndex : latest, -1);
+    if (index !== latestBrowserRun || attempts.slice(index + 1).some(later =>
+      !later.failed && later.completed !== false && isChangeCommand(later.command || ""))) return false;
+    const observed = pendingBrowserFieldObservation(next, attempts);
+    return observed?.status === "current" && observed.approvalRequired === true
+      && observed.session === binding.session && observed.target === binding.target
+      && observed.pageUrl === binding.pageUrl && observed.formStateFingerprint === binding.fingerprint;
+  }
+  return false;
 }
 
 function submittedBrowserWorkflows(attempts) {
@@ -425,6 +670,12 @@ function faithfullyForwardedGoal(words, request, reference) {
 }
 
 export function authorizeAction(options, command, attempts = [], request = "", history = "", commandReference = undefined) {
+  const initialWords = commandWords(command) || [];
+  const initialPath = initialWords[0] === "aux4" ? initialWords.slice(1) : initialWords;
+  if (initialPath[0] === "agent" && initialPath[1] === "browser" && initialPath[2] === "run"
+    && initialWords.some(word => word === "--formStateApproval" || word.startsWith("--formStateApproval="))) {
+    return { allow: false, reason: "The form-state approval flag is controller-only and cannot be supplied by a model command." };
+  }
   if (!isChangeCommand(command) || /(?:^|\s)--help(?:\s|$)/.test(command)) return { allow: true, skipped: true };
   // A delegate may inspect targets the parent has not seen. Still validate
   // the forwarded goal and concrete values against the ORIGINAL request.
@@ -485,7 +736,7 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     const source = delegatedGoal ? fieldEvidenceText(a.source ?? a.result ?? "",a.command) : String(a.source ?? a.result ?? "");
     const result = source.slice(0, Math.min(4000, remaining));
     remaining -= result.length;
-    return { command: a.command, result, suppliedFields: enteredValues(a.command) };
+    return { ...(typeof a.callId === "string" && a.callId ? { attemptRef: a.callId } : {}), command: a.command, result, suppliedFields: enteredValues(a.command) };
   });
   const executionStates = boundedExecutionStates(attempts);
   const payload = { request, proposedAction: command, delegatedGoal, confirming,
@@ -494,6 +745,7 @@ export function authorizeAction(options, command, attempts = [], request = "", h
       return {label,value,...(observed!==null ? {observedValue:observed,unchanged:value===observed} : {})};
     }),
     ...(observedFields ? { observedFields } : {}),
+    ...(observedFields?.approvalRequired === true ? { submissionAssessmentRequired: true } : {}),
     explicitlyPermittedChoices: candidateFields.filter(entry=>explicitOpenChoice(entry.label,entry.value,attempts,request)), successfulActionsAndResults: evidence,
     executionStates,
     commandReference: commandReference ?? actionCommandHelp(command) };
@@ -543,7 +795,38 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     formatRecovery = true;
   }
   const valid = validDecision(parsed);
-  const verdict = { allow: Boolean(valid && parsed.allow), reason: valid ? String(parsed.reason || (parsed.allow ? "Authorized by the action check." : "Denied by the action check.")).slice(0,500) : "The authorization check did not return a valid decision. This action was not run; more factual lookups cannot repair the check's output format.", ...(formatRecovery ? {formatRecovery:true} : {}), ...(!valid ? {protocolError:true} : {}) };
+  const assessmentRequired = observedFields?.approvalRequired === true;
+  const assessmentGate = valid && parsed.allow && assessmentRequired
+    ? validateSubmissionAssessment(parsed.submissionAssessment, observedFields, request, attempts)
+    : null;
+  const assessmentHasSafeShape = !assessmentRequired || !parsed?.submissionAssessment
+    || (Array.isArray(parsed.submissionAssessment.fields) && parsed.submissionAssessment.fields.every(field =>
+      field && typeof field === "object" && !Object.hasOwn(field, "proposedValue") && !Object.hasOwn(field, "value")));
+  const acceptedGate = assessmentGate?.allow === true && assessmentHasSafeShape;
+  const acceptedAssessment = assessmentRequired && assessmentGate?.allow === true
+    ? {
+      version: 1,
+      binding: { session: observedFields.session, target: observedFields.target, pageUrl: observedFields.pageUrl, formStateFingerprint: observedFields.formStateFingerprint },
+      fields: parsed.submissionAssessment.fields.map(field => ({
+        fieldRef: field.fieldRef,
+        status: field.status,
+        basis: field.basis,
+        relation: field.relation,
+        evidence: (field.evidence || []).map(ref => ({ kind: ref.kind, ...(ref.attemptRef ? { attemptRef: ref.attemptRef } : {}), ...(ref.recordPointer ? { recordPointer: ref.recordPointer } : {}), ...(ref.fieldKey ? { fieldKey: ref.fieldKey } : {}) }))
+      }))
+    }
+    : null;
+  const verdict = {
+    allow: Boolean(valid && parsed.allow && (!assessmentRequired || acceptedGate)),
+    reason: assessmentRequired && valid && parsed.allow && !acceptedGate
+      ? (assessmentGate?.reason || "The submission assessment contains raw field values and was rejected.")
+      : valid ? String(parsed.reason || (parsed.allow ? "Authorized by the action check." : "Denied by the action check.")).slice(0,500)
+        : "The authorization check did not return a valid decision. This action was not run; more factual lookups cannot repair the check's output format.",
+    ...(acceptedGate ? { submissionAssessmentValidated: true } : {}),
+    ...(acceptedGate && acceptedAssessment ? { submissionAssessment: acceptedAssessment } : {}),
+    ...(formatRecovery ? {formatRecovery:true} : {}),
+    ...(!valid ? {protocolError:true} : {})
+  };
   if (auditBase) fs.writeFileSync(`${auditBase}.verdict.json`, JSON.stringify(verdict, null, 2));
   return { ...verdict, ...(delegatedGoal ? {delegated: true} : {}) };
 }

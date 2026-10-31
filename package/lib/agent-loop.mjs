@@ -4433,7 +4433,14 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         continue;
       }
 
-      const actionCheckRequired = !isClearlyRequestedAction(pending.label, options.request);
+      // A managed browser form submission has a stricter controller gate than
+      // ordinary pending confirmation: current controls must be assessed
+      // against the request and independent evidence before approval.
+      const { pendingBrowserFieldObservation, authorizeAction, createFormApprovalDispatch, isTrustedFormApprovalDispatch } =
+        await import("./action-check.mjs");
+      const formObservation = pendingBrowserFieldObservation(pending.next, attempts);
+      const formApprovalRequired = formObservation?.approvalRequired === true;
+      const actionCheckRequired = formApprovalRequired || !isClearlyRequestedAction(pending.label, options.request);
       // Keep the deterministic item-selection rule stricter than the semantic
       // outcome check: a hook cannot resolve an item the request did not select.
       if (actionCheckRequired && namesUnselectedItem(pending.label, options.request)) {
@@ -4451,6 +4458,22 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         return done("needs-confirmation", attempt);
       }
 
+      let formDispatch = null;
+      if (formApprovalRequired) {
+        const verdict = authorizeAction(options, pending.next, attempts, options.request, history);
+        if (!verdict?.allow || verdict.submissionAssessmentValidated !== true || !verdict.submissionAssessment) {
+          round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
+          lastContent = `The form was not submitted because its field values could not be grounded to the request and successful evidence: ${verdict?.reason || "the typed field assessment was missing or invalid"}`;
+          return done("needs-confirmation", attempt, "The form submission assessment was incomplete or unsupported. No submission was dispatched.");
+        }
+        formDispatch = createFormApprovalDispatch(pending.next, formObservation);
+        if (!formDispatch || !isTrustedFormApprovalDispatch(formDispatch.command, attempts, formDispatch.binding)) {
+          round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
+          lastContent = "The form was not submitted because the controller could not bind approval to the exact current form continuation.";
+          return done("needs-confirmation", attempt, "The controller form approval binding could not be validated. No submission was dispatched.");
+        }
+      }
+
       if (typeof executeContinuation !== "function") {
         return stopPending(pending, "No exact tool dispatcher is configured; the continuation was not delegated to a model and no success was assumed.", !actionCheckRequired);
       }
@@ -4463,7 +4486,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const priorGate = options.gateDeny;
       options.gateDeny = [];
       try {
-        lastContent = await runContinuation(pending.next, history, deniedCommands, false, deniedPatterns);
+        const dispatchCommand = formDispatch?.command || pending.next;
+        lastContent = await runContinuation(dispatchCommand, history, deniedCommands, false, deniedPatterns, formDispatch?.binding || null);
       } finally {
         options.gateDeny = priorGate;
       }
@@ -4474,7 +4498,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       if (innerStop) return innerStop;
       attempts = extractAttemptLog(history);
       const fresh = attempts.slice(continuationBefore);
-      const exactAttempt = fresh.find(entry => entry.command === pending.next);
+      const exactAttempt = fresh.find(entry => entry.command === (formDispatch?.command || pending.next));
       const explicitHookDenial = Boolean(exactAttempt?.failed
         && /^\s*(?:blocked by hook:|ACTION_CHECK_SCOPE_DENIED:|ACTION_CHECK_EVIDENCE_REQUIRED:)/i.test(String(exactAttempt.source ?? exactAttempt.result ?? "")));
       if (explicitHookDenial) {
@@ -4503,7 +4527,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         pending = nextPending;
         continue;
       }
-      if (completedConfirmationCommand(fresh, pending)) {
+      if (completedConfirmationCommand(fresh, formDispatch ? { ...pending, next: formDispatch.command } : pending)) {
         submittedEffectAttempt = exactAttempt && hasSubmittedEffect(exactAttempt)
           ? exactAttempt : fresh.find(hasSubmittedEffect) || submittedEffectAttempt;
         pending = null;

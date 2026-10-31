@@ -63,6 +63,40 @@ not authorize the call on the goal alone: require an independent successful read
 that binds the value to that field first. A form action that could inspect and
 submit in one call cannot be assumed to stop at the missing-value boundary.
 
+When `submissionAssessmentRequired` is true, return a `submissionAssessment`
+object in the JSON decision. It must use version 1, copy the exact `session`,
+`target`, `pageUrl`, and `formStateFingerprint` from `observedFields`, and assess
+each required or changed `fieldRef` exactly once:
+
+```json
+{"version":1,"binding":{"session":"...","target":"...","pageUrl":"...","formStateFingerprint":"..."},"fields":[{"fieldRef":"...","status":"verified","basis":"read","relation":"assigns-value","evidence":[{"kind":"attempt","attemptRef":"...","recordPointer":"/record","fieldKey":"Priority"}]}]}
+```
+
+Allowed statuses are `verified`, `contradicted`, and `unknown`; a required or
+changed field that is unknown, contradicted, missing, redacted, or bound to a
+different form must make `allow` false. For `basis: "read"`, cite an
+`attemptRef` from `successfulActionsAndResults` and either a structured
+`recordPointer` plus the exact source `fieldKey`, or a source `excerpt` with
+`fieldText` and `valueText`. The source field must match the observed control
+label and the cited value must equal the observed non-redacted value. For
+`basis: "request"`, cite an exact request `excerpt`, matching `fieldText`, and
+`valueText` equal to the observed value. For `basis: "authorized-default"`, cite
+an exact request excerpt that explicitly authorizes that field's default and
+use relation `authorizes-default`. For `basis: "preserve-existing"`, use
+relation `preserves-value` only for an observed unchanged preexisting control;
+if the request names that control, cite the exact preservation instruction.
+Do not add `value` or `proposedValue` fields. The controller compares each
+source reference against the actual observed control without copying its value
+into the assessment.
+Do not add `--formStateApproval`; that flag is reserved for the controller
+after it validates this assessment and binds it to the exact pending form.
+
+The controller validates exact references, values, statuses, and form binding
+before it can approve submission. Your field-role interpretation is a semantic
+judgment and must be grounded in the cited record; the assessment cannot replace
+the independent evidence or override an unknown/contradicted result. Never
+declare a field unrelated to evade an explicit source-dependent requirement.
+
 `observedFields`, when present, is a snapshot of controls currently displayed in
 the pending form. It establishes visible field labels and values only. It is
 separate from `successfulActionsAndResults`: a value shown in the form, a

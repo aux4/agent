@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import { authorizeAction, actionCommandHelp } from "./action-check.mjs";
+import { authorizeAction, actionCommandHelp, isTrustedFormApprovalDispatch } from "./action-check.mjs";
 // `aux4 agent check-values` -- a `before` hook target for aux4/ai-agent's
 // tool-call hooks (HARN-030). Wired in agent-loop.mjs's checkValuesHooksFile
 // as command guards and a `before` hook on every `agent:browser/run` call:
@@ -198,10 +198,25 @@ async function main(argv) {
       // __history is a temporary live snapshot supplied by ai-agent's hook
       // runtime. Keep audit histories next to the actual conversation so its
       // metrics and the caller's artifact collection include every check.
-      const verdict = authorizeAction(config, options.command, attempts, options.request, config.history || options.history, reference);
-      if (!verdict.allow) {
-        process.stdout.write(`ACTION_CHECK_SCOPE_DENIED: This call was NOT run: ${verdict.reason} Check the target and requested scope against the existing facts, obtain missing evidence if needed, and continue with the authorized work.\n`);
-        process.exit(1);
+      const rawBinding = process.env.AUX4_AGENT_FORM_APPROVAL_BINDING || "";
+      if (rawBinding) {
+        let binding = null;
+        try { binding = JSON.parse(rawBinding); } catch { /* fail closed below */ }
+        if (process.env.AUX4_AGENT_REQUIRE_FORM_APPROVAL !== "1"
+          || !isTrustedFormApprovalDispatch(options.command, attempts, binding)) {
+          process.stdout.write("ACTION_CHECK_SCOPE_DENIED: This call was NOT run: the controller form approval binding does not match this exact pending form continuation.\n");
+          process.exit(1);
+        }
+        // The monitored controller already ran authorizeAction on this exact
+        // command before adding the one-use binding. Keep this before-hook for
+        // read-repeat and scoped-continuation checks; do not ask a second model
+        // to re-authorize the same approved submission.
+      } else {
+        const verdict = authorizeAction(config, options.command, attempts, options.request, config.history || options.history, reference);
+        if (!verdict.allow) {
+          process.stdout.write(`ACTION_CHECK_SCOPE_DENIED: This call was NOT run: ${verdict.reason} Check the target and requested scope against the existing facts, obtain missing evidence if needed, and continue with the authorized work.\n`);
+          process.exit(1);
+        }
       }
     }
     process.exit(0);

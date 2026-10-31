@@ -98,6 +98,7 @@ import {
 } from "../lib/agent-loop.mjs";
 import { scopedContinuationGuardMessage } from "../lib/check-values.mjs";
 import { authorizeAction } from "../lib/action-check.mjs";
+import { managedExecutionEnv } from "../lib/ask.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -126,6 +127,18 @@ function baseOptions(overrides = {}) {
     ...overrides
   };
 }
+
+test("managed child execution enables form approval mode and scopes a binding to one continuation", () => {
+  const options = { packageDir: PACKAGE_DIR, authorityRequestFile: "/run/request.txt" };
+  const binding = { session: "s1", target: "t1", pageUrl: "https://example.test/form", fingerprint: "sha256:f1", dispatchSha256: "a".repeat(64) };
+  const normal = managedExecutionEnv(options, "/run/history.json", "/run/history.json");
+  assert.equal(normal.AUX4_AGENT_REQUIRE_FORM_APPROVAL, "1");
+  assert.equal(normal.AUX4_AGENT_FORM_APPROVAL_BINDING, "");
+  const continuation = managedExecutionEnv(options, "/run/history.json", "/run/history.json", binding);
+  assert.equal(continuation.AUX4_AGENT_REQUIRE_FORM_APPROVAL, "1");
+  assert.deepEqual(JSON.parse(continuation.AUX4_AGENT_FORM_APPROVAL_BINDING), binding);
+  assert.equal(managedExecutionEnv(options, "", "").AUX4_AGENT_REQUIRE_FORM_APPROVAL, undefined);
+});
 
 function appendProviderProtocolError(messages, id, raw = "malformed tool payload") {
   messages.push({ role: "assistant_with_tool", content: { tool_calls: [
@@ -3429,6 +3442,148 @@ else if(command.includes('loop-verify.md')) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+test("managed browser form commits require one grounded assessment and a controller-only bound dispatch", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "managed-form-approval-"));
+  const history = path.join(dir, "history.json");
+  const configFile = path.join(dir, "config.yaml");
+  const actionPayload = path.join(dir, "action-check.json");
+  const actionCalls = path.join(dir, "action-calls");
+  const request = "Set Priority to Urgent and submit the form.";
+  const pendingCommand = "agent browser run --session s-form --goal 'submit form' --field confirm=yes";
+  const observed = {
+    fieldRef: "field-priority", label: "Priority", value: "Urgent", context: "form Intake",
+    controlType: "text", origin: "goal-derived", changed: true, required: true, empty: false,
+    status: "observed", phase: "before-confirmation"
+  };
+  const snapshot = (fingerprint, partial = false) => ({
+    status: "needs-confirmation", submitted: false, session: "s-form", finalUrl: "https://example.test/intake",
+    formSubmission: { session: "s-form", target: "target-1", pageUrl: "https://example.test/intake", fingerprint, partial, approvalRequired: true },
+    confirmation: { action: "Submit", target: "target-1", emptyFields: [], next: pendingCommand, formStateFingerprint: fingerprint, ...(partial ? { formStatePartial: true } : {}) },
+    preSubmitFieldState: [{ ...observed, url: "https://example.test/intake" }]
+  });
+  fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+  fs.writeFileSync(configFile, "config: {}\n");
+  const fake = makeFakeAux4(`
+const fs=require('node:fs'),args=process.argv.slice(2),command=args.join(' ');
+if(command.includes('loop-plan.md')) process.stdout.write(JSON.stringify({goal:'Complete the requested outcome',doneCriteria:['the requested outcome holds'],steps:[]}));
+else if(command.includes('loop-verify.md')) {
+ const at=args.indexOf('--question'),payload=JSON.parse(args[at+1]);
+ process.stdout.write(JSON.stringify({results:payload.criteria.map(c=>({criterion:c.criterion,status:'pass',evidence:'verified'}))}));
+} else if(command.includes('loop-authorize.md')) {
+ const at=args.indexOf('--question'),payload=JSON.parse(args[at+1]);
+ const counter=${JSON.stringify(actionCalls)};const n=fs.existsSync(counter)?Number(fs.readFileSync(counter,'utf8')):0;fs.writeFileSync(counter,String(n+1));
+ fs.writeFileSync(${JSON.stringify(actionPayload)},JSON.stringify(payload));
+ const field=payload.observedFields?.fields?.[0];
+ const mode=process.env.FORM_ASSESSMENT_MODE||'request';
+ if(mode==='stale') {
+   const file=process.env.FORM_HISTORY_PATH,history=JSON.parse(fs.readFileSync(file,'utf8'));
+   const tool=history.messages.find(m=>m.role==='tool'&&m.tool_call_id==='pending-form');
+   const result=JSON.parse(tool.content);result.formSubmission.fingerprint='sha256:changed';result.confirmation.formStateFingerprint='sha256:changed';tool.content=JSON.stringify(result);fs.writeFileSync(file,JSON.stringify(history));
+ }
+ if(mode==='deny') { process.stdout.write(JSON.stringify({allow:false,reason:'The required form field lacks supporting evidence.'})); }
+ else if(mode==='missing') { process.stdout.write(JSON.stringify({allow:true,reason:'allow without an assessment'})); }
+ else {
+   const basis=mode==='read'?'read':'request';
+   const evidence=basis==='read'?[{kind:'attempt',attemptRef:'read-priority',recordPointer:'/record',fieldKey:'Priority'}]:[{kind:'request',excerpt:'Priority to Urgent',fieldText:'Priority',valueText:'Urgent'}];
+   process.stdout.write(JSON.stringify({allow:true,reason:'field assessment supplied',submissionAssessment:{version:1,binding:{session:payload.observedFields.session,target:payload.observedFields.target,pageUrl:payload.observedFields.pageUrl,formStateFingerprint:payload.observedFields.formStateFingerprint},fields:[{fieldRef:field.fieldRef,status:mode==='contradicted'?'contradicted':'verified',basis,relation:'assigns-value',evidence}]}}));
+ }
+} else if(args.includes('--help')) process.stdout.write('run\\n  --session <id>\\n  --goal <arg>\\n  --field <value>\\n  --formStateApproval <value>');
+`);
+
+  async function runCase({ mode = "request", fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false } = {}) {
+    fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+    fs.rmSync(actionCalls, { force: true });
+    const options = { ...baseOptions({ request, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
+    options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, request, options);
+    let effects = 0;
+    const initialCommand = "agent browser run --session s-form --goal 'complete the form'";
+    const next = forged ? `${pendingCommand} --formStateApproval sha256:forged` : pendingCommand;
+    const pendingResult = snapshot(fingerprint, partial);
+    pendingResult.confirmation.next = next;
+    const outcome = await runLoop(options, history, (_question, h) => {
+      if (preRead) appendExecutionResult(h, "records get --id r-1", JSON.stringify({ record: { Priority: "Urgent" } }), "read-priority");
+      appendExecutionResult(h, initialCommand, JSON.stringify(pendingResult), "pending-form");
+      return { content: "The form is ready for submission.", stopReason: "confirmation" };
+    }, "", async (command, h, _denied, _retry, _patterns, binding) => {
+      const isFormDispatch = command.includes("--formStateApproval");
+      if (!isFormDispatch) {
+        appendExecutionResult(h, command, JSON.stringify({ status: "ok", session: "s-form", url: "https://example.test/intake", text: "Submission result" }), "verify-form");
+        return "The current page was inspected.";
+      }
+      assert.ok(binding, "the controller must pass a binding only for the approved continuation");
+      assert.match(command, /--formStateApproval sha256:form-current$/);
+      const hookConfig = JSON.parse(fs.readFileSync(options.hooksFile, "utf8"));
+      const rule = hookConfig.hooks.find(item => item.tool === "executeAux4" && item.command === "agent:browser/run");
+      for (const step of rule.before) {
+        const words = commandWords(step);
+        assert.equal(words.shift(), "node");
+        const checker = words.shift();
+        const substitutions = {
+          "value(__history)": h,
+          "value(__commandLine)": `aux4 ${command}`,
+          "value(__request)": request,
+          "value(field)": "confirm=yes",
+          "value(data)": ""
+        };
+        const expanded = words.map(word => Object.hasOwn(substitutions, word) ? substitutions[word] : word);
+        const check = spawnSync(process.execPath, [checker, ...expanded], {
+          encoding: "utf8", env: {
+            ...process.env,
+            AUX4_AGENT_REQUIRE_FORM_APPROVAL: process.env.FORM_ASSESSMENT_MODE === "unmanaged" ? "" : "1",
+            AUX4_AGENT_FORM_APPROVAL_BINDING: JSON.stringify(binding)
+          }
+        });
+        if (check.status !== 0) {
+          appendExecutionResult(h, command, `Blocked by hook: ${check.stdout.trim()}`, `blocked-form-${effects}`);
+          return "The before-hook denied the submission.";
+        }
+      }
+      effects++;
+      appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, session: "s-form", finalUrl: "https://example.test/intake" }), "submitted-form");
+      return "The form was submitted.";
+    });
+    return { outcome, effects, authCalls: fs.existsSync(actionCalls) ? Number(fs.readFileSync(actionCalls, "utf8")) : 0,
+      payload: fs.existsSync(actionPayload) ? JSON.parse(fs.readFileSync(actionPayload, "utf8")) : null };
+  }
+
+  const oldMode = process.env.FORM_ASSESSMENT_MODE;
+  const oldHistory = process.env.FORM_HISTORY_PATH;
+  try {
+    await withAux4Bin(fake, async () => {
+      process.env.FORM_HISTORY_PATH = history;
+      process.env.FORM_ASSESSMENT_MODE = "request";
+      const requestBacked = await runCase();
+      assert.equal(requestBacked.effects, 1, JSON.stringify({ stopped: requestBacked.outcome.stopped, answer: requestBacked.outcome.content, authCalls: requestBacked.authCalls, payload: requestBacked.payload }));
+      assert.equal(requestBacked.authCalls, 1, "the before-hook must not make a duplicate action-check model call");
+      assert.equal(requestBacked.payload.request, request);
+      assert.equal(requestBacked.payload.observedFields.approvalRequired, true);
+
+      process.env.FORM_ASSESSMENT_MODE = "read";
+      const readBacked = await runCase({ preRead: true });
+      assert.equal(readBacked.effects, 1);
+      assert.equal(readBacked.payload.successfulActionsAndResults.some(entry => entry.attemptRef === "read-priority"), true);
+
+      for (const mode of ["deny", "missing", "contradicted", "stale", "unmanaged"]) {
+        process.env.FORM_ASSESSMENT_MODE = mode;
+        const blocked = await runCase();
+        assert.equal(blocked.effects, 0, `${mode} assessment must not reach the write`);
+        assert.equal(blocked.authCalls, 1);
+      }
+      process.env.FORM_ASSESSMENT_MODE = "request";
+      const partial = await runCase({ fingerprint: "sha256:form-partial", partial: true });
+      assert.equal(partial.effects, 0, "a partial form snapshot cannot authorize a commit");
+
+      const forged = await runCase({ forged: true });
+      assert.equal(forged.effects, 0, "a model-authored approval flag is never accepted");
+      assert.equal(forged.authCalls, 0, "forged approval is denied before the semantic action check");
+    });
+  } finally {
+    if (oldMode === undefined) delete process.env.FORM_ASSESSMENT_MODE; else process.env.FORM_ASSESSMENT_MODE = oldMode;
+    if (oldHistory === undefined) delete process.env.FORM_HISTORY_PATH; else process.env.FORM_HISTORY_PATH = oldHistory;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("lexically inconclusive actions cannot dispatch with missing, changed, or mismatched action-check hooks", async () => {

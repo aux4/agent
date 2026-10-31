@@ -59,6 +59,20 @@ export function buildContinuationArgs(options, history, command, deniedCommands 
   return args;
 }
 
+export function managedExecutionEnv(options, history, invocationHistory, formApprovalBinding = null) {
+  if (!history || !options.packageDir) return {};
+  return {
+    AUX4_AGENT_FIELD_GUARD: process.env.AUX4_AGENT_FIELD_GUARD || path.resolve(options.packageDir, "lib/check-values.mjs"),
+    AUX4_AGENT_REQUIRE_FORM_APPROVAL: "1",
+    AUX4_AGENT_FORM_APPROVAL_BINDING: formApprovalBinding ? JSON.stringify(formApprovalBinding) : "",
+    AUX4_AGENT_REQUEST_FILE: options.authorityRequestFile,
+    AUX4_AGENT_HISTORY_FILE: path.resolve(invocationHistory),
+    AUX4_AGENT_HISTORY_FILES: JSON.stringify([...new Set([
+      ...JSON.parse(process.env.AUX4_AGENT_HISTORY_FILES || "[]"), path.resolve(invocationHistory)
+    ])])
+  };
+}
+
 export async function main(argv) {
   const options = parseArgs(argv);
   options.delegations = activeDelegations();
@@ -79,13 +93,8 @@ export async function main(argv) {
     fs.mkdirSync(path.dirname(path.resolve(history)), {recursive:true});
     fs.writeFileSync(`${history}.request.txt`, String(options.request || ""));
   }
-  const runMonitored = async (args, h) => {
-    const env = history && options.packageDir ? {
-      AUX4_AGENT_FIELD_GUARD: process.env.AUX4_AGENT_FIELD_GUARD || path.resolve(options.packageDir,"lib/check-values.mjs"),
-      AUX4_AGENT_REQUEST_FILE: options.authorityRequestFile,
-      AUX4_AGENT_HISTORY_FILE: path.resolve(h),
-      AUX4_AGENT_HISTORY_FILES: JSON.stringify([...new Set([...JSON.parse(process.env.AUX4_AGENT_HISTORY_FILES || "[]"),path.resolve(h)])])
-    } : {};
+  const runMonitored = async (args, h, formApprovalBinding = null) => {
+    const env = managedExecutionEnv(options, history, h, formApprovalBinding);
     const result = await runAux4Monitored(args, h, {
       env,
       yieldOnConfirmationContract: true
@@ -117,8 +126,8 @@ export async function main(argv) {
   const execute = (question, h, deniedCommands, retry = false, targetPatterns = []) =>
     runMonitored(buildAskArgs(options, h, question, deniedCommands, retry, targetPatterns), h);
   const executeContinuation = options.toolDispatchSupported
-    ? (command, h, deniedCommands, retry = false, targetPatterns = []) =>
-      runMonitored(buildContinuationArgs(options, h, command, deniedCommands, retry, targetPatterns), h)
+    ? (command, h, deniedCommands, retry = false, targetPatterns = [], formApprovalBinding = null) =>
+      runMonitored(buildContinuationArgs(options, h, command, deniedCommands, retry, targetPatterns), h, formApprovalBinding)
     : null;
   const outcome = await runLoop(options, history, execute, "", executeContinuation);
   process.stdout.write(`${outcome.content}\n`);
