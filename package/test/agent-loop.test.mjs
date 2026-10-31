@@ -101,7 +101,8 @@ import {
   composeRunNextQuestion,
   composeNeedsConfirmationAnswer,
   readResultContainsExactReference,
-  deleteTransitionBindingMatches
+  deleteTransitionBindingMatches,
+  trustedRecordBindingMatchesRequest
 } from "../lib/agent-loop.mjs";
 import { scopedContinuationGuardMessage } from "../lib/check-values.mjs";
 import { authorizeAction } from "../lib/action-check.mjs";
@@ -178,6 +179,21 @@ test("read-backed delete continuation requires exact structured target and uncha
   }
   assert.equal(deleteTransitionBindingMatches(record, command, "Delete another address.", observation), false, "altered goal");
   assert.equal(deleteTransitionBindingMatches(record, command, record.request, { ...observation, status: "unavailable" }), false, "unreadable state");
+});
+
+test("structured browser record binding requires unique labeled request fields and Delete action identity", () => {
+  const binding = {
+    identifier: "addr-1", identifierLabel: "Record ID", actionRef: 7,
+    actionRole: "button", actionLabel: "Delete", scopeSelector: "#row-1",
+    fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Austin" }, { label: "Phone", value: "555-0101" }]
+  };
+  const request = "Delete Alex Kim's Austin address.";
+  assert.equal(trustedRecordBindingMatchesRequest(binding, request), true);
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, identifier: "addr-10" }, request), true, "ID is accepted only as browser-owned binding data");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [{ label: "Name", value: "Alex Kim" }] }, request), false, "one field is insufficient");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, actionLabel: "Edit" }, request), false, "non-Delete action denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, scopeSelector: "" }, request), false, "missing row scope denied");
+  assert.equal(trustedRecordBindingMatchesRequest(binding, "Delete Jamie Stone's Austin address."), false, "wrong requested record denied");
 });
 
 test("delete stays fail-closed without structured browser row metadata", async () => {

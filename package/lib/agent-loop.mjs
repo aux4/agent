@@ -2553,6 +2553,7 @@ export function deleteTransitionBindingMatches(record, command, request, observa
     && observation.session === record.session
     && typeof observation.target === "string"
     && observation.target.length > 0
+    && /\b(?:delete|remove)\b/i.test(observation.target)
     && typeof observation.pageUrl === "string"
     && observation.pageUrl.length > 0
     && (!record.readId || exactReferenceInMetadata(record.readId, observation.target, observation.pageUrl))
@@ -2560,6 +2561,27 @@ export function deleteTransitionBindingMatches(record, command, request, observa
     && observation.formStateFingerprint.length > 0
     && Array.isArray(observation.fields)
     && observation.fields.length === 0;
+}
+
+export function trustedRecordBindingMatchesRequest(binding, request) {
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)
+    || typeof binding.identifier !== "string" || !binding.identifier.trim()
+    || typeof binding.identifierLabel !== "string" || !binding.identifierLabel.trim()
+    || !Number.isInteger(binding.actionRef) || binding.actionRef <= 0
+    || typeof binding.actionRole !== "string" || !binding.actionRole.trim()
+    || typeof binding.actionLabel !== "string" || !/\b(?:delete|remove)\b/i.test(binding.actionLabel)
+    || typeof binding.scopeSelector !== "string" || !binding.scopeSelector.trim()
+    || !Array.isArray(binding.fields) || !binding.fields.length) return false;
+  const requestText = String(request || "").toLowerCase();
+  const matched = new Set();
+  for (const field of binding.fields) {
+    if (!field || typeof field !== "object" || typeof field.label !== "string" || typeof field.value !== "string") continue;
+    const label = field.label.trim().toLowerCase();
+    const value = field.value.trim();
+    if (!label || !value || /^id$|identifier|record[ -]?id|key/.test(label)) continue;
+    if (requestText.includes(value.toLowerCase())) matched.add(`${label}\u0000${value.toLowerCase()}`);
+  }
+  return matched.size >= 2;
 }
 
 function completedConfirmationCommand(attempts, pending) {
@@ -4702,7 +4724,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         const session = String(submission.session || result.session || "").trim();
         const pageUrl = String(submission.pageUrl || result.finalUrl || result.url || result.needsInput?.page?.url || "").trim();
         const target = String(submission.target || result.confirmation?.target || "").trim();
-        if (session && pageUrl && target) return { session, pageUrl, target, formStateFingerprint: String(submission.fingerprint || result.confirmation?.formStateFingerprint || "").trim() };
+        if (session && pageUrl && target) return {
+          session, pageUrl, target,
+          formStateFingerprint: String(submission.fingerprint || result.confirmation?.formStateFingerprint || "").trim(),
+          recordBinding: result.recordBinding
+        };
       }
       return null;
     };
@@ -4763,11 +4789,10 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const actionCheckRequired = formApprovalRequired || !isClearlyRequestedAction(pending.label, options.request);
       const trustedTransitionObservation = formObservation?.status === "current"
         ? formObservation : trustedPendingMetadata(pending.next, attempts);
-      const trustedReadIdentity = trustedTransitionObservation
-        && readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl);
+      const trustedRecordBinding = trustedTransitionObservation?.recordBinding;
       if (!formApprovalRequired && deleteAction(pending.label)
         && isClearlyRequestedAction(pending.label, options.request)
-        && (hasReadBackTarget(pending.next, attempts) || trustedReadIdentity)
+        && trustedRecordBindingMatchesRequest(trustedRecordBinding, options.request)
         && trustedTransitionObservation?.target
         && trustedTransitionObservation?.pageUrl) {
         deleteTransitionRecord = {
@@ -4781,7 +4806,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           target: trustedTransitionObservation.target,
           url: trustedTransitionObservation.pageUrl,
           initialFingerprint: trustedTransitionObservation.formStateFingerprint || "",
-          readId: readBackIdForMetadata(attempts, trustedTransitionObservation.target, trustedTransitionObservation.pageUrl),
+          readId: trustedRecordBinding.identifier,
+          recordBinding: trustedRecordBinding,
           nextCommand: ""
         };
       }
