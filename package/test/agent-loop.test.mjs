@@ -193,6 +193,8 @@ test("structured browser record binding requires unique labeled request fields a
   assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [{ label: "Name", value: "Alex Kim" }] }, request), false, "one field is insufficient");
   assert.equal(trustedRecordBindingMatchesRequest({ ...binding, actionLabel: "Edit" }, request), false, "non-Delete action denied");
   assert.equal(trustedRecordBindingMatchesRequest({ ...binding, scopeSelector: "" }, request), false, "missing row scope denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [...binding.fields, { label: "City", value: "Denver" }] }, request), false, "conflicting duplicate row field denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [...binding.fields, { label: "Id", value: "addr-10" }] }, request), false, "conflicting duplicate identifier denied");
   assert.equal(trustedRecordBindingMatchesRequest(binding, "Delete Jamie Stone's Austin address."), false, "wrong requested record denied");
 });
 
@@ -222,7 +224,7 @@ test("delete stays fail-closed without structured browser row metadata", async (
   let continuationCalls = 0;
   try {
     await withAux4Bin(fake, async () => {
-      const outcome = await runLoop(options, history, (_question, h) => {
+      const runScenario = () => runLoop(options, history, (_question, h) => {
         appendExecutionResult(h, "agent browser run --url http://127.0.0.1:7400/addresses --goal \"Delete Alex Kim's Austin address\"", JSON.stringify(initial), "delete-initial");
         return { content: "The selected address is ready to delete.", stopReason: "confirmation" };
       }, "", async (command, h) => {
@@ -231,8 +233,19 @@ test("delete stays fail-closed without structured browser row metadata", async (
         else appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, session: "9bb322b5", finalUrl: final.finalUrl }), "delete-submitted");
         return "The browser advanced the delete confirmation.";
       });
+      const outcome = await runScenario();
       assert.equal(continuationCalls, 1, JSON.stringify({ stopped: outcome.stopped, content: outcome.content, commands: extractAttemptLog(history).map(attempt => attempt.command) }));
       assert.equal(extractAttemptLog(history).some(attempt => /formStateApproval 4f53cda1$/.test(attempt.command || "")), false);
+      initial.recordBinding = {
+        identifier: "addr-1", identifierLabel: "Id",
+        fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Austin" }],
+        actionRef: 3, actionRole: "link", actionLabel: "Delete", scopeSelector: "table tbody tr:nth-child(1)"
+      };
+      fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+      continuationCalls = 0;
+      const bound = await runScenario();
+      assert.ok(continuationCalls >= 2, JSON.stringify({ stopped: bound.stopped, content: bound.content, commands: extractAttemptLog(history).map(attempt => attempt.command) }));
+      assert.ok(extractAttemptLog(history).some(attempt => /formStateApproval 4f53cda1$/.test(attempt.command || "")));
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

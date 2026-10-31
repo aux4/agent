@@ -2574,14 +2574,23 @@ export function trustedRecordBindingMatchesRequest(binding, request) {
     || !Array.isArray(binding.fields) || !binding.fields.length) return false;
   const requestText = String(request || "").toLowerCase();
   const matched = new Set();
+  const labels = new Map();
+  let identifierFields = 0;
   for (const field of binding.fields) {
     if (!field || typeof field !== "object" || typeof field.label !== "string" || typeof field.value !== "string") continue;
     const label = field.label.trim().toLowerCase();
     const value = field.value.trim();
-    if (!label || !value || /^id$|identifier|record[ -]?id|key/.test(label)) continue;
+    if (!label || !value) continue;
+    if (labels.has(label)) return false;
+    labels.set(label, value);
+    if (/^id$|identifier|record[ -]?id|key/.test(label)) {
+      identifierFields++;
+      if (value !== binding.identifier.trim()) return false;
+      continue;
+    }
     if (requestText.includes(value.toLowerCase())) matched.add(`${label}\u0000${value.toLowerCase()}`);
   }
-  return matched.size >= 2;
+  return identifierFields <= 1 && matched.size >= 2;
 }
 
 function completedConfirmationCommand(attempts, pending) {
