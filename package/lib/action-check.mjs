@@ -845,9 +845,6 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   }
   const valid = validDecision(parsed);
   const assessmentRequired = observedFields?.approvalRequired === true;
-  const trustedDate = valid && parsed.allow === false && assessmentRequired
-    ? trustedLiteralDateNormalization(observedFields, request)
-    : null;
   const assessmentGate = valid && parsed.allow && assessmentRequired
     ? validateSubmissionAssessment(parsed.submissionAssessment, observedFields, request, attempts)
     : null;
@@ -870,16 +867,13 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     }
     : null;
   const verdict = {
-    allow: Boolean((valid && parsed.allow && (!assessmentRequired || acceptedGate)) || trustedDate),
-    reason: trustedDate
-      ? "Authorized by deterministic literal field evidence, including the canonical date normalization bound to the current control."
-      : assessmentRequired && valid && parsed.allow && !acceptedGate
+    allow: Boolean(valid && parsed.allow && (!assessmentRequired || acceptedGate)),
+    reason: assessmentRequired && valid && parsed.allow && !acceptedGate
       ? (assessmentGate?.reason || "The submission assessment contains raw field values and was rejected.")
       : valid ? String(parsed.reason || (parsed.allow ? "Authorized by the action check." : "Denied by the action check.")).slice(0,500)
         : "The authorization check did not return a valid decision. This action was not run; more factual lookups cannot repair the check's output format.",
     ...(acceptedGate ? { submissionAssessmentValidated: true } : {}),
     ...(acceptedGate && acceptedAssessment ? { submissionAssessment: acceptedAssessment } : {}),
-    ...(trustedDate ? { trustedDateNormalization: trustedDate } : {}),
     ...(formatRecovery ? {formatRecovery:true} : {}),
     ...(!valid ? {protocolError:true} : {})
   };
