@@ -2,7 +2,7 @@
 
 ## 4.1.69
 
-- Format supplemental installed-command references as a flat compact index with discovered paths, available descriptions, group/action markers, and documented parameter signatures; fall back to the existing detailed reference if the complete index exceeds its bound.
+- Format supplemental installed-command references as a flat compact index with discovered paths, available descriptions, group/action markers, and documented parameter signatures; use the existing detailed reference when it is shorter.
 
 ## 4.1.68
 

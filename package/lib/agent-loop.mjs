@@ -2711,9 +2711,8 @@ const HELP_OUTPUT_LIMIT = 1200;
 const HELP_GROUP_OUTPUT_LIMIT = 3600;
 const HELP_TOTAL_LIMIT = 5200;
 // Supplemental cross-service references should be an index, not a second
-// copy of the full command manuals. If the index itself is larger than this
-// bound, retain the existing detailed formatter rather than dropping rows.
-const SUPPLEMENTAL_REFERENCE_LIMIT = 3600;
+// copy of the full command manuals. Select it only when the complete index is
+// shorter than the existing reference; never drop or truncate command data.
 
 // A URL is not a word the docs use: it is searched as "web page".
 export function findQuery(text) {
@@ -3103,9 +3102,11 @@ export function describeFoundCommands(found, commandCatalog = null, options = {}
       compactLines.push(`- ${entry.command} (${entry.kind})${description}${flags}${helpFallback}`);
     }
     const compact = compactLines.join("\n");
-    if (compact.length <= SUPPLEMENTAL_REFERENCE_LIMIT) return compact;
-    // Never truncate a discovered path or flag. Fall back to the established
-    // detailed formatter when the complete compact index exceeds its bound.
+    const detailed = lines.join("\n");
+    if (compact.length < detailed.length) return compact;
+    // Keep the established complete reference whenever the index would add
+    // context. Neither representation is truncated.
+    return detailed;
   }
   return lines.join("\n");
 }

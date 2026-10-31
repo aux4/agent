@@ -110,9 +110,9 @@ Every `ask` always goes through a generic loop. There is no flag to turn it off:
 
    When a registered page capability is paired with other planned operations, their supplemental
    installed-command reference is a compact index of discovered paths, groups, descriptions, and
-   parameter signatures. Full help prose remains available on demand with `--help`. If the complete
-   compact index exceeds its size bound, the reference falls back to the existing detailed format
-   rather than truncating paths or flags.
+   parameter signatures. Full help prose remains available on demand with `--help`. The compact
+   index is used only when the complete result is shorter than the existing detailed reference;
+   paths and flags are never truncated.
 
 For web-page reads, the registered browser capability includes `agent browser inspect` for the
 ordered content blocks emitted from the current rendered page. Its completeness is limited to the

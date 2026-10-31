@@ -1606,14 +1606,14 @@ else console.log('help for ' + command);
   }
 });
 
-test("supplemental references deduplicate exact paths and fall back intact when the compact index exceeds its bound", async () => {
+test("supplemental references deduplicate exact paths and choose the shorter complete format", async () => {
   const fake = makeFakeAux4(`const args = process.argv.slice(2);
 if (!args.includes('--help')) process.exit(0);
 const command = args.slice(0, args.indexOf('--help')).join(' ');
 if (command === 'records') {
   const children = Array.from({length: 34}, (_, index) => '  item' + index + '\\n    Description for item ' + index + ' ' + 'x'.repeat(72));
   console.log('records\\n' + children.join('\\n'));
-} else if (command === 'odd invoke') console.log('invoke\\n  --query <text>\\n');
+} else if (command === 'odd invoke') console.log('invoke\\n  --query <text>\\n  Exact query parameter.\\n' + 'verbose help prose.\\n'.repeat(30));
 else if (command === 'missing group list' || command === 'unavailable') process.exit(1);
 else console.log('help for ' + command);
 `);
@@ -1635,13 +1635,15 @@ else console.log('help for ' + command);
     const groupHelpFallback = describeFoundCommands([
       { command: "aux4 unavailable", description: "Unavailable command group." }
     ], null, { format: "supplemental" });
-    assert.match(groupHelpFallback, /- unavailable \(group\)/);
-    assert.match(groupHelpFallback, /Help fallback: executeAux4 \{"command": "unavailable --help"\}/);
+    assert.match(groupHelpFallback, /executeAux4 \{"command": "unavailable --help"\}/);
+    assert.equal(groupHelpFallback, describeFoundCommands([
+      { command: "aux4 unavailable", description: "Unavailable command group." }
+    ]), "retain the detailed reference when the group fallback is shorter");
 
     const many = [{ command: "aux4 records", description: "Records command group." }];
     const full = describeFoundCommands(many);
     const compactFallback = describeFoundCommands(many, null, { format: "supplemental" });
-    assert.equal(compactFallback, full);
+    assert.ok(compactFallback.length < full.length, `compact=${compactFallback.length}, full=${full.length}`);
     assert.match(compactFallback, /records item33/);
   } finally {
     if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
@@ -1649,7 +1651,7 @@ else console.log('help for ' + command);
   }
 });
 
-test("supplemental flat index keeps a 34-path, six-group, thirteen-flag catalog below its size bound", async () => {
+test("supplemental flat index keeps a 34-path, six-group, thirteen-flag catalog intact", async () => {
   const fake = makeFakeAux4(`const args = process.argv.slice(2);
 if (!args.includes('--help')) process.exit(0);
 const command = args.slice(0, args.indexOf('--help')).join(' ');
@@ -1707,6 +1709,32 @@ console.log(groups[command] || 'help for ' + command);
     assert.equal((compact.match(/Parameters:/g) || []).length, 13, "flags remain grouped into the same 13 command signatures");
     assert.ok(compact.length < 3600);
     assert.ok(compact.length < full.length, `compact=${compact.length}, full=${full.length}`);
+  } finally {
+    if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
+    fs.rmSync(path.dirname(fake), { recursive: true, force: true });
+  }
+});
+
+test("supplemental index may exceed 3,600 characters when it still saves context", async () => {
+  const fake = makeFakeAux4(`const args = process.argv.slice(2);
+if (!args.includes('--help')) process.exit(0);
+const command = args.slice(0, args.indexOf('--help')).join(' ');
+if (command === 'records') {
+  const children = Array.from({length: 34}, (_, index) => '  item' + index + '\\n  ' + ('Read the exact record fields and preserve every supported value for this operation. ').repeat(2).trim());
+  console.log('records\\n' + children.join('\\n'));
+} else console.log('help for ' + command);
+`);
+  const previous = process.env.AUX4_BIN;
+  process.env.AUX4_BIN = fake;
+  try {
+    const found = [{ command: "aux4 records", description: "Records command group." }];
+    const full = describeFoundCommands(found);
+    const compact = describeFoundCommands(found, null, { format: "supplemental" });
+    assert.ok(compact.length > 3600, `compact=${compact.length}`);
+    assert.ok(compact.length < full.length, `compact=${compact.length}, full=${full.length}`);
+    assert.ok(compact.includes("- records item0 (command)"));
+    assert.ok(compact.includes("- records item33 (command)"));
+    assert.equal(describeFoundCommands(found, null, { format: "supplemental" }), compact);
   } finally {
     if (previous === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = previous;
     fs.rmSync(path.dirname(fake), { recursive: true, force: true });
