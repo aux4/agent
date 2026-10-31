@@ -2563,6 +2563,18 @@ export function deleteTransitionBindingMatches(record, command, request, observa
     && observation.fields.length === 0;
 }
 
+export function hasExplicitDeleteIntent(value) {
+  const text = String(value || "");
+  const verb = /\b(?:delete|remove)\b/ig;
+  let match;
+  while ((match = verb.exec(text))) {
+    const sentenceStart = Math.max(0, Math.max(text.lastIndexOf(".", match.index - 1), text.lastIndexOf("!", match.index - 1), text.lastIndexOf("?", match.index - 1), text.lastIndexOf(";", match.index - 1)) + 1);
+    const prefix = text.slice(sentenceStart, match.index);
+    if (!/(?:\bdo\s+not|\bdon't|\bnever|\bnot)\b[^.!?;]{0,32}$/i.test(prefix)) return true;
+  }
+  return false;
+}
+
 export function trustedRecordBindingMatchesRequest(binding, request, trustedAction = null) {
   if (!binding || typeof binding !== "object" || Array.isArray(binding)
     || typeof binding.identifier !== "string" || !binding.identifier.trim()
@@ -4851,7 +4863,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const trustedRecordBinding = trustedTransitionObservation?.recordBinding;
       let deleteTransitionEligible = false;
       if (!formApprovalRequired && deleteAction(pending.label)
-        && /\b(?:delete|remove)\b/i.test(String(options.request || ""))
+        && hasExplicitDeleteIntent(options.request)
         && trustedRecordBindingMatchesRequest(trustedRecordBinding, options.request, trustedTransitionObservation?.action)
         && trustedTransitionObservation?.target
         && trustedTransitionObservation?.pageUrl) {

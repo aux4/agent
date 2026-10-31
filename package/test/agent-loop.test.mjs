@@ -102,7 +102,8 @@ import {
   composeNeedsConfirmationAnswer,
   readResultContainsExactReference,
   deleteTransitionBindingMatches,
-  trustedRecordBindingMatchesRequest
+  trustedRecordBindingMatchesRequest,
+  hasExplicitDeleteIntent
 } from "../lib/agent-loop.mjs";
 import { scopedContinuationGuardMessage } from "../lib/check-values.mjs";
 import { authorizeAction } from "../lib/action-check.mjs";
@@ -206,6 +207,14 @@ test("structured browser record binding requires unique labeled request fields a
   assert.equal(trustedRecordBindingMatchesRequest(binding, request), false, "missing trusted action denied");
   assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [...binding.fields, { label: "City", value: "Denver" }] }, request, action), false, "conflicting duplicate row field denied");
   assert.equal(trustedRecordBindingMatchesRequest(binding, "Delete Jamie Stone's Austin address.", action), false, "wrong requested record denied");
+});
+
+test("delete transition intent fails closed on sentence-local negation", () => {
+  assert.equal(hasExplicitDeleteIntent("Delete Alex Kim's Austin address."), true);
+  assert.equal(hasExplicitDeleteIntent("Please remove the matching record."), true);
+  assert.equal(hasExplicitDeleteIntent("Do not delete Alex Kim's Austin address."), false);
+  assert.equal(hasExplicitDeleteIntent("Never remove the Denver address."), false);
+  assert.equal(hasExplicitDeleteIntent("The request says not to delete this record."), false);
 });
 
 test("delete stays fail-closed without structured browser row metadata", async () => {
