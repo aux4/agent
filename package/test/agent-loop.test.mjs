@@ -238,6 +238,8 @@ test("extractAttemptLog distinguishes a pending write from a completed action", 
 test("an unsubmitted form and a pending call are not completed action evidence", () => {
   assert.equal(isConclusiveAttempt({ source: '{"status":"done","submitted":false}' }), false);
   assert.equal(isConclusiveAttempt({ source: '{"status":"done","submitted":true}' }), true);
+  assert.equal(isConclusiveAttempt({ source: '{"status":"already submitted","submitted":false}' }), false);
+  assert.equal(isConclusiveAttempt({ source: '{"status":"already submitted","submitted":true}' }), true);
   assert.equal(isConclusiveAttempt({ completed: false, source: '' }), false);
 });
 

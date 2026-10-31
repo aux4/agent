@@ -2480,7 +2480,12 @@ export function missingParameterHints(attempts) {
 const INCONCLUSIVE_STATUS = /"status"\s*:\s*"(incomplete|needs-input|needs-confirmation|error|blocked|failed|no-progress)"/i;
 export function isConclusiveAttempt(attempt) {
   const result = String(attempt.source ?? attempt.result ?? "");
-  return attempt.completed !== false && !attempt.failed && !INCONCLUSIVE_STATUS.test(result) && !/"submitted"\s*:\s*false\b/i.test(result);
+  if (attempt.completed === false || attempt.failed || INCONCLUSIVE_STATUS.test(result) || /"submitted"\s*:\s*false\b/i.test(result)) return false;
+  const parsed = parseJSONLoose(result, null);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    && typeof parsed.status === "string" && /already\s+submitted/i.test(parsed.status)
+    && parsed.submitted !== true) return false;
+  return true;
 }
 
 function confirmationSignature(pending) {

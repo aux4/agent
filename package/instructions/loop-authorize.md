@@ -149,6 +149,9 @@ incomplete, or partial snapshots fail closed before assessment.
 A generic success heading or confirmation page may establish that an operation
 completed, but it does not establish the values submitted unless those values
 are present in a trustworthy result or later readback.
+Statuses such as `already submitted` are not completion receipts unless the
+structured result also carries `submitted: true`; an open form with
+`submitted: false` remains pending.
 
 `executionStates` is separate workflow-state metadata, not factual field or
 target evidence. A `needs-input`, pending, or confirmation stage means the
