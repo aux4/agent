@@ -151,8 +151,13 @@ export function canonicalExplicitDate(request, observed) {
   if (!observed || !["date", "text"].includes(observed.controlType) || typeof observed.value !== "string") return null;
   const label = String(observed.label || "");
   if (!/date/i.test(label) || !/YYYY[-/]MM[-/]DD/i.test(label)) return null;
-  const dates = [...String(request || "").matchAll(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})\b/g)]
-    .map(match => ({ day: Number(match[1]), month: Number(match[2]), year: Number(match[3]) }))
+  const text = String(request || "");
+  const dates = [
+    ...[...text.matchAll(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})\b/g)]
+      .map(match => ({ day: Number(match[1]), month: Number(match[2]), year: Number(match[3]) })),
+    ...[...text.matchAll(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g)]
+      .map(match => ({ year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) }))
+  ]
     .filter(value => {
       if (value.day < 1 || value.month < 1 || value.month > 12 || value.year < 1) return false;
       const parsed = new Date(Date.UTC(value.year, value.month - 1, value.day));
@@ -380,7 +385,9 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
     // 14/03/1990 while the request says 14/03/1990, without weakening the
     // calendar/value binding to the observed ISO control.
     let requestValue = actual;
-    if (normalizedDate?.canonicalValue === actual) {
+    if (normalizedDate?.canonicalValue === actual && requestText.includes(normalizedDate.canonicalValue)) {
+      requestValue = normalizedDate.canonicalValue;
+    } else if (normalizedDate?.canonicalValue === actual) {
       const rawDate = [...requestText.matchAll(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/g)]
         .find(match => Number(match[1]) === Number(normalizedDate.requestDate.split("/")[0])
           && Number(match[2]) === Number(normalizedDate.requestDate.split("/")[1])

@@ -110,6 +110,20 @@ test("explicit day/month/year dates normalize only to one exact ISO date control
   assert.deepEqual(canonicalExplicitDate("Date of birth 29/02/2024.", { ...field, controlType: "text", value: "2024-02-29" }), {
     fieldRef: "dob", requestDate: "29/2/2024", canonicalValue: "2024-02-29"
   });
+  assert.deepEqual(canonicalExplicitDate("Date of birth 1990-03-14.", field), {
+    fieldRef: "dob", requestDate: "14/3/1990", canonicalValue: "1990-03-14"
+  });
+  assert.equal(canonicalExplicitDate("Date of birth 1990-02-30.", field), null);
+  assert.equal(canonicalExplicitDate("Dates 1990-03-14 or 1990-03-15.", field), null);
+});
+
+test("trusted literal assessment accepts a single calendar-valid ISO request date", () => {
+  const request = "Date of birth (format YYYY-MM-DD) 1990-03-14.";
+  const observed = observedFormField({ fields: [{ fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", controlType: "date", value: "1990-03-14", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" }] });
+  const command = "agent browser run --goal 'fill' --field 'DateOfBirth=1990-03-14'";
+  assert.ok(buildTrustedLiteralSubmissionAssessment(command, observed, request));
+  assert.equal(buildTrustedLiteralSubmissionAssessment(command, observed, "Date of birth (format YYYY-MM-DD) 1990-02-30."), null);
+  assert.equal(buildTrustedLiteralSubmissionAssessment(command.replace("1990-03-14", "1990-03-15"), observed, request), null);
 });
 
 test("request evidence accepts one explicit DMY date bound to a text control's exact field and value", () => {
