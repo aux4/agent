@@ -96,6 +96,228 @@ console.log(JSON.stringify({allow:false,reason:'The proposed effect is not the r
   }
 });
 
+test("pending browser field state is carried separately from independent source evidence", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-observed-fields-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    const capture = path.join(dir, "capture.json");
+    const calls = path.join(dir, "calls.txt");
+    fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, 'call\\n');
+const payload=JSON.parse(args[args.indexOf('--question')+1]);
+const instructions=fs.readFileSync(args[args.indexOf('--instructions')+1], 'utf8');
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({payload,instructions}));
+console.log(JSON.stringify({allow:true,reason:'The pending form state was reviewed.'}));
+`, { mode: 0o755 });
+    process.env.AUX4_BIN = fake;
+    const url = "https://records.example.test/form/new";
+    const request = "Complete the requested form for Morgan with issue An unexpected charge appeared, and use the selected default Category.";
+    const command = `aux4 agent browser run --session 's-1' --goal '${request}' --field 'confirm=yes'`;
+    const pending = {
+      status: "needs-input",
+      submitted: false,
+      session: "s-1",
+      finalUrl: url,
+      confirmation: { action: "Submit", target: "Submit — form \"Intake\"", next: command, formStateFingerprint: "sha256:pending-form-1", formStatePartial: true },
+      needsInput: { kind: "confirm", page: { url } },
+      preSubmitFieldState: [
+        { url, label: "Record name", value: "Morgan", context: 'form "Intake"', controlType: "text", phase: "before-confirmation", status: "observed", origin: "explicit-input", changed: true },
+        { url, label: "Issue", value: "An unexpected charge appeared.", context: 'form "Intake"', controlType: "textarea", phase: "before-confirmation", status: "observed", origin: "explicit-input" },
+        { url, label: "Category", value: "Billing", context: 'form "Intake"', controlType: "text", phase: "before-confirmation", status: "observed", origin: "preexisting", changed: false, required: false },
+        { url, label: "Email updates", context: 'form "Intake"', controlType: "checkbox", phase: "before-confirmation", status: "observed", origin: "preexisting", checked: false, changed: false, required: false },
+        { url, label: "Credential", value: "must-not-leak", selectedValues: ["Sensitive choice"], context: 'form "Intake"', controlType: "text", phase: "before-confirmation", status: "observed", origin: "unknown", redacted: true }
+      ],
+      observations: { current: "The form is ready." }
+    };
+    const options = { configFile: "/config/local.yaml", packageDir: PACKAGE_DIR, delegatedPrefixes: ["agent browser"] };
+    const result = authorizeAction(options, command, [
+      { command: "agent browser find --url https://records.example.test/form/new --question 'What category is assigned to this record?'", source: JSON.stringify({ answered: true, matches: [{ text: "The assigned category is Billing." }] }), completed: true, failed: false },
+      { command: `agent browser run --url https://records.example.test/form/new --goal '${request}' --field 'Record name=Morgan' --field 'Issue=An unexpected charge appeared.'`, source: JSON.stringify(pending), completed: true, failed: false }
+    ], request, "", "run\nComplete a page form.");
+    assert.equal(result.allow, true);
+    const { payload, instructions } = JSON.parse(fs.readFileSync(capture, "utf8"));
+    assert.deepEqual(payload.observedFields, {
+      status: "partial", session: "s-1", pageUrl: url, formContext: 'form "Intake"',
+      target: 'Submit — form "Intake"',
+      formStateFingerprint: "sha256:pending-form-1", formStatePartial: true, fieldCount: 5, redactedFields: 1,
+      fields: [
+        { label: "Record name", value: "Morgan", controlType: "text", context: 'form "Intake"', origin: "explicit-input", phase: "before-confirmation", status: "observed", changed: true },
+        { label: "Issue", value: "An unexpected charge appeared.", controlType: "textarea", context: 'form "Intake"', origin: "explicit-input", phase: "before-confirmation", status: "observed" },
+        { label: "Category", value: "Billing", controlType: "text", context: 'form "Intake"', origin: "preexisting", phase: "before-confirmation", status: "observed", changed: false, required: false },
+        { label: "Email updates", controlType: "checkbox", context: 'form "Intake"', origin: "preexisting", phase: "before-confirmation", status: "observed", changed: false, required: false, checked: false },
+        { label: "Credential", controlType: "text", context: 'form "Intake"', origin: "unknown", phase: "before-confirmation", status: "observed", valueRedacted: true }
+      ]
+    });
+    const sources = JSON.stringify(payload.successfulActionsAndResults.map(entry => entry.result));
+    assert.doesNotMatch(sources, /An unexpected charge appeared\./);
+    assert.doesNotMatch(JSON.stringify(payload.observedFields), /must-not-leak|Sensitive choice/);
+    assert.match(sources, /assigned category is Billing/i, "field-specific read evidence stays in the source channel");
+    assert.match(sources, /pageUrl/);
+    assert.ok(payload.successfulActionsAndResults.some(entry => entry.suppliedFields.some(field => field.label === "Issue" && field.value === "An unexpected charge appeared.")), "prior command values are visible only as suppliedFields, not independent read evidence");
+    assert.equal(fs.readFileSync(calls, "utf8").trim().split("\n").length, 1, "the existing authorization call is reused");
+    assert.match(instructions, /field and value/);
+    assert.match(instructions, /not an\s+independent source/);
+    assert.match(instructions, /explicitly\s+authorizes using or preserving that default/);
+    assert.match(instructions, /Do not require new provenance for unrelated preexisting fields/);
+    assert.match(instructions, /successful read\s+that binds the value to that field first/);
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a pending browser snapshot with mismatched session, form, or fingerprint is rejected before authorization", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-observed-fields-mismatch-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    fs.writeFileSync(fake, "#!/bin/sh\nprintf 'called' >> \"$CALL_LOG\"\nprintf '%s' '{\"allow\":true}'\n", { mode: 0o755 });
+    const calls = path.join(dir, "calls.txt");
+    process.env.AUX4_BIN = fake;
+    process.env.CALL_LOG = calls;
+    const url = "https://records.example.test/form/new";
+    const command = "agent browser run --session new-session --goal 'Complete the requested form' --field confirm=yes";
+    for (const mismatch of ["session", "form"]) {
+      const pending = {
+        status: "needs-input", submitted: false, session: mismatch === "session" ? "old-session" : "new-session", finalUrl: url,
+        confirmation: {
+          action: "Submit", target: "Submit — form Intake", next: command,
+          formStateFingerprint: "sha256:old-form"
+        },
+        needsInput: { kind: "confirm", page: { url } },
+        preSubmitFieldState: [
+          { url, label: "Record name", value: "Morgan", context: "form Intake", controlType: "text", status: "observed", phase: "before-confirmation" },
+          ...(mismatch === "form" ? [{ url, label: "Other value", value: "x", context: "form Other", controlType: "text", status: "observed", phase: "before-confirmation" }] : [])
+        ]
+      };
+      const result = authorizeAction(
+        { configFile: "/config/local.yaml", packageDir: PACKAGE_DIR, delegatedPrefixes: ["agent browser"] },
+        command,
+        [{ command: "agent browser run --url https://records.example.test/form/new --goal 'Complete the requested form'", source: JSON.stringify(pending), completed: true, failed: false }],
+        "Complete the requested form", "", "run\nComplete a page form."
+      );
+      assert.equal(result.allow, false, `${mismatch} mismatch must block`);
+      assert.match(result.reason, /does not match the confirmation session and form/);
+    }
+    assert.equal(fs.existsSync(calls), false, "mismatched snapshot must block before invoking authorization");
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    delete process.env.CALL_LOG;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unbound partial snapshot is passed to the existing authorization check", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-partial-form-snapshot-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    const capture = path.join(dir, "capture.json");
+    fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+const payload=JSON.parse(args[args.indexOf('--question')+1]);
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(payload));
+console.log(JSON.stringify({allow:true,reason:'The requested non-source-dependent continuation is supported.'}));
+`, { mode: 0o755 });
+    process.env.AUX4_BIN = fake;
+    const url = "https://records.example.test/form/new";
+    const command = "agent browser run --session s-1 --goal 'Continue the requested workflow' --field confirm=yes";
+    const pending = {
+      status: "needs-input", submitted: false, session: "s-1", finalUrl: url,
+      confirmation: { action: "Continue", target: "Continue — form Details", next: command },
+      needsInput: { kind: "confirm", page: { url } },
+      preSubmitFieldState: [{ url, label: "Record name", value: "Morgan", context: "form Details", controlType: "text", status: "observed", phase: "before-confirmation" }]
+    };
+    const result = authorizeAction(
+      { configFile: "/config/local.yaml", packageDir: PACKAGE_DIR, delegatedPrefixes: ["agent browser"] },
+      command,
+      [{ command: "agent browser run --url https://records.example.test/form/new --goal 'Continue the requested workflow'", source: JSON.stringify(pending), completed: true, failed: false }],
+      "Continue the requested workflow", "", "run\nContinue the observed workflow."
+    );
+    assert.equal(result.allow, true);
+    const payload = JSON.parse(fs.readFileSync(capture, "utf8"));
+    assert.equal(payload.observedFields.status, "partial");
+    assert.equal(payload.observedFields.formContext, "form Details");
+    assert.equal(Object.hasOwn(payload.observedFields, "formStateFingerprint"), false);
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("non-browser confirmations do not require browser field snapshots", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-nonbrowser-confirm-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    const capture = path.join(dir, "capture.json");
+    fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+const payload=JSON.parse(args[args.indexOf('--question')+1]);
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(payload));
+console.log(JSON.stringify({allow:true,reason:'The requested update is authorized.'}));
+`, { mode: 0o755 });
+    process.env.AUX4_BIN = fake;
+    const command = "records update --field 'confirm=yes'";
+    const result = authorizeAction(
+      { configFile: "/config/local.yaml", packageDir: PACKAGE_DIR },
+      command,
+      [{ command: "records update --field 'name=Alpha'", source: JSON.stringify({
+        status: "needs-input", confirmation: { action: "Save", target: "Save record", next: command }
+      }), completed: true, failed: false }],
+      "Save the requested record", "", "update\nUpdate a record."
+    );
+    assert.equal(result.allow, true);
+    const payload = JSON.parse(fs.readFileSync(capture, "utf8"));
+    assert.equal(Object.hasOwn(payload, "observedFields"), false);
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an absent browser form snapshot is passed as unavailable instead of blocking unrelated confirmations", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-no-form-snapshot-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    const capture = path.join(dir, "capture.json");
+    fs.writeFileSync(fake, `#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(capture)}, args[args.indexOf('--question')+1]);
+console.log(JSON.stringify({allow:true,reason:'No field value depends on a missing form snapshot.'}));
+`, { mode: 0o755 });
+    process.env.AUX4_BIN = fake;
+    const url = "https://records.example.test/confirm";
+    const command = "agent browser run --session s-1 --goal 'Continue the requested workflow' --field confirm=yes";
+    const pending = {
+      status: "needs-input", submitted: false, session: "s-1", finalUrl: url,
+      confirmation: { action: "Continue", target: "Continue workflow", next: command },
+      needsInput: { kind: "confirm", page: { url } },
+      preSubmitFieldState: []
+    };
+    const result = authorizeAction(
+      { configFile: "/config/local.yaml", packageDir: PACKAGE_DIR, delegatedPrefixes: ["agent browser"] },
+      command,
+      [{ command: "agent browser run --url https://records.example.test/start --goal 'Continue the requested workflow'", source: JSON.stringify(pending), completed: true, failed: false }],
+      "Continue the requested workflow", "", "run\nContinue the observed workflow."
+    );
+    assert.equal(result.allow, true);
+    const payload = JSON.parse(fs.readFileSync(capture, "utf8"));
+    assert.equal(payload.observedFields.status, "unavailable");
+    assert.equal(payload.observedFields.session, "s-1");
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("an unavailable or malformed action verdict blocks the write", () => {
   const original = process.env.AUX4_BIN;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-error-"));

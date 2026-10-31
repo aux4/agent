@@ -57,12 +57,34 @@ supported partial steps without requiring the parent to have already inspected
 the page or resolved its record identifiers. Do not require unknown form fields
 before inspection. A delegated goal must not introduce guessed required values.
 
+If the delegated call can commit a change within the same invocation and a
+requested field value must come from an existing record or another source, do
+not authorize the call on the goal alone: require an independent successful read
+that binds the value to that field first. A form action that could inspect and
+submit in one call cannot be assumed to stop at the missing-value boundary.
+
+`observedFields`, when present, is a snapshot of controls currently displayed in
+the pending form. It establishes visible field labels and values only. It is
+separate from `successfulActionsAndResults`: a value shown in the form, a
+preexisting/autofilled value, or a value echoed by a prior form action is not an
+independent source for that same field. Use the snapshot to check which values
+would actually be submitted and whether the pending form still matches the
+confirmed session/target. If the snapshot is missing, partial, truncated, or
+does not match the pending form, do not infer unseen values; deny a confirmation
+that depends on those values. A confirmation for a non-browser command does not
+need a browser snapshot.
+
 For required values that the request says to obtain from an existing record,
 require evidence of the value actually assigned to that record. Allowed options,
 examples, form labels, defaults and headings are possibilities, not proof of an
-assigned value. Earlier suppliedFields, fromGoal values, or a filled form echo
-are not independent evidence for those same values. If the request explicitly
-allows choosing a suitable available option, that choice is authorized. Translate
+assigned value. Match evidence to the same field and value: a value elsewhere in
+the request that is not assigned to this field, earlier suppliedFields,
+fromGoal values, or a filled form echo do not establish the requested record
+value. An observed preexisting value may be kept when the request explicitly
+authorizes using or preserving that default; the form's own value alone still
+does not prove a value requested from an existing record or another source. If
+the request explicitly allows choosing a suitable available option, that choice
+is authorized. Translate
 explicit choices such as enable/disable into the corresponding boolean control
 state; preserve the requested direction and do not change unnamed choices.
 The explicitlyPermittedChoices list identifies concrete options authorized by
@@ -74,6 +96,13 @@ unchanged=true is not an extra change. Do not deny an authorized step merely
 because it resubmits that unchanged value or because another command format
 might be preferable. Compare the actual before
 and after values rather than treating the parameter's presence as a change.
+Do not require new provenance for unrelated preexisting fields that are not
+requested to change or used to satisfy a source-dependent requirement; allow
+them to remain unchanged.
+
+A generic success heading or confirmation page may establish that an operation
+completed, but it does not establish the values submitted unless those values
+are present in a trustworthy result or later readback.
 
 `executionStates` is separate workflow-state metadata, not factual field or
 target evidence. A `needs-input`, pending, or confirmation stage means the

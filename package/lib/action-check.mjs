@@ -59,6 +59,146 @@ function browserRunParts(command) {
   return { goal, resource: normalizedUrl(url), session, fields, data };
 }
 
+const OBSERVED_FIELD_ORIGINS = new Set(["explicit-input", "goal-derived", "preexisting", "unknown"]);
+const OBSERVED_FIELD_LIMIT = 20;
+const OBSERVED_FIELD_VALUE_LIMIT = 1200;
+
+// A pending browser confirmation may carry a live control snapshot. Keep it
+// separate from successfulActionsAndResults: the form is evidence of what is
+// currently displayed, never independent evidence of where a requested
+// value came from.
+function pendingBrowserFieldObservation(command, attempts) {
+  if (!confirmsAction(command)) return null;
+  const parts = browserRunParts(command);
+  if (!parts) return null;
+  const commandKey = canonicalCommand(command);
+  let pending = null;
+  let latestBrowserRun = -1;
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    if (browserRunParts(attempts[i]?.command || "")) { latestBrowserRun = i; break; }
+  }
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const attempt = attempts[i];
+    if (attempt.failed || attempt.completed === false) continue;
+    const result = parseJSONLoose(String(attempt.source ?? attempt.result ?? ""), null);
+    if (!result || typeof result !== "object" || Array.isArray(result)) continue;
+    const next = result.confirmation?.next;
+    if (typeof next !== "string" || canonicalCommand(next) !== commandKey) continue;
+    const status = String(result.status || "").trim().toLowerCase();
+    if (i !== latestBrowserRun || !["needs-input", "needs-confirmation"].includes(status) || result.submitted === true) {
+      return { status: "mismatched", reason: "The confirmation does not match the latest pending browser operation." };
+    }
+    if (attempts.slice(i + 1).some(later => !later.failed && later.completed !== false && isChangeCommand(later.command || ""))) {
+      return { status: "mismatched", reason: "A later change makes the pending browser form snapshot stale." };
+    }
+    pending = { attempt, result };
+    break;
+  }
+  if (!pending) return { status: "missing", reason: "No matching pending browser confirmation was found." };
+
+  const { result } = pending;
+  const pageUrl = String(result.needsInput?.page?.url || result.finalUrl || result.url || "").trim();
+  const session = typeof result.session === "string" ? result.session.trim() : "";
+  const rawFields = result.preSubmitFieldState;
+  if (!Array.isArray(rawFields) || rawFields.length === 0) {
+    return {
+      status: "unavailable",
+      reason: "No form-control snapshot was supplied.",
+      ...(session ? { session } : {}),
+      ...(pageUrl ? { pageUrl } : {}),
+      ...(typeof result.confirmation?.target === "string" ? { target: result.confirmation.target.slice(0, 180) } : {})
+    };
+  }
+  if (!parts.session || !session || parts.session !== session) {
+    return { status: "mismatched", reason: "The pending browser session does not match the confirmation command." };
+  }
+
+  const fields = [];
+  let redactedFields = 0;
+  let truncated = rawFields.length > OBSERVED_FIELD_LIMIT;
+  for (const field of rawFields.slice(0, OBSERVED_FIELD_LIMIT)) {
+    if (!field || typeof field !== "object" || Array.isArray(field)) { truncated = true; continue; }
+    let label = typeof field.label === "string" ? field.label.trim() : "";
+    const value = typeof field.value === "string" ? field.value : null;
+    const controlType = typeof field.controlType === "string" ? field.controlType.trim().toLowerCase() : "";
+    const fieldUrl = typeof field.url === "string" ? field.url.trim() : "";
+    let context = typeof field.context === "string" ? field.context.trim() : "";
+    if (!label || !fieldUrl || !pageUrl || fieldUrl !== pageUrl) { truncated = true; continue; }
+    if (field.status !== "observed") truncated = true;
+    if (label.length > 160) { label = `${label.slice(0, 160)}…`; truncated = true; }
+    if (context.length > 180) { context = `${context.slice(0, 180)}…`; truncated = true; }
+    const origin = OBSERVED_FIELD_ORIGINS.has(field.origin) ? field.origin : "unknown";
+    const item = {
+      label,
+      controlType: controlType || "unknown",
+      ...(context ? { context } : {}),
+      origin,
+      ...(typeof field.phase === "string" ? { phase: field.phase } : {}),
+      ...(typeof field.status === "string" ? { status: field.status } : {}),
+      ...(typeof field.changed === "boolean" ? { changed: field.changed } : {}),
+      ...(typeof field.required === "boolean" ? { required: field.required } : {})
+    };
+    if (field.phase !== "before-confirmation") truncated = true;
+    const sensitive = field.redacted === true || field.valueRedacted === true || /^(?:password|hidden|file)$/i.test(controlType)
+      || /password|one[ -]?time code|secret/i.test(label);
+    if (sensitive) {
+      item.valueRedacted = true;
+      redactedFields++;
+      truncated = true;
+      fields.push(item);
+      continue;
+    }
+    if (typeof field.checked === "boolean") item.checked = field.checked;
+    if (typeof field.empty === "boolean") item.empty = field.empty;
+    if (typeof field.selected === "boolean") item.selected = field.selected;
+    const selectedValues = Array.isArray(field.selectedValues)
+      ? field.selectedValues.slice(0, 20).filter(value => typeof value === "string").map(value => {
+        if (value.length > OBSERVED_FIELD_VALUE_LIMIT) {
+          truncated = true;
+          return `${value.slice(0, OBSERVED_FIELD_VALUE_LIMIT)}…`;
+        }
+        return value;
+      })
+      : null;
+    if (selectedValues) {
+      item.selectedValues = selectedValues;
+      if (field.selectedValues.length > 20 || selectedValues.length !== Math.min(field.selectedValues.length, 20)) truncated = true;
+    }
+    if (value !== null) {
+      if (value.length > OBSERVED_FIELD_VALUE_LIMIT) {
+        item.value = `${value.slice(0, OBSERVED_FIELD_VALUE_LIMIT)}…`;
+        item.valueTruncated = true;
+        truncated = true;
+      } else item.value = value;
+    } else if (!("checked" in item) && !("selected" in item) && !("selectedValues" in item) && !("empty" in item)) {
+      truncated = true;
+    }
+    fields.push(item);
+  }
+  const contexts = [...new Set(fields.map(field => field.context).filter(Boolean))];
+  const target = typeof result.confirmation?.target === "string" ? result.confirmation.target.trim() : "";
+  const formStateFingerprint = typeof result.confirmation?.formStateFingerprint === "string"
+    ? result.confirmation.formStateFingerprint.trim() : "";
+  if (result.confirmation?.formStatePartial === true) truncated = true;
+  if (!pageUrl || contexts.length > 1) {
+    return { status: "mismatched", session, ...(pageUrl ? { pageUrl } : {}), reason: "The pending browser field snapshot is missing its page or spans multiple form contexts." };
+  }
+  if (fields.length === 0) return { status: "unavailable", reason: "No usable form-control snapshot was supplied.", session, pageUrl };
+  if (contexts.length !== 1 || fields.some(field => !field.context) || !target || !formStateFingerprint) truncated = true;
+  return {
+    status: truncated ? "partial" : "current",
+    session,
+    pageUrl,
+    ...(contexts[0] ? { formContext: contexts[0] } : {}),
+    ...(target ? { target: target.slice(0, 180) } : {}),
+    ...(formStateFingerprint ? { formStateFingerprint: formStateFingerprint.slice(0, 180) } : {}),
+    ...(result.confirmation?.formStatePartial === true ? { formStatePartial: true } : {}),
+    fieldCount: rawFields.length,
+    ...(redactedFields ? { redactedFields } : {}),
+    fields
+  };
+}
+
 function submittedBrowserWorkflows(attempts) {
   const sessions = new Map();
   const sessionOperations = new Map();
@@ -315,6 +455,10 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     return {allow: false, repeatedDenial: true, reason: `This exact action was already refused for the same reason: ${repeatedDenial} Obtain new evidence that addresses the refusal or revise the action before retrying.`};
   }
   const confirming = confirmsAction(command);
+  const observedFields = pendingBrowserFieldObservation(command, attempts);
+  if (observedFields?.status === "mismatched") {
+    return { allow: false, reason: "The pending browser form snapshot does not match the confirmation session and form. Re-observe the current form before confirming." };
+  }
   const staged = new Map();
   if (delegatedGoal && confirming) for (const attempt of attempts.filter(a => a.completed !== false && !a.failed)) {
     const result = parseJSONLoose(attempt.source ?? attempt.result ?? "", null);
@@ -349,6 +493,7 @@ export function authorizeAction(options, command, attempts = [], request = "", h
       const observed=observedFieldValue(label,attempts);
       return {label,value,...(observed!==null ? {observedValue:observed,unchanged:value===observed} : {})};
     }),
+    ...(observedFields ? { observedFields } : {}),
     explicitlyPermittedChoices: candidateFields.filter(entry=>explicitOpenChoice(entry.label,entry.value,attempts,request)), successfulActionsAndResults: evidence,
     executionStates,
     commandReference: commandReference ?? actionCommandHelp(command) };
