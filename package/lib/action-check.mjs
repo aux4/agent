@@ -112,6 +112,18 @@ function observedFieldValueText(observed) {
   return null;
 }
 
+export function canonicalExplicitDate(request, observed) {
+  if (!observed || observed.controlType !== "date" || typeof observed.value !== "string") return null;
+  if (!/YYYY[-/]MM[-/]DD/i.test(String(observed.label || ""))) return null;
+  const dates = [...String(request || "").matchAll(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})\b/g)]
+    .map(match => ({ day: Number(match[1]), month: Number(match[2]), year: Number(match[3]) }))
+    .filter(value => value.day >= 1 && value.day <= 31 && value.month >= 1 && value.month <= 12);
+  if (dates.length !== 1) return null;
+  const date = dates[0];
+  const candidate = `${String(date.year).padStart(4, "0")}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
+  return candidate === observed.value ? { fieldRef: observed.fieldRef, requestDate: `${date.day}/${date.month}/${date.year}`, canonicalValue: candidate } : null;
+}
+
 function evidenceSupportsField(evidence, review, observed, basis, request, attempts) {
   if (!Array.isArray(evidence) || evidence.length === 0) return false;
   return evidence.every(ref => {
@@ -736,7 +748,9 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     return { ...(typeof a.callId === "string" && a.callId ? { attemptRef: a.callId } : {}), command: a.command, result, suppliedFields: enteredValues(a.command) };
   });
   const executionStates = boundedExecutionStates(attempts);
+  const literalDateNormalizations = (observedFields?.fields || []).map(field => canonicalExplicitDate(request, field)).filter(Boolean);
   const payload = { request, proposedAction: command, delegatedGoal, confirming,
+    ...(literalDateNormalizations.length ? { literalDateNormalizations } : {}),
     proposedFields: [...staged].map(([label, value]) => {
       const observed=observedFieldValue(label,attempts);
       return {label,value,...(observed!==null ? {observedValue:observed,unchanged:value===observed} : {})};

@@ -149,6 +149,10 @@ incomplete, or partial snapshots fail closed before assessment.
 A generic success heading or confirmation page may establish that an operation
 completed, but it does not establish the values submitted unless those values
 are present in a trustworthy result or later readback.
+When a date control explicitly declares `YYYY-MM-DD`, a single unambiguous
+day/month/year date in the original request may be compared to its canonical
+ISO value. Multiple dates, invalid dates, mismatches, or non-date controls do
+not receive this normalization.
 Statuses such as `already submitted` are not completion receipts unless the
 structured result also carries `submitted: true`; an open form with
 `submitted: false` remains pending.

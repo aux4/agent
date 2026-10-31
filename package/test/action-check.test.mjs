@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { authorizeAction, actionCheckFiles, actionCheckStats, createFormApprovalDispatch, isTrustedFormApprovalDispatch, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
+import { authorizeAction, actionCheckFiles, actionCheckStats, canonicalExplicitDate, createFormApprovalDispatch, isTrustedFormApprovalDispatch, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
 import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,6 +40,16 @@ test("typed form assessment verifies an exact request anchor against the bound o
     allow: true,
     reason: "The required form controls have grounded assessments bound to the current form snapshot."
   });
+});
+
+test("explicit day/month/year dates normalize only to one exact ISO date control", () => {
+  const field = { fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", controlType: "date", value: "1990-03-14" };
+  assert.deepEqual(canonicalExplicitDate("Date of birth 14/03/1990 (day/month/year).", field), {
+    fieldRef: "dob", requestDate: "14/3/1990", canonicalValue: "1990-03-14"
+  });
+  assert.equal(canonicalExplicitDate("Date of birth 14/03/1991.", field), null);
+  assert.equal(canonicalExplicitDate("Dates 14/03/1990 or 15/03/1990.", field), null);
+  assert.equal(canonicalExplicitDate("Date of birth 14/03/1990.", { ...field, controlType: "text" }), null);
 });
 
 test("typed form assessment rejects missing, stale, partial, or contradictory state", () => {
