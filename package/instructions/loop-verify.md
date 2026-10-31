@@ -21,6 +21,16 @@ Judge each criterion by its kind:
   saying that something was sent, submitted, saved or changed is not evidence
   that it happened. Require a conclusive action result or a later read that
   directly confirms the state.
+  For a positive state claim (something is present or true), a read that does
+  not mention success is not, by itself, evidence that the state is false.
+  This remains true when a page extractor reports complete coverage of that
+  page: extraction completeness describes the returned page content, not
+  whether the underlying operation succeeded. Mark such an outcome
+  `unverifiable` with relation `unknown` unless the facts directly contradict
+  it. Absence from a complete, authoritative enumeration may contradict a
+  positive claim only when that enumeration covers the full scope named by
+  the criterion; an incomplete source, or a page-local source whose scope
+  does not match the criterion, cannot establish that.
   A successful lookup, a promise to act, or a tool call that only prepared a
   form does not prove a requested write happened.
   Visible checked boxes or filled inputs prove the current form values, not
