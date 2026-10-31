@@ -172,6 +172,20 @@ test("trusted literal assessment binds natural field grammar and rejects crosswi
     "source-required existing values need trusted read evidence");
 });
 
+test("trusted literal assessment binds capitalized command labels to case-varied observed labels", () => {
+  const request = 'Fill out the contact form for Priya Shah, email priya@example.test, date of birth 14/03/1990 (day/month/year).';
+  const fields = [
+    { fieldRef: "name", label: "Full name", controlType: "text", value: "Priya Shah", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "email", label: "Email address", controlType: "email", value: "priya@example.test", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", controlType: "date", value: "1990-03-14", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" }
+  ];
+  const observed = { status: "current", session: "s", target: "Send", pageUrl: "https://example.test", formStateFingerprint: "fp", formStateComplete: true, fields };
+  const command = "agent browser run --goal 'fill' --field 'Name=Priya Shah' --field 'Email=priya@example.test' --field 'DateOfBirth=1990-03-14'";
+  assert.ok(buildTrustedLiteralSubmissionAssessment(command, observed, request));
+  assert.equal(buildTrustedLiteralSubmissionAssessment(command.replace("Name=Priya Shah", "Name=priya@example.test").replace("Email=priya@example.test", "Email=Priya Shah"), observed, request), null);
+  assert.equal(buildTrustedLiteralSubmissionAssessment(command, { ...observed, fields: [{ ...fields[0], label: "First name" }, { ...fields[0], fieldRef: "last", label: "Last name" }, fields[1], fields[2]] }, request), null);
+});
+
 test("typed form assessment rejects missing, stale, partial, or contradictory state", () => {
   const request = "Priority is Urgent.";
   const valid = fieldEvidenceAssessment({ request });

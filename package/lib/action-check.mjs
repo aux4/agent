@@ -85,13 +85,19 @@ function jsonPointerValue(root, pointer) {
 }
 
 function fieldIdentity(value) {
-  return String(value || "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return String(value || "").normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 }
 
 function fieldLabelTokens(value) {
   return String(value || "").normalize("NFKC")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .toLowerCase().match(/[a-z0-9]+/g) || [];
+    .replace(/([\p{Ll}\p{N}])([\p{Lu}])/gu, "$1 $2")
+    .toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+}
+
+function requestContainsLabel(text, label) {
+  const normalizedText = String(text || "").normalize("NFKC").toLocaleLowerCase();
+  const normalizedLabel = String(label || "").normalize("NFKC").toLocaleLowerCase();
+  return Boolean(normalizedLabel && normalizedText.includes(normalizedLabel));
 }
 
 function labelAliasMatches(commandLabel, observedLabel) {
@@ -397,8 +403,16 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
     if (!requestText.includes(requestValue)) return null;
     const valueOffset = requestText.indexOf(requestValue);
     const excerpt = requestText.length <= 600 ? requestText : requestText.slice(Math.max(0, valueOffset - 240), valueOffset + requestValue.length + 240);
-    const fieldText = [observed.label, entry.label].map(value => String(value || "").trim()).find(value => value && excerpt.includes(value));
-    const anchored = fieldText || requestFieldGrammarAnchor(entry.label, requestValue, request) || requestFieldGrammarAnchor(observed.label, requestValue, request);
+    const fieldText = [observed.label, entry.label].map(value => String(value || "").trim()).find(value => requestContainsLabel(excerpt, value));
+    const grammarAnchor = requestFieldGrammarAnchor(entry.label, requestValue, request) || requestFieldGrammarAnchor(observed.label, requestValue, request);
+    const semanticLabel = fieldIdentity(entry.label);
+    const requiresGrammar = semanticLabel === "email" || semanticLabel.endsWith("email")
+      || semanticLabel.includes("dateofbirth") || semanticLabel === "dob" || semanticLabel === "message" || semanticLabel.endsWith("message");
+    const descriptiveDateAnchor = (semanticLabel.includes("dateofbirth") || semanticLabel === "dob")
+      && requestContainsLabel(excerpt, observed.label);
+    const labeledDateAnchor = (semanticLabel.includes("dateofbirth") || semanticLabel === "dob")
+      && requestContainsLabel(excerpt, entry.label);
+    const anchored = grammarAnchor || (!requiresGrammar && fieldText) || descriptiveDateAnchor || labeledDateAnchor;
     if (!anchored || !excerpt.includes(requestValue)) return null;
     fields.push({
       fieldRef: observed.fieldRef,
