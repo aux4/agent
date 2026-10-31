@@ -134,6 +134,10 @@ test("source-backed browser preflight admits only the exact trusted read value",
   assert.equal(hasTrustedReadBackedFieldEvidence(command, [read], request), true);
   const options = { configFile: "/config/local.yaml", packageDir: PACKAGE_DIR, delegatedPrefixes: ["agent browser"] };
   assert.equal(authorizeAction(options, command, [read], request).sourceBackedPreflight, true);
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...read, source: JSON.stringify({ snippet: "Your confirmation code is QZ-58213." }) }], request), false,
+    "a matching code without the structured message id is not trusted source evidence");
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...read, source: JSON.stringify({ id: "msg-other", snippet: "Your confirmation code is QZ-58213." }) }], request), false,
+    "a source result for another message cannot authorize this field");
   assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...read, source: read.source.replace("QZ-58213", "OTHER") }], request), false);
   assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...read, command: "agent browser run --url https://example.test/mail" }], request), false);
 });

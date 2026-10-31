@@ -476,7 +476,10 @@ function sourceResultMatchesCommand(attempt) {
   const messageIndex = words.indexOf("--messageId");
   if (messageIndex >= 0) {
     const parsed = parseJSONLoose(String(attempt.source ?? attempt.result ?? ""), null);
-    if (parsed && typeof parsed.id === "string" && parsed.id !== words[messageIndex + 1]) return false;
+    // A message-detail read is source authority only when its structured
+    // result identifies the exact requested message. A matching body/snippet
+    // without an id is not sufficient evidence and must fail closed.
+    if (!parsed || typeof parsed.id !== "string" || parsed.id !== words[messageIndex + 1]) return false;
   }
   const urlIndex = words.indexOf("--url");
   if (urlIndex >= 0) {
