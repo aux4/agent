@@ -47,6 +47,7 @@ import {
   composeScopedContinuationQuestion,
   freshScopedContinuation,
   freshScopedReadAttempt,
+  hasFreshReadEvidence,
   composeExecuteQuestion,
   incompleteNote,
   fallbackPlan,
@@ -3459,8 +3460,8 @@ test("managed browser form commits require one grounded assessment and a control
   };
   const snapshot = (fingerprint, partial = false) => ({
     status: "needs-confirmation", submitted: false, session: "s-form", finalUrl: "https://example.test/intake",
-    formSubmission: { session: "s-form", target: "target-1", pageUrl: "https://example.test/intake", fingerprint, partial, approvalRequired: true },
-    confirmation: { action: "Submit", target: "target-1", emptyFields: [], next: pendingCommand, formStateFingerprint: fingerprint, ...(partial ? { formStatePartial: true } : {}) },
+    formSubmission: { session: "s-form", target: "target-1", pageUrl: "https://example.test/intake", fingerprint, partial, formStateComplete: !partial, approvalRequired: true },
+    confirmation: { action: "Submit", target: "target-1", emptyFields: [], next: pendingCommand, formStateFingerprint: fingerprint, formStateComplete: !partial, ...(partial ? { formStatePartial: true } : {}) },
     preSubmitFieldState: [{ ...observed, url: "https://example.test/intake" }]
   });
   fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
@@ -5235,7 +5236,7 @@ test("scoped read guard requires a successful post-operation observation in the 
   const context = { operationCallId: "op", operationCommand: "agent browser run --session s1", session: "s1", finalUrl: "https://example.test/confirm" };
   const op = { callId: "op", tool: "executeAux4", command: context.operationCommand, completed: true, failed: false };
   const oldRead = { callId: "old-read", tool: "executeAux4", command: "agent browser inspect --session s1", completed: true, failed: false, source: '{"elements":[]}' };
-  const sameSessionRead = { callId: "fresh-read", tool: "executeAux4", command: "agent browser inspect --session s1", completed: true, failed: false, source: '{"elements":[],"complete":true}' };
+  const sameSessionRead = { callId: "fresh-read", tool: "executeAux4", command: "agent browser inspect --session s1", completed: true, failed: false, source: '{"elements":[{"role":"button","name":"Next"}],"complete":true}' };
   const otherSessionRead = { callId: "wrong-read", tool: "executeAux4", command: "agent browser inspect --session s2", completed: true, failed: false, source: '{"elements":[]}' };
   assert.match(scopedContinuationGuardMessage("agent browser run --session s2 --target new", [op], context), /first obtain a successful read-only observation/i);
   assert.match(scopedContinuationGuardMessage("agent browser inspect --session s2", [op], context), /returned live session/);
@@ -5254,6 +5255,20 @@ test("scoped read guard requires a successful post-operation observation in the 
   assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, failed: true }], context), null, "a failed read does not open the guard");
   assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: "", result: "" }], context), null, "an empty tool echo is not a read observation");
   assert.equal(freshScopedReadAttempt([op, { ...sameSessionRead, source: '{"status":"needs-input","elements":[]}' }], context), null, "an explicit incomplete status is not a read observation");
+});
+
+test("bounded lookup evidence stops on empty or unusable results and accepts a nonempty reference", () => {
+  for (const empty of [
+    "[]",
+    '{"items":[]}',
+    '{"matches":[],"answered":false}',
+    '{"matches":[],"answered":true,"complete":true}',
+    '{"records":[null,null]}',
+    "null"
+  ]) assert.equal(hasFreshReadEvidence(empty), false, `empty lookup must not earn continuation: ${empty}`);
+  assert.equal(hasFreshReadEvidence('{"matches":[{"id":"r7"}],"answered":false}'), true,
+    "a nonempty returned reference can earn the single bounded detail-read continuation");
+  assert.equal(hasFreshReadEvidence('{"records":[{"id":"r7","name":"Example"}]}'), true);
 });
 
 test("runLoop takes at most one fresh scoped continuation and does not replay the completed command", async () => {

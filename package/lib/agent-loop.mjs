@@ -887,20 +887,27 @@ export function matchesScopedLocation(command, context) {
     && optionValue(command, "--url") === context.finalUrl;
 }
 
-function hasFreshReadEvidence(source) {
+export function hasFreshReadEvidence(source) {
   const text = String(source ?? "").trim();
   if (!text) return false;
   const output = parseJSONLoose(text, null);
-  if (output === null) return true; // legacy successful reads may return plain text.
-  if (Array.isArray(output)) return true; // an explicit empty list is still an observed result.
+  if (output === null) return text !== "null"; // legacy successful reads may return plain text, but null is no result.
+  const usableItem = value => value !== null && value !== undefined
+    && (typeof value === "string" ? Boolean(value.trim())
+      : typeof value === "number" || typeof value === "boolean"
+        ? true
+        : typeof value === "object" && !Array.isArray(value) ? Object.keys(value).length > 0
+          : Array.isArray(value) ? value.some(usableItem) : false);
+  if (Array.isArray(output)) return output.some(usableItem);
   if (typeof output !== "object") return typeof output === "string" && Boolean(output.trim());
   const textKeys = ["current", "currentText", "text", "page", "content", "body", "title", "summary", "observation", "evidence"];
   if (textKeys.some(key => typeof output[key] === "string" && output[key].trim())) return true;
-  const collectionKeys = ["elements", "controls", "links", "blocks", "items", "matches", "results"];
+  const collectionKeys = ["elements", "controls", "links", "blocks", "items", "matches", "results", "records"];
   const collections = collectionKeys.filter(key => Array.isArray(output[key]));
-  if (collections.some(key => output[key].length > 0)) return true;
-  if (output.complete === true && collections.length > 0) return true;
-  if (output.answered === true && Array.isArray(output.matches)) return true;
+  if (collections.some(key => output[key].some(usableItem))) return true;
+  if (output.complete === true && collections.some(key => output[key].some(usableItem))) return true;
+  if (output.answered === true && Array.isArray(output.matches) && output.matches.some(usableItem)) return true;
+  if (collections.length > 0) return false;
   // Preserve generic legacy read results while refusing a bare transport
   // envelope such as {answered:false,matches:[],question,provider}.
   const transportKeys = new Set(["status", "reason", "question", "provider", "answered", "complete", "session", "sessionClosed", "finalUrl", "url", "query", "searchQuery", "metadata", "elapsed", "debug"]);

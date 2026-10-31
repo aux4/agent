@@ -411,7 +411,7 @@ console.log(JSON.stringify({allow:true,reason:'The pending form state was review
     assert.match(instructions, /field and value/);
     assert.match(instructions, /not an\s+independent source/);
     assert.match(instructions, /no\s+independent structured source for preservation\/default authority/);
-    assert.match(instructions, /Unchanged\s+optional preexisting controls.*need no assessment/s);
+    assert.match(instructions, /complete snapshot means every value control.*Every listed control therefore needs an exact/s);
     assert.match(instructions, /successful read\s+that binds the value to that field first/);
   } finally {
     if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
