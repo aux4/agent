@@ -244,6 +244,29 @@ console.log(JSON.stringify({allow:true,reason:'The requested field value is grou
   }
 });
 
+test("model denial remains authoritative despite trusted explicit date normalization", () => {
+  const original = process.env.AUX4_BIN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-date-denial-"));
+  try {
+    const fake = path.join(dir, "aux4");
+    fs.writeFileSync(fake, "#!/usr/bin/env node\nconsole.log(JSON.stringify({allow:false,reason:'unrelated scope denial'}));\n", { mode: 0o755 });
+    process.env.AUX4_BIN = fake;
+    const command = "agent browser run --session session-1 --field confirm=yes";
+    const snapshot = { status: "needs-confirmation", submitted: false, session: "session-1",
+      confirmation: { next: command, target: "target-1", formStateFingerprint: "sha256:date", formStateComplete: true },
+      formSubmission: { session: "session-1", target: "target-1", pageUrl: "https://example.test/form", fingerprint: "sha256:date", formStateComplete: true, approvalRequired: true },
+      preSubmitFieldState: [{ fieldRef: "dob", url: "https://example.test/form", label: "Date of birth (format YYYY-MM-DD)", context: "form Intake", controlType: "text", value: "1990-03-14", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed", phase: "before-confirmation" }] };
+    const result = authorizeAction({ configFile: "/config/local.yaml", packageDir: PACKAGE_DIR }, command,
+      [{ command: "agent browser run --url https://example.test/form --goal 'Date of birth 14/03/1990.'", source: JSON.stringify(snapshot), completed: true, failed: false, callId: "pending-date" }],
+      "Submit date of birth 14/03/1990 (day/month/year).", "", "run\n  --goal <arg>");
+    assert.equal(result.allow, false);
+    assert.match(result.reason, /unrelated scope denial/);
+  } finally {
+    if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("model-provided approval flags are rejected before the existing action check", () => {
   const original = process.env.AUX4_BIN;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "action-check-forged-form-approval-"));
