@@ -133,6 +133,31 @@ test("trusted date fallback requires a complete literal snapshot and one exact d
   assert.equal(trustedLiteralDateNormalization({ ...observed, fields: [...observed.fields, { ...observed.fields[1], fieldRef: "dob2" }] }, request), null);
 });
 
+test("trusted literal assessment binds natural field grammar and rejects crosswired values", () => {
+  const request = 'Fill the form for Alex Rivera, email alex@example.test, date of birth 14/03/1990 (day/month/year), with the message "Please contact me."';
+  const fields = [
+    { fieldRef: "name", label: "Full name", controlType: "text", value: "Alex Rivera", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "email", label: "Email", controlType: "email", value: "alex@example.test", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", controlType: "text", value: "1990-03-14", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "msg", label: "Message", controlType: "textarea", value: "Please contact me.", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" }
+  ];
+  const observed = { status: "current", session: "s", target: "Send", pageUrl: "https://example.test", formStateFingerprint: "fp", formStateComplete: true, approvalRequired: true, fields };
+  const command = "agent browser run --goal 'fill' --field 'Name=Alex Rivera' --field 'Email=alex@example.test' --field 'DateOfBirth=14/03/1990' --field 'Message=Please contact me.'";
+  assert.ok(buildTrustedLiteralSubmissionAssessment(command, observed, request));
+  const crosswired = command.replace("Name=Alex Rivera", "Name=alex@example.test").replace("Email=alex@example.test", "Email=Alex Rivera");
+  assert.equal(buildTrustedLiteralSubmissionAssessment(crosswired, observed, request), null);
+  assert.equal(buildTrustedLiteralSubmissionAssessment(command, observed, request.replace("for Alex Rivera", "for Alex Rivera and Jamie Stone")), null);
+  assert.equal(buildTrustedLiteralSubmissionAssessment(command, observed, request.replace("alex@example.test", "alex@example.test and sam@example.test")), null,
+    "multiple email relations cannot be resolved to one control");
+  const repeated = `${command} --field 'Email=alex@example.test'`;
+  assert.equal(buildTrustedLiteralSubmissionAssessment(repeated, observed, request), null,
+    "a repeated command field cannot be consumed twice");
+  const sourceRequired = { ...observed, fields: [{ ...fields[0], fieldRef: "priority", label: "Priority", value: "Low", origin: "preexisting", changed: false, required: false }] };
+  assert.equal(buildTrustedLiteralSubmissionAssessment("agent browser run --goal 'fill' --field 'Priority=Low'", sourceRequired,
+    "Use the Priority from the assigned record for the form."), null,
+    "source-required existing values need trusted read evidence");
+});
+
 test("typed form assessment rejects missing, stale, partial, or contradictory state", () => {
   const request = "Priority is Urgent.";
   const valid = fieldEvidenceAssessment({ request });

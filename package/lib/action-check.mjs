@@ -100,6 +100,23 @@ function labelAliasMatches(commandLabel, observedLabel) {
   return commandTokens.length > 0 && commandTokens.every(token => observedTokens.has(token));
 }
 
+function requestFieldGrammarAnchor(label, value, request) {
+  const text = String(request || "");
+  const field = fieldIdentity(label);
+  const escaped = escapePattern(value);
+  if (/(?:^|\b)(?:full)?name\b/.test(field)) {
+    return new RegExp(`\\bfor\\s+${escaped}(?=\\s*(?:,|;|$|email\\b|date\\s+of\\s+birth\\b|with\\s+(?:the\\s+)?message\\b))`, "i").test(text);
+  }
+  if (field === "email" || field.endsWith("email")) return new RegExp(`\\bemail\\s+${escaped}(?=\\s*(?:,|;|$|date\\s+of\\s+birth\\b|with\\s+(?:the\\s+)?message\\b))`, "i").test(text);
+  if (field.includes("dateofbirth") || field === "dob") return new RegExp(`\\bdate\\s+of\\s+birth\\s+${escaped}(?=\\s*(?:\\(|,|;|$|with\\s+(?:the\\s+)?message\\b))`, "i").test(text);
+  if (field === "message" || field.endsWith("message")) {
+    const quoted = new RegExp(`\\bwith\\s+(?:the\\s+)?message\\s+["']${escaped}["']`, "i");
+    const plain = new RegExp(`\\bwith\\s+(?:the\\s+)?message\\s+${escaped}(?=\\s*(?:[.!?]|$))`, "i");
+    return quoted.test(text) || plain.test(text);
+  }
+  return false;
+}
+
 function fieldLabelBinds(reference, observed, allObserved = []) {
   if (fieldIdentity(reference) === fieldIdentity(observed.label)) return true;
   if (!labelAliasMatches(reference, observed.label)) return false;
@@ -177,10 +194,11 @@ function evidenceSupportsField(evidence, review, observed, basis, request, attem
   return evidence.every(ref => {
     if (!ref || typeof ref !== "object" || Array.isArray(ref)) return false;
     if (basis === "request") {
-      if (!onlyKeys(ref, new Set(["kind", "excerpt", "fieldText", "valueText"])) || ref.kind !== "request") return false;
+      if (!onlyKeys(ref, new Set(["kind", "excerpt", "fieldText", "valueText", "anchor"])) || ref.kind !== "request") return false;
       if (typeof ref.excerpt !== "string" || !ref.excerpt || ref.excerpt.length > 600 || !request.includes(ref.excerpt)
         || typeof ref.fieldText !== "string" || !fieldLabelBinds(ref.fieldText, observed, allObserved)
-        || !ref.excerpt.includes(ref.fieldText)) return false;
+        || (ref.anchor !== "grammar" && !ref.excerpt.toLowerCase().includes(ref.fieldText.toLowerCase()))) return false;
+      if (ref.anchor === "grammar" && !requestFieldGrammarAnchor(ref.fieldText, ref.valueText, request)) return false;
       if (typeof ref.valueText !== "string") return false;
       const direct = ref.valueText === observedFieldValueText(observed) && ref.excerpt.includes(ref.valueText);
       const normalized = canonicalExplicitDate(request, observed);
@@ -332,8 +350,14 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
   for (const observed of observedFields.fields || []) {
     const actual = observedFieldValueText(observed);
     const normalizedDate = canonicalExplicitDate(request, observed);
-    const valueMatches = supplied.map((entry, index) => ({ entry, index })).filter(({ entry }) =>
-      entry.value === actual || (normalizedDate?.canonicalValue === actual && entry.value === normalizedDate.requestDate));
+    const valueMatches = supplied.map((entry, index) => ({ entry, index })).filter(({ entry }) => {
+      if (entry.value === actual) return true;
+      if (!normalizedDate || normalizedDate.canonicalValue !== actual) return false;
+      const parts = String(entry.value).match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+      const requested = normalizedDate.requestDate.split("/");
+      return Boolean(parts) && Number(parts[1]) === Number(requested[0])
+        && Number(parts[2]) === Number(requested[1]) && Number(parts[3]) === Number(requested[2]);
+    });
     const exact = valueMatches.filter(({ entry }) => fieldIdentity(entry.label) === fieldIdentity(observed.label));
     const aliases = valueMatches.filter(({ entry }) => labelAliasMatches(entry.label, observed.label));
     const candidates = exact.length ? exact : aliases;
@@ -349,20 +373,33 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
     const normalizedDate = canonicalExplicitDate(request, observed);
     const entry = assignments.get(observed);
     if (!entry) return null;
-    const requestValue = normalizedDate?.canonicalValue === actual ? normalizedDate.requestDate : actual;
-    if (!String(request || "").includes(requestValue)) return null;
     const requestText = String(request || "");
+    // Keep the exact date spelling from the request for the grammar anchor
+    // (canonicalExplicitDate intentionally exposes a normalized D/M/YYYY
+    // value for its public contract).  This lets a staged command use
+    // 14/03/1990 while the request says 14/03/1990, without weakening the
+    // calendar/value binding to the observed ISO control.
+    let requestValue = actual;
+    if (normalizedDate?.canonicalValue === actual) {
+      const rawDate = [...requestText.matchAll(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/g)]
+        .find(match => Number(match[1]) === Number(normalizedDate.requestDate.split("/")[0])
+          && Number(match[2]) === Number(normalizedDate.requestDate.split("/")[1])
+          && Number(match[3]) === Number(normalizedDate.requestDate.split("/")[2]));
+      requestValue = rawDate?.[0] || normalizedDate.requestDate;
+    }
+    if (!requestText.includes(requestValue)) return null;
     const valueOffset = requestText.indexOf(requestValue);
     const excerpt = requestText.length <= 600 ? requestText : requestText.slice(Math.max(0, valueOffset - 240), valueOffset + requestValue.length + 240);
     const fieldText = [observed.label, entry.label].map(value => String(value || "").trim()).find(value => value && excerpt.includes(value));
-    if (!fieldText || !excerpt.includes(requestValue)) return null;
+    const anchored = fieldText || requestFieldGrammarAnchor(entry.label, requestValue, request) || requestFieldGrammarAnchor(observed.label, requestValue, request);
+    if (!anchored || !excerpt.includes(requestValue)) return null;
     fields.push({
       fieldRef: observed.fieldRef,
       status: "verified",
       requirement: "literal-value",
       basis: "request",
       relation: "assigns-value",
-      evidence: [{ kind: "request", excerpt, fieldText, valueText: requestValue }]
+      evidence: [{ kind: "request", excerpt, fieldText: fieldText || observed.label, valueText: requestValue, ...(fieldText ? {} : { anchor: "grammar" }) }]
     });
   }
   if (!fields.length) return null;
