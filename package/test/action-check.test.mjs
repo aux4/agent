@@ -102,6 +102,9 @@ test("controller source assessment binds a pre-fill account read to the exact co
   assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request.replace("reference code", "account token"), attempts), null);
   assert.equal(validateSubmissionAssessment(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, attempts), { ...observed, formStateFingerprint: "changed" }, request, attempts).allow, false);
   assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, { ...observed, fields: [{ ...observed.fields[0], fieldRef: "a" }, { ...observed.fields[0], fieldRef: "b" }] }, request, attempts), null);
+  const repeated = [attempts[0], attempts[1], { ...attempts[1], callId: "stage-redeem-replay" }];
+  assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, repeated), null,
+    "a repeated identical stage cannot reuse source evidence from before the prior stage");
 });
 
 test("controller source assessment binds Gmail code plus literal shipping fields", () => {

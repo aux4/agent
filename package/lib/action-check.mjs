@@ -495,12 +495,24 @@ function sourceIntentForField(request, label) {
 
 function stagedAttemptIndex(command, attempts) {
   const key = canonicalCommand(command);
-  return attempts.findIndex(entry => {
+  return attempts.findLastIndex(entry => {
     if (!entry || entry.failed || entry.completed === false) return false;
     if (canonicalCommand(entry.command || "") === key) return true;
     const parsed = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
     return parsed?.confirmation?.next && canonicalCommand(parsed.confirmation.next) === key;
   });
+}
+
+function previousStagedAttemptIndex(command, attempts, latest) {
+  const key = canonicalCommand(command);
+  for (let index = latest - 1; index >= 0; index--) {
+    const entry = attempts[index];
+    if (!entry || entry.failed || entry.completed === false) continue;
+    if (canonicalCommand(entry.command || "") === key) return index;
+    const parsed = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
+    if (parsed?.confirmation?.next && canonicalCommand(parsed.confirmation.next) === key) return index;
+  }
+  return -1;
 }
 
 // Controller-owned mixed literal/read assessment. Read-backed values must come
@@ -516,6 +528,7 @@ export function buildTrustedReadBackedSubmissionAssessment(command, observedFiel
   if (!supplied.length) return null;
   const beforeFill = stagedAttemptIndex(command, attempts);
   if (beforeFill < 0) return null;
+  const previousFill = previousStagedAttemptIndex(command, attempts, beforeFill);
   const requestText = String(request || "");
   const used = new Set();
   const fields = [];
@@ -528,7 +541,7 @@ export function buildTrustedReadBackedSubmissionAssessment(command, observedFiel
       && (fieldIdentity(entry.label) === fieldIdentity(observed.label) || labelAliasMatches(entry.label, observed.label)));
     if (matches.length !== 1) return null;
     const { entry, index } = matches[0];
-    const reads = attempts.slice(0, beforeFill).filter(attempt => eligibleReadAttempt(attempt) && sourceResultMatchesCommand(attempt)
+    const reads = attempts.slice(previousFill + 1, beforeFill).filter(attempt => eligibleReadAttempt(attempt) && sourceResultMatchesCommand(attempt)
       && countLiteral(String(attempt.source ?? attempt.result ?? ""), actual) === 1
       && sourceIntentForField(requestText, observed.label));
     const source = reads[0];
