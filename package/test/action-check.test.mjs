@@ -98,12 +98,13 @@ test("source-derived requirements cannot be relabeled as preservation without an
     "a failed read cannot satisfy a source-derived requirement");
 });
 
-test("authorized defaults and unrelated unchanged preexisting controls retain distinct evidence paths", () => {
+test("preservation and default authority fail closed without independent structured requirements", () => {
   const defaultRequest = "Use the selected default Priority.";
   const defaultAssessment = fieldEvidenceAssessment({ request: defaultRequest, value: "Urgent", basis: "authorized-default" });
   assert.equal(validateSubmissionAssessment(defaultAssessment, observedFormField({ fields: [{
     ...observedFormField().fields[0], origin: "preexisting", changed: false
-  }] }), defaultRequest).allow, true);
+  }] }), defaultRequest).allow, false,
+  "a model-authored default classification and quoted phrase are not an independent authority source");
   const defaultNotAuthorized = "Use Priority from the assigned record.";
   const mislabeledDefault = fieldEvidenceAssessment({
     request: defaultNotAuthorized, value: "Urgent", basis: "authorized-default", requirement: "source-value"
@@ -115,24 +116,40 @@ test("authorized defaults and unrelated unchanged preexisting controls retain di
 
   const preserveRequest = "Continue without changing unrelated fields.";
   const preserved = observedFormField({ fields: [{
-    ...observedFormField().fields[0], origin: "preexisting", changed: false, required: true
+    ...observedFormField().fields[0], origin: "preexisting", changed: false, required: false
   }] });
-  const preserveAssessment = {
-    ...fieldEvidenceAssessment({ request: "Leave Priority unchanged.", value: "Urgent", basis: "preserve-existing" }),
-    fields: [{ ...fieldEvidenceAssessment({ request: "Leave Priority unchanged.", value: "Urgent", basis: "preserve-existing" }).fields[0], evidence: [] }]
-  };
-  assert.equal(validateSubmissionAssessment(preserveAssessment, preserved, preserveRequest).allow, true);
+  const noAssessmentNeeded = fieldEvidenceAssessment({ request: preserveRequest });
+  assert.equal(validateSubmissionAssessment({ ...noAssessmentNeeded, fields: [] }, preserved, preserveRequest).allow, true,
+    "an untouched optional preexisting control needs no authority claim");
+
   const namedRequest = "Leave Priority unchanged.";
   const namedPreserve = fieldEvidenceAssessment({ request: namedRequest, value: "Urgent", basis: "preserve-existing" });
-  assert.equal(validateSubmissionAssessment(namedPreserve, preserved, namedRequest).allow, true);
-  assert.equal(validateSubmissionAssessment({ ...namedPreserve, fields: [{ ...namedPreserve.fields[0], evidence: [] }] }, preserved, namedRequest).allow, false,
-    "an explicitly named field cannot be dismissed as unrelated without a preserve instruction");
+  assert.equal(validateSubmissionAssessment(namedPreserve, observedFormField({ fields: [{
+    ...observedFormField().fields[0], origin: "preexisting", changed: false
+  }] }), namedRequest).allow, false,
+  "an exact preserve instruction still needs an independent structured authorization source");
+
+  const sourceRequest = "Use the Priority from the assigned record for the form.";
+  const mislabeledDefaultWithLabelOnly = fieldEvidenceAssessment({
+    request: sourceRequest, value: "Low", basis: "authorized-default", requirement: "authorized-default"
+  });
+  mislabeledDefaultWithLabelOnly.fields[0].evidence = [{
+    kind: "request", excerpt: sourceRequest, fieldText: "Priority", instructionText: "Priority"
+  }];
+  assert.equal(validateSubmissionAssessment(mislabeledDefaultWithLabelOnly, observedFormField({ fields: [{
+    ...observedFormField().fields[0], value: "Low", origin: "preexisting", changed: false
+  }] }), sourceRequest).allow, false,
+  "a source-derived request cannot be relabeled as a default with a label-only quote");
+
   const fieldOnlyEvidence = {
-    ...namedPreserve,
-    fields: [{ ...namedPreserve.fields[0], evidence: [{ kind: "request", excerpt: "Priority", fieldText: "Priority" }] }]
+    ...fieldEvidenceAssessment({ request: sourceRequest, basis: "preserve-existing", requirement: "preserve-existing" }),
+    fields: [{ ...fieldEvidenceAssessment({ request: sourceRequest, basis: "preserve-existing", requirement: "preserve-existing" }).fields[0],
+      evidence: [{ kind: "request", excerpt: sourceRequest, fieldText: "Priority", instructionText: "Priority" }] }]
   };
-  assert.equal(validateSubmissionAssessment(fieldOnlyEvidence, preserved, namedRequest).allow, false,
-    "mentioning the field label does not establish an instruction to preserve it");
+  assert.equal(validateSubmissionAssessment(fieldOnlyEvidence, observedFormField({ fields: [{
+    ...observedFormField().fields[0], value: "Low", origin: "preexisting", changed: false
+  }] }), sourceRequest).allow, false,
+  "a source-derived request cannot be relabeled preserve-existing even when the evidence quote contains the field name");
 });
 
 test("action check requires a complete assessment for a root-managed pending form commit", () => {
@@ -386,8 +403,8 @@ console.log(JSON.stringify({allow:true,reason:'The pending form state was review
     assert.equal(fs.readFileSync(calls, "utf8").trim().split("\n").length, 1, "the existing authorization call is reused");
     assert.match(instructions, /field and value/);
     assert.match(instructions, /not an\s+independent source/);
-    assert.match(instructions, /explicitly\s+authorizes using or preserving that default/);
-    assert.match(instructions, /Do not require new provenance for unrelated preexisting fields/);
+    assert.match(instructions, /no\s+independent structured source for preservation\/default authority/);
+    assert.match(instructions, /Unchanged\s+optional preexisting controls.*need no assessment/s);
     assert.match(instructions, /successful read\s+that binds the value to that field first/);
   } finally {
     if (original === undefined) delete process.env.AUX4_BIN; else process.env.AUX4_BIN = original;

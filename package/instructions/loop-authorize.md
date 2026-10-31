@@ -77,27 +77,21 @@ changed field that is unknown, contradicted, missing, redacted, or bound to a
 different form must make `allow` false. Classify each assessed field's request
 requirement as `literal-value`, `source-value`, `preserve-existing`,
 `authorized-default`, or `unknown`. Unknown requirements fail closed. Include
-the requirement on every assessed field. The `preserve-existing` and
-`authorized-default` evidence objects must include `instructionText`, an exact
-substring of the cited request excerpt that states the preservation or default
-authorization; citing only a field label is insufficient. A
-`source-value` requirement must use `basis: "read"`; a request's mention of a
-field name or an existing value displayed in the form cannot substitute for
-the successful read. A `literal-value` may use the exact request value or a
-field-specific successful read. Preserve/default bases are valid only when the
-matching requirement category is selected. For `basis: "read"`, cite an
+the requirement on every assessed field. This controller currently has no
+independent structured source for preservation/default authority, so required
+or changed controls classified as `preserve-existing` or `authorized-default`
+are denied even when the request excerpt or displayed form value is quoted.
+Do not use those categories to bypass a missing read. A `source-value`
+requirement must use `basis: "read"`; a request's mention of a field name or an
+existing value displayed in the form cannot substitute for the successful
+read. A `literal-value` may use the exact request value or a field-specific
+successful read. For `basis: "read"`, cite an
 `attemptRef` from `successfulActionsAndResults` and either a structured
 `recordPointer` plus the exact source `fieldKey`, or a source `excerpt` with
 `fieldText` and `valueText`. The source field must match the observed control
 label and the cited value must equal the observed non-redacted value. For
 `basis: "request"`, cite an exact request `excerpt`, matching `fieldText`, and
-`valueText` equal to the observed value. For `basis: "authorized-default"`, cite
-an exact request excerpt that explicitly authorizes that field's default and
-use relation `authorizes-default`. `instructionText` must quote the relevant
-authorization from that excerpt. For `basis: "preserve-existing"`, use
-relation `preserves-value` only for an observed unchanged preexisting control;
-if the request names that control, cite the exact preservation instruction in
-`instructionText`.
+`valueText` equal to the observed value.
 Do not add `value` or `proposedValue` fields. The controller compares each
 source reference against the actual observed control without copying its value
 into the assessment.
@@ -106,13 +100,13 @@ after it validates this assessment and binds it to the exact pending form.
 
 The controller validates exact references, values, statuses,
 requirement/basis compatibility, and form binding before it can approve
-submission. Classifying natural-language intent as source-dependent, literal,
-preservation, or default is a semantic judgment; the controller enforces the
-declared category and its evidence rules but cannot independently prove that
-prose was classified correctly. When intent is ambiguous, classify it as
-`unknown` and deny. Your field-role interpretation is a semantic judgment and
-must be grounded in the cited record; the assessment cannot replace the
-independent evidence or override an unknown/contradicted result. Never
+submission. Classifying natural-language intent as source-dependent or literal
+is a semantic judgment; the controller enforces the declared category and its
+evidence rules but cannot independently prove that prose was classified
+correctly. When intent is ambiguous, classify it as `unknown` and deny. Your
+field-role interpretation is a semantic judgment and must be grounded in the
+cited record; the assessment cannot replace the independent evidence or
+override an unknown/contradicted result. Never
 declare a field unrelated to evade an explicit source-dependent requirement.
 
 `observedFields`, when present, is a snapshot of controls currently displayed in
@@ -132,9 +126,8 @@ examples, form labels, defaults and headings are possibilities, not proof of an
 assigned value. Match evidence to the same field and value: a value elsewhere in
 the request that is not assigned to this field, earlier suppliedFields,
 fromGoal values, or a filled form echo do not establish the requested record
-value. An observed preexisting value may be kept when the request explicitly
-authorizes using or preserving that default; the form's own value alone still
-does not prove a value requested from an existing record or another source. If
+value. An observed preexisting value alone does not prove preservation/default
+authority or a value requested from an existing record or another source. If
 the request explicitly allows choosing a suitable available option, that choice
 is authorized. Translate
 explicit choices such as enable/disable into the corresponding boolean control
@@ -142,15 +135,13 @@ state; preserve the requested direction and do not change unnamed choices.
 The explicitlyPermittedChoices list identifies concrete options authorized by
 the requester's open-choice instruction. Selecting one is how that instruction
 is carried out; a concrete selection does not make it an unauthorized guess.
-A preservation requirement forbids changing an observed value. Supplying that
-same observed value preserves it and is allowed. A proposedField marked
-unchanged=true is not an extra change. Do not deny an authorized step merely
-because it resubmits that unchanged value or because another command format
-might be preferable. Compare the actual before
-and after values rather than treating the parameter's presence as a change.
-Do not require new provenance for unrelated preexisting fields that are not
-requested to change or used to satisfy a source-dependent requirement; allow
-them to remain unchanged.
+A proposedField marked `unchanged=true` is not an extra change. Compare actual
+before/after values rather than treating a parameter's presence as a change.
+For this managed form gate, required or changed controls still need an exact
+literal-value or successful read basis; there is not yet an independent
+structured authorization path for preservation/default claims. Unchanged
+optional preexisting controls that are neither requested nor used to satisfy a
+source-dependent requirement need no assessment and may remain as-is.
 
 A generic success heading or confirmation page may establish that an operation
 completed, but it does not establish the values submitted unless those values
