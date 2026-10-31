@@ -185,17 +185,26 @@ test("structured browser record binding requires unique labeled request fields a
   const binding = {
     identifier: "addr-1", identifierLabel: "Record ID", actionRef: 7,
     actionRole: "button", actionLabel: "Delete", scopeSelector: "#row-1",
-    fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Austin" }, { label: "Phone", value: "555-0101" }]
+    fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Austin" }, { label: "Phone", value: "555-0101" }],
+    candidateRowsComplete: true,
+    candidateRows: [{ identifier: "addr-1", identifierLabel: "Record ID", scopeSelector: "#row-1", fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Austin" }, { label: "Phone", value: "555-0101" }] }]
   };
   const request = "Delete Alex Kim's Austin address.";
-  assert.equal(trustedRecordBindingMatchesRequest(binding, request), true);
-  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, identifier: "addr-10" }, request), true, "ID is accepted only as browser-owned binding data");
-  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [{ label: "Name", value: "Alex Kim" }] }, request), false, "one field is insufficient");
-  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, actionLabel: "Edit" }, request), false, "non-Delete action denied");
-  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, scopeSelector: "" }, request), false, "missing row scope denied");
-  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [...binding.fields, { label: "City", value: "Denver" }] }, request), false, "conflicting duplicate row field denied");
-  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [...binding.fields, { label: "Id", value: "addr-10" }] }, request), false, "conflicting duplicate identifier denied");
-  assert.equal(trustedRecordBindingMatchesRequest(binding, "Delete Jamie Stone's Austin address."), false, "wrong requested record denied");
+  const action = { ref: 7, role: "button", label: "Delete" };
+  assert.equal(trustedRecordBindingMatchesRequest(binding, request, action), true);
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, identifier: "addr-10" }, request, action), false, "selected ID must be the sole matching candidate");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [{ label: "Name", value: "Alex Kim" }] }, request, action), false, "one field is insufficient");
+  assert.equal(trustedRecordBindingMatchesRequest(binding, request, { ...action, ref: 8 }), false, "action ref mismatch denied");
+  assert.equal(trustedRecordBindingMatchesRequest(binding, request, { ...action, role: "link" }), false, "action role mismatch denied");
+  assert.equal(trustedRecordBindingMatchesRequest(binding, request, { ...action, label: "Remove" }), false, "action label mismatch denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, actionLabel: "Edit" }, request, action), false, "non-Delete action denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, scopeSelector: "" }, request, action), false, "missing row scope denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, candidateRowsComplete: false }, request, action), false, "incomplete candidates denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, candidateRows: [...binding.candidateRows, { identifier: "addr-2", identifierLabel: "Record ID", scopeSelector: "#row-2", fields: binding.fields }] }, request, action), false, "duplicate matching row denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, candidateRows: [{ ...binding.candidateRows[0], identifier: "addr-2" }] }, request, action), false, "changed candidate binding denied");
+  assert.equal(trustedRecordBindingMatchesRequest(binding, request), false, "missing trusted action denied");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [...binding.fields, { label: "City", value: "Denver" }] }, request, action), false, "conflicting duplicate row field denied");
+  assert.equal(trustedRecordBindingMatchesRequest(binding, "Delete Jamie Stone's Austin address.", action), false, "wrong requested record denied");
 });
 
 test("delete stays fail-closed without structured browser row metadata", async () => {
@@ -212,6 +221,7 @@ test("delete stays fail-closed without structured browser row metadata", async (
   const initial = {
     status: "needs-input", submitted: false, session: "9bb322b5", url: "http://127.0.0.1:7400/addresses",
     observations: { current: "addr-1 | Alex Kim | Austin | 555-0101 | Edit | Delete" },
+    needsInput: { action: { ref: 3, role: "link", label: "Delete" }, page: { url: "http://127.0.0.1:7400/addresses" } },
     confirmation: { action: "Delete", target: "Delete — Addresses", emptyFields: [], next, formStateComplete: false }
   };
   const final = {
@@ -239,7 +249,9 @@ test("delete stays fail-closed without structured browser row metadata", async (
       initial.recordBinding = {
         identifier: "addr-1", identifierLabel: "Id",
         fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Austin" }],
-        actionRef: 3, actionRole: "link", actionLabel: "Delete", scopeSelector: "table tbody tr:nth-child(1)"
+        actionRef: 3, actionRole: "link", actionLabel: "Delete", scopeSelector: "table tbody tr:nth-child(1)",
+        candidateRowsComplete: true,
+        candidateRows: [{ identifier: "addr-1", identifierLabel: "Id", scopeSelector: "table tbody tr:nth-child(1)", fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Austin" }] }]
       };
       fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
       continuationCalls = 0;

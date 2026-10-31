@@ -2563,7 +2563,7 @@ export function deleteTransitionBindingMatches(record, command, request, observa
     && observation.fields.length === 0;
 }
 
-export function trustedRecordBindingMatchesRequest(binding, request) {
+export function trustedRecordBindingMatchesRequest(binding, request, trustedAction = null) {
   if (!binding || typeof binding !== "object" || Array.isArray(binding)
     || typeof binding.identifier !== "string" || !binding.identifier.trim()
     || typeof binding.identifierLabel !== "string" || !binding.identifierLabel.trim()
@@ -2571,26 +2571,68 @@ export function trustedRecordBindingMatchesRequest(binding, request) {
     || typeof binding.actionRole !== "string" || !binding.actionRole.trim()
     || typeof binding.actionLabel !== "string" || !/\b(?:delete|remove)\b/i.test(binding.actionLabel)
     || typeof binding.scopeSelector !== "string" || !binding.scopeSelector.trim()
-    || !Array.isArray(binding.fields) || !binding.fields.length) return false;
+    || !Array.isArray(binding.fields) || !binding.fields.length
+    || binding.candidateRowsComplete !== true || !Array.isArray(binding.candidateRows)
+    || !binding.candidateRows.length) return false;
+  if (!trustedAction || typeof trustedAction !== "object" || Array.isArray(trustedAction)
+    || !Number.isInteger(trustedAction.ref) || trustedAction.ref !== binding.actionRef
+    || typeof trustedAction.role !== "string" || trustedAction.role !== binding.actionRole
+    || typeof trustedAction.label !== "string" || trustedAction.label !== binding.actionLabel) return false;
   const requestText = String(request || "").toLowerCase();
-  const matched = new Set();
-  const labels = new Map();
+  const parseFields = fields => {
+    const labels = new Map();
+    let identifierFields = 0;
+    for (const field of fields) {
+      if (!field || typeof field !== "object" || typeof field.label !== "string" || typeof field.value !== "string") return null;
+      const label = field.label.trim().toLowerCase();
+      const value = field.value.trim();
+      if (!label || !value || labels.has(label)) return null;
+      labels.set(label, value);
+      if (/^id$|identifier|record[ -]?id|key/.test(label)) identifierFields++;
+    }
+    return labels.size && identifierFields <= 1 ? { labels, identifierFields } : null;
+  };
+  const bindingFields = parseFields(binding.fields);
+  if (!bindingFields) return false;
+  const sameFields = (left, right) => {
+    const a = parseFields(left); const b = parseFields(right);
+    if (!a || !b || a.labels.size !== b.labels.size) return false;
+    for (const [label, value] of a.labels) if (b.labels.get(label) !== value) return false;
+    return true;
+  };
+  const requestMatch = fields => {
+    const parsed = parseFields(fields); if (!parsed) return false;
+    const matched = new Set();
+    for (const [label, value] of parsed.labels) {
+      if (/^id$|identifier|record[ -]?id|key/.test(label)) continue;
+      if (requestText.includes(value.toLowerCase())) matched.add(`${label}\u0000${value.toLowerCase()}`);
+    }
+    return matched.size >= 2;
+  };
+  if (!requestMatch(binding.fields)) return false;
+  const matchingRows = [];
+  for (const row of binding.candidateRows) {
+    if (!row || typeof row !== "object" || typeof row.identifier !== "string" || !row.identifier.trim()
+      || typeof row.scopeSelector !== "string" || !row.scopeSelector.trim() || !Array.isArray(row.fields)
+      || !parseFields(row.fields)) return false;
+    const rowFields = parseFields(row.fields);
+    const idField = [...rowFields.labels.entries()].find(([label]) => /^id$|identifier|record[ -]?id|key/.test(label));
+    if (idField && idField[1] !== row.identifier.trim()) return false;
+    if (requestMatch(row.fields)) matchingRows.push(row);
+  }
+  if (matchingRows.length !== 1) return false;
+  const selected = matchingRows[0];
+  if (selected.identifier.trim() !== binding.identifier.trim()
+    || selected.scopeSelector.trim() !== binding.scopeSelector.trim()
+    || !sameFields(selected.fields, binding.fields)) return false;
   let identifierFields = 0;
-  for (const field of binding.fields) {
-    if (!field || typeof field !== "object" || typeof field.label !== "string" || typeof field.value !== "string") continue;
-    const label = field.label.trim().toLowerCase();
-    const value = field.value.trim();
-    if (!label || !value) continue;
-    if (labels.has(label)) return false;
-    labels.set(label, value);
+  for (const [label, value] of bindingFields.labels) {
     if (/^id$|identifier|record[ -]?id|key/.test(label)) {
       identifierFields++;
       if (value !== binding.identifier.trim()) return false;
-      continue;
     }
-    if (requestText.includes(value.toLowerCase())) matched.add(`${label}\u0000${value.toLowerCase()}`);
   }
-  return identifierFields <= 1 && matched.size >= 2;
+  return identifierFields <= 1;
 }
 
 function completedConfirmationCommand(attempts, pending) {
@@ -4725,7 +4767,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     };
     const trustedPendingMetadata = (command, availableAttempts) => {
       const key = JSON.stringify(commandWords(command) || []);
-      for (const entry of [...availableAttempts].reverse()) {
+      for (const entry of availableAttempts) {
         if (entry.failed || entry.completed === false) continue;
         const result = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
         if (!result || JSON.stringify(commandWords(result.confirmation?.next) || []) !== key) continue;
@@ -4736,7 +4778,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         if (session && pageUrl && target) return {
           session, pageUrl, target,
           formStateFingerprint: String(submission.fingerprint || result.confirmation?.formStateFingerprint || "").trim(),
-          recordBinding: result.recordBinding
+          recordBinding: result.recordBinding,
+          action: result.needsInput?.action || (result.confirmation?.action && typeof result.confirmation.action === "object" ? result.confirmation.action : null)
         };
       }
       return null;
@@ -4801,7 +4844,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const trustedRecordBinding = trustedTransitionObservation?.recordBinding;
       if (!formApprovalRequired && deleteAction(pending.label)
         && isClearlyRequestedAction(pending.label, options.request)
-        && trustedRecordBindingMatchesRequest(trustedRecordBinding, options.request)
+        && trustedRecordBindingMatchesRequest(trustedRecordBinding, options.request, trustedTransitionObservation?.action)
         && trustedTransitionObservation?.target
         && trustedTransitionObservation?.pageUrl) {
         deleteTransitionRecord = {
