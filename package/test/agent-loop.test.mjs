@@ -3487,7 +3487,7 @@ else if(command.includes('loop-verify.md')) {
  else {
    const basis=mode==='read'?'read':'request';
    const evidence=basis==='read'?[{kind:'attempt',attemptRef:'read-priority',recordPointer:'/record',fieldKey:'Priority'}]:[{kind:'request',excerpt:'Priority to Urgent',fieldText:'Priority',valueText:'Urgent'}];
-   process.stdout.write(JSON.stringify({allow:true,reason:'field assessment supplied',submissionAssessment:{version:1,binding:{session:payload.observedFields.session,target:payload.observedFields.target,pageUrl:payload.observedFields.pageUrl,formStateFingerprint:payload.observedFields.formStateFingerprint},fields:[{fieldRef:field.fieldRef,status:mode==='contradicted'?'contradicted':'verified',basis,relation:'assigns-value',evidence}]}}));
+   process.stdout.write(JSON.stringify({allow:true,reason:'field assessment supplied',submissionAssessment:{version:1,binding:{session:payload.observedFields.session,target:payload.observedFields.target,pageUrl:payload.observedFields.pageUrl,formStateFingerprint:payload.observedFields.formStateFingerprint},fields:[{fieldRef:field.fieldRef,status:mode==='contradicted'?'contradicted':'verified',requirement:basis==='read'?'source-value':'literal-value',basis,relation:'assigns-value',evidence}]}}));
  }
 } else if(args.includes('--help')) process.stdout.write('run\\n  --session <id>\\n  --goal <arg>\\n  --field <value>\\n  --formStateApproval <value>');
 `);

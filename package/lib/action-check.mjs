@@ -125,22 +125,27 @@ function evidenceSupportsField(evidence, review, observed, basis, request, attem
     if (!ref || typeof ref !== "object" || Array.isArray(ref)) return false;
     if (basis === "request" || basis === "authorized-default") {
       const keys = basis === "authorized-default"
-        ? new Set(["kind", "excerpt", "fieldText"])
+        ? new Set(["kind", "excerpt", "fieldText", "instructionText"])
         : new Set(["kind", "excerpt", "fieldText", "valueText"]);
       if (!onlyKeys(ref, keys) || ref.kind !== "request") return false;
       if (typeof ref.excerpt !== "string" || !ref.excerpt || ref.excerpt.length > 600 || !request.includes(ref.excerpt)
         || typeof ref.fieldText !== "string" || fieldIdentity(ref.fieldText) !== fieldIdentity(observed.label)
         || !ref.excerpt.includes(ref.fieldText)) return false;
-      if (basis === "authorized-default") return true;
+      if (basis === "authorized-default") {
+        return typeof ref.instructionText === "string" && ref.instructionText.trim().length > 0
+          && ref.excerpt.includes(ref.instructionText);
+      }
       return typeof ref.valueText === "string" && ref.valueText === observedFieldValueText(observed)
         && ref.excerpt.includes(ref.valueText);
     }
     if (basis === "preserve-existing") {
-      if (!onlyKeys(ref, new Set(["kind", "excerpt", "fieldText"])) || ref.kind !== "request") return false;
+      if (!onlyKeys(ref, new Set(["kind", "excerpt", "fieldText", "instructionText"])) || ref.kind !== "request") return false;
       return typeof ref.excerpt === "string" && ref.excerpt.length > 0 && ref.excerpt.length <= 600
         && request.includes(ref.excerpt)
         && typeof ref.fieldText === "string" && fieldIdentity(ref.fieldText) === fieldIdentity(observed.label)
-        && ref.excerpt.includes(ref.fieldText);
+        && ref.excerpt.includes(ref.fieldText)
+        && typeof ref.instructionText === "string" && ref.instructionText.trim().length > 0
+        && ref.excerpt.includes(ref.instructionText);
     }
     if (basis !== "read" || ref.kind !== "attempt") return false;
     const attempt = sourceAttemptByRef(attempts, ref.attemptRef);
@@ -198,11 +203,13 @@ export function validateSubmissionAssessment(assessment, observedFields, request
   if (!byRef.size) return deny("The observed form has no referenced controls to assess.");
 
   const assessments = new Map();
+  const requirements = new Set(["literal-value", "source-value", "preserve-existing", "authorized-default", "unknown"]);
   for (const field of assessment.fields) {
-    if (!onlyKeys(field, new Set(["fieldRef", "status", "basis", "relation", "evidence"]))
+    if (!onlyKeys(field, new Set(["fieldRef", "status", "requirement", "basis", "relation", "evidence"]))
       || typeof field.fieldRef !== "string" || !byRef.has(field.fieldRef) || assessments.has(field.fieldRef)) {
       return deny("The assessment contains a control reference that is missing, duplicated, or outside the current form.");
     }
+    if (!requirements.has(field.requirement)) return deny("A form control has no recognized request requirement.");
     assessments.set(field.fieldRef, field);
   }
 
@@ -216,6 +223,16 @@ export function validateSubmissionAssessment(assessment, observedFields, request
     }
     if (observed.status !== "observed") return deny(`Form control ${observed.label || fieldRef} has no complete observation.`);
     if (review.status !== "verified") return deny(`Form control ${observed.label || fieldRef} is ${review.status === "contradicted" ? "contradicted" : "unknown"}.`);
+    if (review.requirement === "unknown") return deny(`The request requirement for form control ${observed.label || fieldRef} is unknown.`);
+    const requirementBasis = {
+      "literal-value": new Set(["request", "read"]),
+      "source-value": new Set(["read"]),
+      "preserve-existing": new Set(["preserve-existing"]),
+      "authorized-default": new Set(["authorized-default"])
+    }[review.requirement];
+    if (!requirementBasis?.has(review.basis)) {
+      return deny(`The evidence basis does not satisfy the classified request requirement for form control ${observed.label || fieldRef}.`);
+    }
     if (review.relation !== "assigns-value" && review.relation !== "authorizes-default" && review.relation !== "preserves-value") {
       return deny(`Form control ${observed.label || fieldRef} has no recognized field/value relationship.`);
     }
@@ -810,6 +827,7 @@ export function authorizeAction(options, command, attempts = [], request = "", h
       fields: parsed.submissionAssessment.fields.map(field => ({
         fieldRef: field.fieldRef,
         status: field.status,
+        requirement: field.requirement,
         basis: field.basis,
         relation: field.relation,
         evidence: (field.evidence || []).map(ref => ({ kind: ref.kind, ...(ref.attemptRef ? { attemptRef: ref.attemptRef } : {}), ...(ref.recordPointer ? { recordPointer: ref.recordPointer } : {}), ...(ref.fieldKey ? { fieldKey: ref.fieldKey } : {}) }))

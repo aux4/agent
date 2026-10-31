@@ -9,15 +9,18 @@ import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeChec
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function fieldEvidenceAssessment({ request, fieldRef = "field-priority", label = "Priority", value = "Urgent", basis = "request", attemptRef = "", fieldKey = "", status = "verified" } = {}) {
+function fieldEvidenceAssessment({ request, fieldRef = "field-priority", label = "Priority", value = "Urgent", basis = "request", requirement, attemptRef = "", fieldKey = "", status = "verified" } = {}) {
   const excerpt = basis === "authorized-default" ? "selected default Priority" : basis === "preserve-existing" ? "Leave Priority unchanged" : "Priority is Urgent";
   const evidence = basis === "read"
     ? [{ kind: "attempt", attemptRef, recordPointer: "/record", fieldKey }]
-    : [{ kind: "request", excerpt, fieldText: label, ...(basis === "authorized-default" || basis === "preserve-existing" ? {} : { valueText: value }) }];
+    : [{ kind: "request", excerpt, fieldText: label,
+      ...(basis === "authorized-default" ? { instructionText: excerpt } : {}),
+      ...(basis === "preserve-existing" ? { instructionText: excerpt } : {}),
+      ...(basis === "authorized-default" || basis === "preserve-existing" ? {} : { valueText: value }) }];
   return {
     version: 1,
     binding: { session: "session-1", target: "target-1", pageUrl: "https://example.test/form", formStateFingerprint: "sha256:form-1" },
-    fields: [{ fieldRef, status, basis, relation: basis === "authorized-default" ? "authorizes-default" : basis === "preserve-existing" ? "preserves-value" : "assigns-value", evidence }]
+    fields: [{ fieldRef, status, requirement: requirement || ({ request: "literal-value", read: "source-value", "preserve-existing": "preserve-existing", "authorized-default": "authorized-default" }[basis] || "unknown"), basis, relation: basis === "authorized-default" ? "authorizes-default" : basis === "preserve-existing" ? "preserves-value" : "assigns-value", evidence }]
   };
 }
 
@@ -71,12 +74,44 @@ test("source evidence must bind the destination field as well as its exact value
   assert.equal(validateSubmissionAssessment(valid, observedFormField(), request, failedRead).allow, false);
 });
 
+test("source-derived requirements cannot be relabeled as preservation without an eligible read", () => {
+  const request = "Use the Priority from the assigned record for the form.";
+  const existing = observedFormField({ fields: [{
+    ...observedFormField().fields[0], value: "Low", origin: "preexisting", changed: false
+  }] });
+  const relabeled = fieldEvidenceAssessment({
+    request, value: "Low", basis: "preserve-existing", requirement: "source-value"
+  });
+  assert.equal(validateSubmissionAssessment(relabeled, existing, request).allow, false,
+    "a field-name mention and a preexisting form value cannot replace the requested source lookup");
+
+  const attempts = [{
+    callId: "read-priority", command: "records get --id rec-1", completed: true, failed: false,
+    source: JSON.stringify({ record: { Priority: "Low" } })
+  }];
+  const sourced = fieldEvidenceAssessment({
+    request, value: "Low", basis: "read", requirement: "source-value", attemptRef: "read-priority", fieldKey: "Priority"
+  });
+  assert.equal(validateSubmissionAssessment(sourced, existing, request, attempts).allow, true,
+    "a successful read tied to the same field and value can satisfy a source-derived requirement");
+  assert.equal(validateSubmissionAssessment(sourced, existing, request, [{ ...attempts[0], failed: true }]).allow, false,
+    "a failed read cannot satisfy a source-derived requirement");
+});
+
 test("authorized defaults and unrelated unchanged preexisting controls retain distinct evidence paths", () => {
   const defaultRequest = "Use the selected default Priority.";
   const defaultAssessment = fieldEvidenceAssessment({ request: defaultRequest, value: "Urgent", basis: "authorized-default" });
   assert.equal(validateSubmissionAssessment(defaultAssessment, observedFormField({ fields: [{
     ...observedFormField().fields[0], origin: "preexisting", changed: false
   }] }), defaultRequest).allow, true);
+  const defaultNotAuthorized = "Use Priority from the assigned record.";
+  const mislabeledDefault = fieldEvidenceAssessment({
+    request: defaultNotAuthorized, value: "Urgent", basis: "authorized-default", requirement: "source-value"
+  });
+  assert.equal(validateSubmissionAssessment(mislabeledDefault, observedFormField({ fields: [{
+    ...observedFormField().fields[0], origin: "preexisting", changed: false
+  }] }), defaultNotAuthorized).allow, false,
+  "a source-derived requirement cannot pass through the authorized-default basis");
 
   const preserveRequest = "Continue without changing unrelated fields.";
   const preserved = observedFormField({ fields: [{
@@ -92,6 +127,12 @@ test("authorized defaults and unrelated unchanged preexisting controls retain di
   assert.equal(validateSubmissionAssessment(namedPreserve, preserved, namedRequest).allow, true);
   assert.equal(validateSubmissionAssessment({ ...namedPreserve, fields: [{ ...namedPreserve.fields[0], evidence: [] }] }, preserved, namedRequest).allow, false,
     "an explicitly named field cannot be dismissed as unrelated without a preserve instruction");
+  const fieldOnlyEvidence = {
+    ...namedPreserve,
+    fields: [{ ...namedPreserve.fields[0], evidence: [{ kind: "request", excerpt: "Priority", fieldText: "Priority" }] }]
+  };
+  assert.equal(validateSubmissionAssessment(fieldOnlyEvidence, preserved, namedRequest).allow, false,
+    "mentioning the field label does not establish an instruction to preserve it");
 });
 
 test("action check requires a complete assessment for a root-managed pending form commit", () => {
@@ -119,7 +160,7 @@ const args=process.argv.slice(2);
 const payload=JSON.parse(args[args.indexOf('--question')+1]);
 fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify(payload));
 const field=payload.observedFields.fields[0];
-const assessment={version:1,binding:{session:payload.observedFields.session,target:payload.observedFields.target,pageUrl:payload.observedFields.pageUrl,formStateFingerprint:payload.observedFields.formStateFingerprint},fields:[{fieldRef:field.fieldRef,status:'verified',basis:'request',relation:'assigns-value',evidence:[{kind:'request',excerpt:'Priority to Urgent',fieldText:'Priority',valueText:'Urgent'}]}]};
+const assessment={version:1,binding:{session:payload.observedFields.session,target:payload.observedFields.target,pageUrl:payload.observedFields.pageUrl,formStateFingerprint:payload.observedFields.formStateFingerprint},fields:[{fieldRef:field.fieldRef,status:'verified',requirement:'literal-value',basis:'request',relation:'assigns-value',evidence:[{kind:'request',excerpt:'Priority to Urgent',fieldText:'Priority',valueText:'Urgent'}]}]};
 console.log(JSON.stringify({allow:true,reason:'The requested field value is grounded.',submissionAssessment:assessment}));
 `, { mode: 0o755 });
     process.env.AUX4_BIN = fake;
