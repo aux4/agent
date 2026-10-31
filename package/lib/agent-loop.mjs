@@ -2505,6 +2505,51 @@ function sameConfirmationCommand(actual, expected) {
     && actualWords.every((word, index) => word === expectedWords[index]));
 }
 
+function commandOptionValue(command, name) {
+  const words = commandWords(command) || [];
+  const index = words.indexOf(name);
+  return index >= 0 ? words[index + 1] || "" : "";
+}
+
+function structuredReferenceValues(source) {
+  const parsed = parseJSONLoose(String(source ?? ""), null);
+  if (!parsed || typeof parsed !== "object") return [];
+  const values = [];
+  const visit = (value, key = "") => {
+    if (value === null || value === undefined) return;
+    if (typeof value !== "object") {
+      if (/(?:^|[_-])id$/i.test(key) || /id$/i.test(key)) values.push(String(value));
+      return;
+    }
+    for (const [childKey, childValue] of Object.entries(value)) visit(childValue, childKey);
+  };
+  visit(parsed);
+  return [...new Set(values)];
+}
+
+export function readResultContainsExactReference(source, reference) {
+  return Boolean(reference) && structuredReferenceValues(source).includes(String(reference));
+}
+
+export function deleteTransitionBindingMatches(record, command, request, observation) {
+  if (!record || record.request !== request || !sameConfirmationCommand(record.nextCommand, command)) return false;
+  if (record.session && record.session !== commandOptionValue(command, "--session")) return false;
+  const target = commandOptionValue(command, "--target") || record.target;
+  const url = commandOptionValue(command, "--url") || record.url;
+  if (!record.target || !record.url || target !== record.target || url !== record.url) return false;
+  return observation?.status === "current"
+    && observation.formStateComplete === true
+    && observation.formStatePartial !== true
+    && observation.session === record.session
+    && observation.target === record.target
+    && observation.pageUrl === record.url
+    && typeof observation.formStateFingerprint === "string"
+    && observation.formStateFingerprint.length > 0
+    && (!record.fingerprint || observation.formStateFingerprint === record.fingerprint)
+    && Array.isArray(observation.fields)
+    && observation.fields.length === 0;
+}
+
 function completedConfirmationCommand(attempts, pending) {
   return attempts.some(attempt => !attempt.failed
     && (isConclusiveAttempt(attempt) || hasSubmittedEffect(attempt))
@@ -4602,6 +4647,35 @@ export async function runLoop(options, history, execute, recovery = "", executeC
     // Controller-owned provenance for a managed form. A model confirmation is
     // only a signal; every continuation must revalidate this original record.
     let formApprovalRecord = null;
+    // A destructive browser action can reveal one additional, form-backed
+    // confirmation page (Delete -> Yes, delete it). Preserve only the exact
+    // controller-approved transition, never a model confirm flag.
+    let deleteTransitionRecord = null;
+    const commandTargetValues = command => {
+      const words = commandWords(command) || [];
+      const values = [];
+      for (let index = 0; index < words.length - 1; index++) {
+        if (/^--[A-Za-z][A-Za-z0-9_-]*id$/i.test(words[index])) values.push(words[index + 1]);
+      }
+      for (const entry of enteredValues(command)) {
+        if (/(?:^|-)id$/i.test(entry.label)) values.push(entry.value);
+      }
+      return [...new Set(values.filter(value => value && !value.startsWith("--")))];
+    };
+    const hasReadBackTarget = (command, availableAttempts) => {
+      const targets = commandTargetValues(command);
+      return targets.length > 0 && availableAttempts.some(entry => {
+        if (entry.failed || entry.completed === false || !isReadCommand(entry.command) || !isConclusiveAttempt(entry)) return false;
+        const source = String(entry.source ?? entry.result ?? "");
+        return targets.every(target => readResultContainsExactReference(source, target));
+      });
+    };
+    const commandOption = (command, name) => {
+      const words = commandWords(command) || [];
+      const index = words.indexOf(name);
+      return index >= 0 ? words[index + 1] || "" : "";
+    };
+    const deleteAction = value => /\b(?:delete|remove)\b/i.test(String(value || ""));
     const stopPending = (current, note, requested = true) => {
       round.confirmation = { command: current.command, next: current.next, requested };
       lastContent = attempts.slice(before).some(hasSubmittedEffect)
@@ -4651,6 +4725,20 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const formObservation = pendingBrowserFieldObservation(pending.next, attempts);
       const formApprovalRequired = formObservation?.approvalRequired === true;
       const actionCheckRequired = formApprovalRequired || !isClearlyRequestedAction(pending.label, options.request);
+      if (!formApprovalRequired && deleteAction(pending.label)
+        && isClearlyRequestedAction(pending.label, options.request)
+        && hasReadBackTarget(pending.next, attempts)) {
+        deleteTransitionRecord = {
+          command: pending.next,
+          request: options.request,
+          signature: confirmationSignature(pending),
+          session: commandOption(pending.next, "--session"),
+          target: commandOption(pending.next, "--target") || pending.target || "",
+          url: commandOption(pending.next, "--url") || "",
+          fingerprint: formObservation?.formStateFingerprint || "",
+          nextCommand: ""
+        };
+      }
       // Keep the deterministic item-selection rule stricter than the semantic
       // outcome check: a hook cannot resolve an item the request did not select.
       if (actionCheckRequired && namesUnselectedItem(pending.label, options.request)) {
@@ -4671,9 +4759,25 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       let formDispatch = null;
       if (formApprovalRequired) {
         const commandKey = value => JSON.stringify(commandWords(value) || []);
-        if (formApprovalRecord) {
+        const transitionRecord = deleteTransitionBindingMatches(deleteTransitionRecord, pending.next, options.request, formObservation);
+        if (transitionRecord) {
+          formDispatch = createFormApprovalDispatch(pending.next, formObservation);
+          if (formDispatch) {
+            formApprovalRecord = {
+              transition: true,
+              stagedCommand: deleteTransitionRecord.command,
+              pendingCommand: pending.next,
+              pendingIdentity: { goal: "", url: "", session: commandOption(pending.next, "--session") },
+              assessment: null,
+              binding: formDispatch.binding,
+              reason: "Controller-owned exact continuation of a read-backed delete action."
+            };
+          }
+        } else if (formApprovalRecord) {
           const record = formApprovalRecord;
-          const revalidated = validateSubmissionAssessment(record.assessment, formObservation, options.request, attempts);
+          const revalidated = record.transition
+            ? { allow: true }
+            : validateSubmissionAssessment(record.assessment, formObservation, options.request, attempts);
           const sameAction = commandKey(record.pendingCommand) === commandKey(pending.next);
           const actionIdentity = value => {
             const words = commandWords(value) || [];
@@ -4821,6 +4925,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         }
         if (confirmationSignature(nextPending) === signature) {
           return stopPending(nextPending, "The tool returned the same pending confirmation without advancing; no completion was verified.", !actionCheckRequired);
+        }
+        if (deleteTransitionRecord && deleteTransitionRecord.signature === signature) {
+          const interveningChange = fresh.some(entry => entry !== exactAttempt && !entry.failed && isChangeCommand(entry.command || ""));
+          if (interveningChange) deleteTransitionRecord = null;
+          else deleteTransitionRecord.nextCommand = nextPending.next;
         }
         previousPendingSignature = signature;
         pending = nextPending;

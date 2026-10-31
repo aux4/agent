@@ -114,6 +114,13 @@ function requestFieldGrammarAnchor(label, value, request) {
     return new RegExp(`\\bfor\\s+${escaped}(?=\\s*(?:,|;|$|email\\b|date\\s+of\\s+birth\\b|with\\s+(?:the\\s+)?message\\b))`, "i").test(text);
   }
   if (field === "email" || field.endsWith("email")) return new RegExp(`\\bemail\\s+${escaped}(?=\\s*(?:,|;|$|date\\s+of\\s+birth\\b|with\\s+(?:the\\s+)?message\\b))`, "i").test(text);
+  if (field === "phone" || field.endsWith("phone") || field.includes("phonenumber")) {
+    // A bare numeric match is unsafe (it can be an ID, date, or amount). Keep
+    // the anchor tied to an explicit phone/phone-number phrase; punctuation in
+    // the supplied value remains exact and is still checked against the live
+    // control value by the surrounding assessment validator.
+    return new RegExp(`\\bphone(?:\\s+number)?\\b(?:(?![.!?]).){0,100}\\b(?:is|to)\\s+${escaped}(?=\\s*(?:,|;|\\.|$|and\\b|with\\b))`, "i").test(text);
+  }
   if (field.includes("dateofbirth") || field === "dob") return new RegExp(`\\bdate\\s+of\\s+birth\\s+${escaped}(?=\\s*(?:\\(|,|;|$|with\\s+(?:the\\s+)?message\\b))`, "i").test(text);
   if (field === "message" || field.endsWith("message")) {
     const quoted = new RegExp(`\\bwith\\s+(?:the\\s+)?message\\s+["']${escaped}["']`, "i");
@@ -371,7 +378,11 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
     });
     const exact = valueMatches.filter(({ entry }) => fieldIdentity(entry.label) === fieldIdentity(observed.label));
     const aliases = valueMatches.filter(({ entry }) => labelAliasMatches(entry.label, observed.label));
-    const candidates = exact.length ? exact : aliases;
+    const grammarOnly = supplied.length === 0 && !exact.length && !aliases.length && actual !== null
+      && requestFieldGrammarAnchor(observed.label, actual, request)
+      ? [{ entry: { label: observed.label, value: actual }, index: `observed:${observed.fieldRef}` }]
+      : [];
+    const candidates = exact.length ? exact : aliases.length ? aliases : grammarOnly;
     if (candidates.length !== 1 || usedSupplied.has(candidates[0].index)) return null;
     usedSupplied.add(candidates[0].index);
     assignments.set(observed, candidates[0].entry);
@@ -477,6 +488,28 @@ export function pendingBrowserFieldObservation(command, attempts) {
     : typeof result.session === "string" ? result.session.trim() : "";
   const rawFields = result.preSubmitFieldState;
   if (!Array.isArray(rawFields) || rawFields.length === 0) {
+    // A destructive confirmation page may legitimately expose no value
+    // controls (for example a final "Yes, delete it" button). Keep that
+    // snapshot usable only when the browser itself supplied the complete,
+    // approval-required binding; value-bearing forms still require the normal
+    // field assessment below.
+    const emptySnapshotTarget = typeof (submission.target || result.confirmation?.target) === "string"
+      ? String(submission.target || result.confirmation.target).trim() : "";
+    const emptySnapshotFingerprint = typeof submission.fingerprint === "string" ? submission.fingerprint.trim()
+      : typeof result.confirmation?.formStateFingerprint === "string" ? result.confirmation.formStateFingerprint.trim() : "";
+    const emptySnapshotComplete = submission.formStateComplete === true || result.confirmation?.formStateComplete === true;
+    if (submission.approvalRequired === true && emptySnapshotComplete && submission.partial !== true
+      && result.confirmation?.formStatePartial !== true && session && pageUrl && emptySnapshotTarget
+      && emptySnapshotFingerprint) {
+      if (!parts.session || parts.session !== session) {
+        return { status: "mismatched", reason: "The pending browser session does not match the command.", session, pageUrl };
+      }
+      return {
+        status: "current", session, pageUrl, target: emptySnapshotTarget,
+        formStateFingerprint: emptySnapshotFingerprint, formStateComplete: true,
+        approvalRequired: true, fieldCount: 0, fields: []
+      };
+    }
     return {
       status: "unavailable",
       reason: "No form-control snapshot was supplied.",

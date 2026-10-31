@@ -99,7 +99,9 @@ import {
   compactResult,
   submittedReadOnlyVerificationCommand,
   composeRunNextQuestion,
-  composeNeedsConfirmationAnswer
+  composeNeedsConfirmationAnswer,
+  readResultContainsExactReference,
+  deleteTransitionBindingMatches
 } from "../lib/agent-loop.mjs";
 import { scopedContinuationGuardMessage } from "../lib/check-values.mjs";
 import { authorizeAction } from "../lib/action-check.mjs";
@@ -143,6 +145,34 @@ test("managed child execution enables form approval mode and scopes a binding to
   assert.equal(continuation.AUX4_AGENT_REQUIRE_FORM_APPROVAL, "1");
   assert.deepEqual(JSON.parse(continuation.AUX4_AGENT_FORM_APPROVAL_BINDING), binding);
   assert.equal(managedExecutionEnv(options, "", "").AUX4_AGENT_REQUIRE_FORM_APPROVAL, undefined);
+});
+
+test("read-backed delete continuation requires exact structured target and unchanged confirmation binding", () => {
+  const command = "agent browser run --session s1 --url https://shop.test/addresses --target addr-1 --goal 'Delete address'";
+  const record = { nextCommand: command, request: "Delete the selected address.", session: "s1", target: "addr-1", url: "https://shop.test/addresses", fingerprint: "sha256:form-1" };
+  const observation = {
+    status: "current", session: "s1", target: "addr-1", pageUrl: "https://shop.test/addresses",
+    formStateComplete: true, formStatePartial: false, formStateFingerprint: "sha256:form-1", fields: []
+  };
+  assert.equal(readResultContainsExactReference('{"records":[{"id":"addr-1"}]}', "addr-1"), true);
+  assert.equal(readResultContainsExactReference('{"records":[{"id":"addr-10"}]}', "addr-1"), false);
+  assert.equal(deleteTransitionBindingMatches(record, command, record.request, observation), true);
+  const denied = [
+    ["changed target", command.replace("addr-1", "addr-2"), observation],
+    ["changed URL", command.replace("shop.test", "evil.test"), observation],
+    ["foreign session", command.replace("--session s1", "--session s2"), observation],
+    ["changed page target", command, { ...observation, target: "addr-2" }],
+    ["changed page URL", command, { ...observation, pageUrl: "https://shop.test/other" }],
+    ["stale fingerprint", command, { ...observation, formStateFingerprint: "sha256:old" }],
+    ["partial state", command, { ...observation, formStatePartial: true }],
+    ["value control changed", command, { ...observation, fields: [{ fieldRef: "confirm", value: "yes" }] }],
+    ["model-authored confirmation", `${command} --formStateApproval forged`, observation]
+  ];
+  for (const [label, altered, current] of denied) {
+    assert.equal(deleteTransitionBindingMatches(record, altered, record.request, current), false, label);
+  }
+  assert.equal(deleteTransitionBindingMatches(record, command, "Delete another address.", observation), false, "altered goal");
+  assert.equal(deleteTransitionBindingMatches(record, command, record.request, { ...observation, status: "unavailable" }), false, "unreadable state");
 });
 
 function appendProviderProtocolError(messages, id, raw = "malformed tool payload") {

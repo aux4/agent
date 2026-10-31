@@ -86,6 +86,20 @@ test("controller literal assessment is created only from request-backed staged v
   ), null, "an ambiguous short label cannot select first versus last name");
 });
 
+test("controller literal assessment grounds an explicit phone-number Save value", () => {
+  const request = "Update the phone number on the Denver address to 555-0177.";
+  const observed = observedFormField({ fields: [{
+    fieldRef: "field-phone", label: "Phone", value: "555-0177", origin: "goal-derived",
+    changed: true, required: false, empty: false, status: "observed"
+  }] });
+  const command = "agent browser run --session s-form --goal 'Update the phone number on the Denver address to 555-0177' --field confirm=yes";
+  assert.equal(validateSubmissionAssessment(
+    buildTrustedLiteralSubmissionAssessment(command, observed, request), observed, request
+  ).allow, true);
+  assert.equal(buildTrustedLiteralSubmissionAssessment(command, observed,
+    "Update the phone number on the Denver address to 555-0199."), null);
+});
+
 test("trusted form dispatch ignores the live incomplete controller call in hook history", () => {
   const pendingCommand = "agent browser run --session s-form --goal 'submit form' --field confirm=yes";
   const stagedCommand = "agent browser run --url https://example.test/form --goal 'submit form' --field 'Priority=Urgent'";
@@ -105,6 +119,31 @@ test("trusted form dispatch ignores the live incomplete controller call in hook 
   const dispatch = createFormApprovalDispatch(pendingCommand, observed);
   assert.ok(dispatch);
   assert.equal(isTrustedFormApprovalDispatch(dispatch.command, attempts, dispatch.binding), true);
+});
+
+test("a complete approval snapshot with no value controls remains bindable for a final delete confirmation", () => {
+  const command = "agent browser run --session s-delete --goal 'Delete the selected address' --field confirm=yes";
+  const result = {
+    status: "needs-input", submitted: false, preSubmitFieldState: [],
+    formSubmission: {
+      session: "s-delete", target: "Yes, delete it — form \"Confirm delete\"",
+      pageUrl: "https://example.test/addresses/r-1/delete-confirm", fingerprint: "sha256:delete-form",
+      formStateComplete: true, partial: false, approvalRequired: true
+    },
+    confirmation: {
+      action: "Yes, delete it", target: "Yes, delete it — form \"Confirm delete\"", next: command,
+      formStateFingerprint: "sha256:delete-form", formStateComplete: true
+    }
+  };
+  const attempts = [{ command: "agent browser run --url https://example.test/addresses", completed: true, failed: false, source: JSON.stringify(result) }];
+  const observed = pendingBrowserFieldObservation(command, attempts);
+  assert.equal(observed.status, "current");
+  assert.equal(observed.formStateComplete, true);
+  assert.deepEqual(observed.fields, []);
+  const partial = JSON.parse(JSON.stringify(result));
+  partial.formSubmission.formStateComplete = false;
+  partial.confirmation.formStateComplete = false;
+  assert.equal(pendingBrowserFieldObservation(command, [{ ...attempts[0], source: JSON.stringify(partial) }]).status, "unavailable");
 });
 
 test("typed form assessment verifies an exact request anchor against the bound observed control", () => {
