@@ -212,9 +212,16 @@ test("structured browser record binding requires unique labeled request fields a
 test("delete transition intent fails closed on sentence-local negation", () => {
   assert.equal(hasExplicitDeleteIntent("Delete Alex Kim's Austin address."), true);
   assert.equal(hasExplicitDeleteIntent("Please remove the matching record."), true);
+  assert.equal(hasExplicitDeleteIntent("Can you delete the matching record?"), true);
+  assert.equal(hasExplicitDeleteIntent("I want you to remove the old record."), true);
+  assert.equal(hasExplicitDeleteIntent("I'd like you to delete the duplicate."), true);
   assert.equal(hasExplicitDeleteIntent("Do not delete Alex Kim's Austin address."), false);
   assert.equal(hasExplicitDeleteIntent("Never remove the Denver address."), false);
   assert.equal(hasExplicitDeleteIntent("The request says not to delete this record."), false);
+  assert.equal(hasExplicitDeleteIntent("The requester said: 'Delete Alex Kim's address.'"), false);
+  assert.equal(hasExplicitDeleteIntent("The request contains the words `delete Alex Kim's address`."), false);
+  assert.equal(hasExplicitDeleteIntent("A document says: \"Delete the old record.\""), false);
+  assert.equal(hasExplicitDeleteIntent("Review the records. Do not delete Austin; delete Denver."), false, "mixed negated sentence remains conservative");
 });
 
 test("delete stays fail-closed without structured browser row metadata", async () => {

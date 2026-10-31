@@ -2565,14 +2565,20 @@ export function deleteTransitionBindingMatches(record, command, request, observa
 
 export function hasExplicitDeleteIntent(value) {
   const text = String(value || "");
-  const verb = /\b(?:delete|remove)\b/ig;
-  let match;
-  while ((match = verb.exec(text))) {
-    const sentenceStart = Math.max(0, Math.max(text.lastIndexOf(".", match.index - 1), text.lastIndexOf("!", match.index - 1), text.lastIndexOf("?", match.index - 1), text.lastIndexOf(";", match.index - 1)) + 1);
-    const prefix = text.slice(sentenceStart, match.index);
-    if (!/(?:\bdo\s+not|\bdon't|\bnever|\bnot)\b[^.!?;]{0,32}$/i.test(prefix)) return true;
-  }
-  return false;
+  if (/(?:\bdo\s+not|\bdon't|\bnever|\bnot)\b[^.!?;:]{0,40}\b(?:delete|remove)\b/i.test(text)) return false;
+  const direct = /(?:^|[.!?;:]\s*|\bplease\s+|\bcan\s+you\s+|\bcould\s+you\s+|\bwould\s+you\s+|\bi\s+want\s+you\s+to\s+|\bi['’]?d\s+like\s+you\s+to\s+)(?:please\s+)?(?:delete|remove)\b/i;
+  const reported = /\b(?:the\s+)?(?:requester|user|request|document|message|text|prompt)\b[^.!?;:]{0,80}\b(?:said|says|contains?|includes?|mentions?|asks?|wrote|reads?)\b/i;
+  const sentences = text.split(/[.!?;]+/).map(sentence => sentence.trim()).filter(Boolean);
+  return sentences.some(sentence => {
+    if (!direct.test(sentence) || /[`]/.test(sentence)) return false;
+    if (reported.test(sentence)) return false;
+    const verb = /\b(?:delete|remove)\b/i.exec(sentence);
+    if (!verb) return false;
+    const prefix = sentence.slice(0, verb.index);
+    if (/(?:\bdo\s+not|\bdon't|\bnever|\bnot)\b[^:]{0,40}$/i.test(prefix)) return false;
+    const quotePrefix = prefix.replace(/\b(?:i['’]d|don't|can't|won't)\b/gi, "").match(/['\"]/g) || [];
+    return quotePrefix.length % 2 === 0;
+  });
 }
 
 export function trustedRecordBindingMatchesRequest(binding, request, trustedAction = null) {
