@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.1.70
+
+- Present supplemental installed-command references as a complete compact index when it is shorter than the detailed reference; keep full command paths and signatures intact.
+- Treat a neutral page-local read as unknown evidence for a positive state claim, even when extraction coverage is complete; require evidence whose scope matches the claim before marking it false.
+
 ## 4.1.69
 
 - Format supplemental installed-command references as a flat compact index with discovered paths, available descriptions, group/action markers, and documented parameter signatures; use the existing detailed reference when it is shorter.
