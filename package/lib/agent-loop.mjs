@@ -1945,10 +1945,18 @@ export function pendingConfirmation(attempts, { allowSubmitted = false } = {}) {
     return result?.formSubmission?.approvalRequired === true
       && result?.formSubmission?.formStateComplete === true;
   });
+  // A nested model follow-up may return only `{status:"done"}` after the
+  // browser rejected/ignored its model-authored formStateApproval flag. The
+  // absence of submission/approval is recoverable only with a prior complete
+  // managed form stage; a reported submission/approval can never be replayed.
   const controllerApprovalMiss = lastResult?.status === "done"
-    && lastResult?.submitted === false
+    && lastResult?.submitted !== true
+    && lastResult?.approvalMatched !== true
+    && lastResult?.formSubmission?.approvalMatched !== true
     && managedFormStage
-    && (lastResult?.approvalMatched === false || lastResult?.formSubmission?.approvalMatched === false);
+    && (lastResult?.approvalMatched === false
+      || lastResult?.formSubmission?.approvalMatched === false
+      || (lastResult?.submitted === undefined && !lastResult?.formSubmission));
   const blockedConfirmation = last.failed && confirmsAction(last.command || "");
   if (!confirmsAction(last.command || "") || hasSubmittedEffect(last)
     || (!blockedConfirmation && !controllerApprovalMiss)) return null;

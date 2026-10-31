@@ -3114,6 +3114,16 @@ test("pendingConfirmation survives blocked retries of its exact confirm command"
     failed: false,
     result: '{"status":"done","submitted":false,"approvalMatched":false}'
   }]).next, next);
+  assert.equal(pendingConfirmation([managedStage, {
+    command: `aux4 ${next}`,
+    failed: false,
+    result: '{"status":"done"}'
+  }]).next, next, "nested aux4 follow-ups with no submission result recover the stage");
+  assert.equal(pendingConfirmation([managedStage, {
+    command: `aux4 ${next}`,
+    failed: false,
+    result: '{"status":"done","submitted":true,"approvalMatched":true}'
+  }]), null, "a claimed nested submission must never be replayed by recovery");
 });
 
 test("isClearlyRequestedAction is strict: the request's own words must contain the SAME change verb as the pending action", () => {
@@ -3646,6 +3656,52 @@ test("same-ask staged form recovery dispatches one controller-bound source appro
       fs.writeFileSync(h, JSON.stringify(live));
       appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, approvalMatched: true, goalVerified: true, session: "s-ship", finalUrl: "https://example.test/shipping" }), "controller-submit");
       return "The shipping details were saved.";
+    });
+    assert.equal(dispatches.filter(item => item.command.includes("--formStateApproval")).length, 1, JSON.stringify({ dispatches, stopped: outcome.stopped, content: outcome.content }));
+    assert.equal(outcome.stopped, "pass");
+  });
+});
+
+test("same-ask nested aux4 browser confirmation with no approval result recovers once", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("nested-aux4-form-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  const request = "On the notification preferences page, subscribe to only the Security alerts and Billing topics. Leave Marketing, Product updates and Social unchecked.";
+  const staged = "agent browser run --url https://example.test/preferences --goal 'save notification preferences'";
+  const next = "aux4 agent browser run --session s-pref --goal 'save notification preferences' --field 'confirm=yes'";
+  const stageResult = {
+    status: "needs-input", submitted: false,
+    confirmation: { action: "Save", target: "Save — form Preferences", emptyFields: [], next, formStateFingerprint: "fp-pref", formStateComplete: true },
+    formSubmission: { session: "s-pref", target: "Save — form Preferences", pageUrl: "https://example.test/preferences", fingerprint: "fp-pref", formStateComplete: true, partial: false, approvalRequired: true },
+    preSubmitFieldState: [
+      { url: "https://example.test/preferences", label: "Security alerts", context: 'form "Preferences"', controlType: "checkbox", fieldRef: "security", checked: true, changed: true, status: "observed", phase: "before-confirmation" },
+      { url: "https://example.test/preferences", label: "Billing", context: 'form "Preferences"', controlType: "checkbox", fieldRef: "billing", checked: true, changed: true, status: "observed", phase: "before-confirmation" },
+      { url: "https://example.test/preferences", label: "Marketing", context: 'form "Preferences"', controlType: "checkbox", fieldRef: "marketing", checked: false, changed: false, status: "observed", phase: "before-confirmation" },
+      { url: "https://example.test/preferences", label: "Product updates", context: 'form "Preferences"', controlType: "checkbox", fieldRef: "product", checked: false, changed: false, status: "observed", phase: "before-confirmation" },
+      { url: "https://example.test/preferences", label: "Social", context: 'form "Preferences"', controlType: "checkbox", fieldRef: "social", checked: false, changed: false, status: "observed", phase: "before-confirmation" }
+    ]
+  };
+  const dispatches = [];
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions({ request, packageDir: PACKAGE_DIR, hooksSupported: true, toolDispatchSupported: true }) };
+    options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, request, options);
+    const outcome = await runLoop(options, history, (_question, h) => {
+      appendExecutionResult(h, staged, JSON.stringify(stageResult), "stage");
+      // This is the real nested shape observed in the focused trace: the
+      // model supplies aux4 + formStateApproval, but the browser reports no
+      // submission/approval result. The outer controller must recover the
+      // trusted stage and never trust this flag.
+      appendExecutionResult(h, next + " --formStateApproval fp-pref", JSON.stringify({ status: "done" }), "model-confirm");
+      return "The browser confirmation was not submitted.";
+    }, "", async (command, h, _denied, _retry, _patterns, binding) => {
+      dispatches.push({ command, binding });
+      if (command.startsWith("agent browser inspect")) {
+        appendExecutionResult(h, command, JSON.stringify({ status: "done", goalVerified: true, page: "Preferences saved." }), "verify-submit");
+        return "The preferences were saved.";
+      }
+      assert.equal(command, `${next} --formStateApproval fp-pref`);
+      assert.ok(binding, "controller must provide trusted approval binding");
+      appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, approvalMatched: true, session: "s-pref", finalUrl: "https://example.test/preferences" }), "controller-submit");
+      return "The preferences were saved.";
     });
     assert.equal(dispatches.filter(item => item.command.includes("--formStateApproval")).length, 1, JSON.stringify({ dispatches, stopped: outcome.stopped, content: outcome.content }));
     assert.equal(outcome.stopped, "pass");

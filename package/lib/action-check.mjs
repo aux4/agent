@@ -625,6 +625,13 @@ export function pendingBrowserFieldObservation(command, attempts) {
   const parts = browserRunParts(command);
   if (!parts) return null;
   const commandKey = canonicalCommand(command);
+  const isNonSubmittingApprovalMiss = result => result?.status === "done"
+    && result?.submitted !== true
+    && result?.approvalMatched !== true
+    && result?.formSubmission?.approvalMatched !== true
+    && (result?.approvalMatched === false
+      || result?.formSubmission?.approvalMatched === false
+      || (result?.submitted === undefined && !result?.formSubmission));
   let pending = null;
   let latestBrowserRun = -1;
   for (let i = attempts.length - 1; i >= 0; i--) {
@@ -634,9 +641,12 @@ export function pendingBrowserFieldObservation(command, attempts) {
     if (!attempts[i]?.failed && attempts[i]?.completed !== false
       && browserRunParts(attempts[i]?.command || "")) {
       const followup = parseJSONLoose(String(attempts[i].source ?? attempts[i].result ?? ""), null);
+      // A nested model follow-up can contain only `{status:"done"}` after a
+      // model-authored formStateApproval was ignored. Treat that as the
+      // non-submitting follow-up only when it cannot claim a submission or
+      // approval; the outer controller then revalidates the original stage.
       const nonSubmittingConfirm = confirmsAction(attempts[i].command || "")
-        && followup?.status === "done" && followup?.submitted === false
-        && followup?.approvalMatched === false;
+        && isNonSubmittingApprovalMiss(followup);
       if (nonSubmittingConfirm) continue;
       latestBrowserRun = i; break;
     }
@@ -655,8 +665,7 @@ export function pendingBrowserFieldObservation(command, attempts) {
     if (attempts.slice(i + 1).some(later => {
       if (later.failed || later.completed === false || !isChangeCommand(later.command || "")) return false;
       const laterResult = parseJSONLoose(String(later.source ?? later.result ?? ""), null);
-      return !(confirmsAction(later.command || "") && laterResult?.status === "done"
-        && laterResult?.submitted === false && laterResult?.approvalMatched === false);
+      return !(confirmsAction(later.command || "") && isNonSubmittingApprovalMiss(laterResult));
     })) {
       return { status: "mismatched", reason: "A later change makes the pending browser form snapshot stale." };
     }
@@ -835,6 +844,13 @@ export function isTrustedFormApprovalDispatch(command, attempts, binding) {
   if (words[flagIndex + 1] !== binding.fingerprint) return false;
   if (words[0] !== "agent" || words[1] !== "browser" || words[2] !== "run") return false;
   const originalWords = [...words.slice(0, flagIndex), ...words.slice(flagIndex + 2)];
+  const isNonSubmittingApprovalMiss = result => result?.status === "done"
+    && result?.submitted !== true
+    && result?.approvalMatched !== true
+    && result?.formSubmission?.approvalMatched !== true
+    && (result?.approvalMatched === false
+      || result?.formSubmission?.approvalMatched === false
+      || (result?.submitted === undefined && !result?.formSubmission));
   for (let index = attempts.length - 1; index >= 0; index--) {
     const attempt = attempts[index];
     const result = parseJSONLoose(String(attempt?.source ?? attempt?.result ?? ""), null);
@@ -843,15 +859,13 @@ export function isTrustedFormApprovalDispatch(command, attempts, binding) {
     const latestBrowserRun = attempts.reduce((latest, candidate, candidateIndex) => {
       if (candidate?.failed || candidate?.completed === false || !browserRunParts(candidate?.command || "")) return latest;
       const candidateResult = parseJSONLoose(String(candidate.source ?? candidate.result ?? ""), null);
-      if (confirmsAction(candidate.command || "") && candidateResult?.status === "done"
-        && candidateResult?.submitted === false && candidateResult?.approvalMatched === false) return latest;
+      if (confirmsAction(candidate.command || "") && isNonSubmittingApprovalMiss(candidateResult)) return latest;
       return candidateIndex;
     }, -1);
     if (index !== latestBrowserRun || attempts.slice(index + 1).some(later => {
       if (later.failed || later.completed === false || !isChangeCommand(later.command || "")) return false;
       const laterResult = parseJSONLoose(String(later.source ?? later.result ?? ""), null);
-      return !(confirmsAction(later.command || "") && laterResult?.status === "done"
-        && laterResult?.submitted === false && laterResult?.approvalMatched === false);
+      return !(confirmsAction(later.command || "") && isNonSubmittingApprovalMiss(laterResult));
     })) return false;
     const observed = pendingBrowserFieldObservation(next, attempts);
     return observed?.status === "current" && observed.formStateComplete === true && observed.approvalRequired === true
