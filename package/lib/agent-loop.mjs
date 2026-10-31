@@ -2597,6 +2597,8 @@ export function trustedRecordBindingMatchesRequest(binding, request, trustedActi
     || typeof trustedAction.role !== "string" || trustedAction.role !== binding.actionRole
     || typeof trustedAction.label !== "string" || trustedAction.label !== binding.actionLabel) return false;
   const requestText = String(request || "").toLowerCase();
+  const requestClauses = requestText.split(/[.!?;]+/).map(clause => clause.trim()).filter(Boolean);
+  const isExcludedClause = clause => /\b(?:do\s+not|don't|never|not|leave|keep|preserve|avoid|except)\b/i.test(clause);
   const parseFields = fields => {
     const labels = new Map();
     let identifierFields = 0;
@@ -2620,12 +2622,15 @@ export function trustedRecordBindingMatchesRequest(binding, request, trustedActi
   };
   const requestMatch = fields => {
     const parsed = parseFields(fields); if (!parsed) return false;
-    const matched = new Set();
-    for (const [label, value] of parsed.labels) {
-      if (/^id$|identifier|record[ -]?id|key/.test(label)) continue;
-      if (requestText.includes(value.toLowerCase())) matched.add(`${label}\u0000${value.toLowerCase()}`);
-    }
-    return matched.size >= 2;
+    return requestClauses.some(clause => {
+      if (isExcludedClause(clause)) return false;
+      const matched = new Set();
+      for (const [label, value] of parsed.labels) {
+        if (/^id$|identifier|record[ -]?id|key/.test(label)) continue;
+        if (clause.includes(value.toLowerCase())) matched.add(`${label}\u0000${value.toLowerCase()}`);
+      }
+      return matched.size >= 2;
+    });
   };
   if (!requestMatch(binding.fields)) return false;
   const matchingRows = [];

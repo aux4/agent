@@ -207,6 +207,16 @@ test("structured browser record binding requires unique labeled request fields a
   assert.equal(trustedRecordBindingMatchesRequest(binding, request), false, "missing trusted action denied");
   assert.equal(trustedRecordBindingMatchesRequest({ ...binding, fields: [...binding.fields, { label: "City", value: "Denver" }] }, request, action), false, "conflicting duplicate row field denied");
   assert.equal(trustedRecordBindingMatchesRequest(binding, "Delete Jamie Stone's Austin address.", action), false, "wrong requested record denied");
+  const job381Request = "Delete Alex Kim's Austin address at http://127.0.0.1:7400/addresses. There are two addresses for Alex Kim -- only delete the Austin one, leave the Denver one alone.";
+  const job381Binding = {
+    ...binding,
+    candidateRows: [
+      binding.candidateRows[0],
+      { identifier: "addr-2", identifierLabel: "Record ID", scopeSelector: "#row-2", fields: [{ label: "Name", value: "Alex Kim" }, { label: "City", value: "Denver" }, { label: "Phone", value: "555-0199" }] }
+    ]
+  };
+  assert.equal(trustedRecordBindingMatchesRequest(job381Binding, job381Request, action), true, "Austin row matches its positive clause");
+  assert.equal(trustedRecordBindingMatchesRequest({ ...job381Binding, identifier: "addr-2", scopeSelector: "#row-2", fields: job381Binding.candidateRows[1].fields }, job381Request, action), false, "Denver contrast row does not match the positive target clause");
 });
 
 test("delete transition intent fails closed on sentence-local negation", () => {
