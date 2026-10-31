@@ -4846,12 +4846,12 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         await import("./action-check.mjs");
       const formObservation = pendingBrowserFieldObservation(pending.next, attempts);
       const formApprovalRequired = formObservation?.approvalRequired === true;
-      const actionCheckRequired = formApprovalRequired || !isClearlyRequestedAction(pending.label, options.request);
       const trustedTransitionObservation = formObservation?.status === "current"
         ? formObservation : trustedPendingMetadata(pending.next, attempts);
       const trustedRecordBinding = trustedTransitionObservation?.recordBinding;
+      let deleteTransitionEligible = false;
       if (!formApprovalRequired && deleteAction(pending.label)
-        && isClearlyRequestedAction(pending.label, options.request)
+        && /\b(?:delete|remove)\b/i.test(String(options.request || ""))
         && trustedRecordBindingMatchesRequest(trustedRecordBinding, options.request, trustedTransitionObservation?.action)
         && trustedTransitionObservation?.target
         && trustedTransitionObservation?.pageUrl) {
@@ -4873,7 +4873,13 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           // confirmation flags never replace this command.
           nextCommand: pending.next
         };
+        deleteTransitionEligible = true;
       }
+      // A uniquely bound browser Delete may advance to its confirmation page
+      // without a form snapshot; the final page still requires the normal
+      // complete snapshot and controller approval gate below.
+      const actionCheckRequired = formApprovalRequired
+        || (!isClearlyRequestedAction(pending.label, options.request) && !deleteTransitionEligible);
       // Keep the deterministic item-selection rule stricter than the semantic
       // outcome check: a hook cannot resolve an item the request did not select.
       if (actionCheckRequired && namesUnselectedItem(pending.label, options.request)) {
@@ -4973,7 +4979,11 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           const urlToSession = Boolean(stagedAttempt && stagedIdentity.url && !stagedIdentity.session
             && pendingIdentity.session && !pendingIdentity.url
             && returnedSession === pendingIdentity.session
-            && returnedPageUrl === stagedIdentity.url
+            // The staged browser run may navigate from its source URL to the
+            // final form before returning needs-input. Bind the continuation
+            // to that trusted returned page (and the live observation), not
+            // to the original --url alone.
+            && returnedPageUrl === formObservation.pageUrl
             && formObservation.session === returnedSession
             && formObservation.pageUrl === returnedPageUrl);
           const sameSession = stagedIdentity.session === pendingIdentity.session || urlToSession;

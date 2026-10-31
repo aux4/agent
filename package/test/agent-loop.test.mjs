@@ -214,8 +214,8 @@ test("delete stays fail-closed without structured browser row metadata", async (
   const configFile = path.join(dir, "config.yaml");
   fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
   fs.writeFileSync(configFile, "config: {}\n");
-  const request = "Delete Alex Kim's Austin address.";
-  const next = "agent browser run --session 9bb322b5 --goal \"Delete Alex Kim's Austin address\" --field confirm=yes";
+  const request = "Delete Alex Kim's Austin address at http://127.0.0.1:7400/addresses. There are two addresses for Alex Kim -- only delete the Austin one, leave the Denver one alone.";
+  const next = "aux4 agent browser run --session '9bb322b5' --goal 'Delete the Austin address for Alex Kim (addr-1) after reading and selecting the matching record; do not delete another address.' --field 'confirm=yes'";
   const fake = planVerifyFake({ verifyStatus: "pass" });
   const options = { ...baseOptions({ request, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
   options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, request, options);
@@ -235,7 +235,7 @@ test("delete stays fail-closed without structured browser row metadata", async (
   let continuationCalls = 0;
   try {
     await withAux4Bin(fake, async () => {
-      const runScenario = (sourceCommand = "agent browser run --url http://127.0.0.1:7400/addresses --goal \"Delete Alex Kim's Austin address\"") => runLoop(options, history, (_question, h) => {
+      const runScenario = (sourceCommand = "agent browser run --url http://127.0.0.1:7400/addresses --goal 'Delete the Austin address for Alex Kim (addr-1) after reading and selecting the matching record; do not delete another address.'") => runLoop(options, history, (_question, h) => {
         appendExecutionResult(h, sourceCommand, JSON.stringify(initial), "delete-initial");
         return { content: "The selected address is ready to delete.", stopReason: "confirmation" };
       }, "", async (command, h) => {
