@@ -52,6 +52,20 @@ test("controller literal assessment is created only from request-backed staged v
     observed,
     "Use the assigned Priority from the record and submit the form."
   ), null, "source-required intent stays fail-closed without an independent read");
+  const repeated = observedFormField({ fields: [
+    observed.fields[0],
+    { ...observed.fields[0], fieldRef: "field-other", label: "Summary" }
+  ] });
+  assert.equal(buildTrustedLiteralSubmissionAssessment(
+    "agent browser run --goal 'submit form' --field 'Priority=Urgent' --field 'Summary=Urgent'",
+    repeated,
+    "Fill Priority with Urgent and Summary with Urgent and submit the form."
+  ) !== null, true);
+  assert.equal(buildTrustedLiteralSubmissionAssessment(
+    "agent browser run --goal 'submit form' --field 'Priority=Urgent'",
+    repeated,
+    "Fill Priority with Urgent and Summary with Urgent and submit the form."
+  ), null, "one literal cannot authorize multiple controls without exact label bindings");
 });
 
 test("typed form assessment verifies an exact request anchor against the bound observed control", () => {

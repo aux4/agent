@@ -4675,7 +4675,17 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           const record = formApprovalRecord;
           const revalidated = validateSubmissionAssessment(record.assessment, formObservation, options.request, attempts);
           const sameAction = commandKey(record.pendingCommand) === commandKey(pending.next);
+          const actionIdentity = value => {
+            const words = commandWords(value) || [];
+            const unprefixed = words[0] === "aux4" ? words.slice(1) : words;
+            const readOption = name => { const index = unprefixed.indexOf(name); return index >= 0 ? unprefixed[index + 1] || "" : ""; };
+            return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session") };
+          };
+          const currentIdentity = actionIdentity(pending.next);
           if (!sameAction || revalidated?.allow !== true
+            || currentIdentity.goal !== record.pendingIdentity.goal
+            || currentIdentity.url !== record.pendingIdentity.url
+            || currentIdentity.session !== record.pendingIdentity.session
             || record.binding.session !== formObservation.session
             || record.binding.target !== formObservation.target
             || record.binding.pageUrl !== formObservation.pageUrl
@@ -4701,6 +4711,21 @@ export async function runLoop(options, history, execute, recovery = "", executeC
             return commandKey(result?.confirmation?.next) === commandKey(pending.next);
           });
           const stagedCommand = stagedAttempt?.command || pending.next;
+          const actionIdentity = value => {
+            const words = commandWords(value) || [];
+            const unprefixed = words[0] === "aux4" ? words.slice(1) : words;
+            const readOption = name => { const index = unprefixed.indexOf(name); return index >= 0 ? unprefixed[index + 1] || "" : ""; };
+            return { goal: readOption("--goal"), url: readOption("--url"), session: readOption("--session") };
+          };
+          const stagedIdentity = actionIdentity(stagedCommand);
+          const pendingIdentity = actionIdentity(pending.next);
+          if (stagedAttempt && (stagedIdentity.goal !== pendingIdentity.goal
+            || stagedIdentity.url !== pendingIdentity.url
+            || stagedIdentity.session !== pendingIdentity.session)) {
+            round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
+            lastContent = "The pending form continuation does not match the original staged browser action.";
+            return done("needs-confirmation", attempt, "The controller rejected an altered form action before dispatch.");
+          }
           // Establish a controller-owned literal assessment before asking the
           // model-backed action checker. This covers only values independently
           // grounded in the original request; source/preserve/default cases
@@ -4719,6 +4744,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
             formApprovalRecord = {
               stagedCommand,
               pendingCommand: pending.next,
+              pendingIdentity,
               assessment: verdict.submissionAssessment,
               binding: formDispatch.binding,
               reason: verdict.reason

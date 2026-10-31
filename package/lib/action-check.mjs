@@ -309,11 +309,12 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
     const actual = observedFieldValueText(observed);
     if (typeof observed.fieldRef !== "string" || !observed.fieldRef || actual === null
       || !["explicit-input", "goal-derived"].includes(observed.origin)) return null;
-    const matches = supplied.filter(entry => entry.value === actual
-      || (canonicalExplicitDate(request, observed)?.canonicalValue === actual && entry.value === canonicalExplicitDate(request, observed)?.requestDate));
+    const normalizedDate = canonicalExplicitDate(request, observed);
+    const matches = supplied.filter(entry => (entry.value === actual
+      || (normalizedDate?.canonicalValue === actual && entry.value === normalizedDate.requestDate))
+      && fieldIdentity(entry.label) === fieldIdentity(observed.label));
     if (matches.length !== 1) return null;
     const entry = matches[0];
-    const normalizedDate = canonicalExplicitDate(request, observed);
     const requestValue = normalizedDate?.canonicalValue === actual ? normalizedDate.requestDate : actual;
     if (!String(request || "").includes(requestValue)) return null;
     const requestText = String(request || "");
