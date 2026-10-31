@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { authorizeAction, actionCheckFiles, actionCheckStats, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
+import { authorizeAction, actionCheckFiles, actionCheckStats, buildTrustedLiteralSubmissionAssessment, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
 import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -32,6 +32,27 @@ function observedFormField(overrides = {}) {
     ...overrides
   };
 }
+
+test("controller literal assessment is created only from request-backed staged values", () => {
+  const request = "Fill Priority with Urgent and submit the form.";
+  const observed = observedFormField();
+  const assessment = buildTrustedLiteralSubmissionAssessment(
+    "agent browser run --goal 'submit form' --field 'Priority=Urgent' --field confirm=yes",
+    observed,
+    request
+  );
+  assert.equal(validateSubmissionAssessment(assessment, observed, request).allow, true);
+  assert.equal(buildTrustedLiteralSubmissionAssessment(
+    "agent browser run --goal 'submit form' --field 'Priority=Low' --field confirm=yes",
+    observed,
+    request
+  ), null, "a model-only or relabeled value cannot create trusted authority");
+  assert.equal(buildTrustedLiteralSubmissionAssessment(
+    "agent browser run --goal 'submit form' --field 'Priority=Urgent' --field confirm=yes",
+    observed,
+    "Use the assigned Priority from the record and submit the form."
+  ), null, "source-required intent stays fail-closed without an independent read");
+});
 
 test("typed form assessment verifies an exact request anchor against the bound observed control", () => {
   const request = "Priority is Urgent.";

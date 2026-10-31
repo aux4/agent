@@ -293,6 +293,52 @@ export function validateSubmissionAssessment(assessment, observedFields, request
   return { allow: true, reason: "The required form controls have grounded assessments bound to the current form snapshot." };
 }
 
+// Build only the narrow controller-owned assessment that can be established
+// without model semantics: every changed/required observed value must be an
+// explicit command value (or a goal-derived value), appear in the original
+// request, and match the live snapshot. Source-backed or preserved/defaulted
+// values intentionally return null and still require the normal assessment.
+export function buildTrustedLiteralSubmissionAssessment(command, observedFields, request) {
+  if (!observedFields || observedFields.status !== "current" || observedFields.formStateComplete !== true
+    || observedFields.formStatePartial === true || !observedFields.session || !observedFields.target
+    || !observedFields.pageUrl || !observedFields.formStateFingerprint) return null;
+  const supplied = enteredValues(command).filter(entry => !/^confirm$/i.test(entry.label));
+  const fields = [];
+  for (const observed of observedFields.fields || []) {
+    if (!(observedFields.formStateComplete === true || observed.required === true || observed.changed === true)) continue;
+    const actual = observedFieldValueText(observed);
+    if (typeof observed.fieldRef !== "string" || !observed.fieldRef || actual === null
+      || !["explicit-input", "goal-derived"].includes(observed.origin)) return null;
+    const matches = supplied.filter(entry => entry.value === actual
+      || (canonicalExplicitDate(request, observed)?.canonicalValue === actual && entry.value === canonicalExplicitDate(request, observed)?.requestDate));
+    if (matches.length !== 1) return null;
+    const entry = matches[0];
+    const normalizedDate = canonicalExplicitDate(request, observed);
+    const requestValue = normalizedDate?.canonicalValue === actual ? normalizedDate.requestDate : actual;
+    if (!String(request || "").includes(requestValue)) return null;
+    const requestText = String(request || "");
+    const valueOffset = requestText.indexOf(requestValue);
+    const excerpt = requestText.length <= 600 ? requestText : requestText.slice(Math.max(0, valueOffset - 240), valueOffset + requestValue.length + 240);
+    const fieldText = [observed.label, entry.label].map(value => String(value || "").trim()).find(value => value && excerpt.includes(value));
+    if (!fieldText || !excerpt.includes(requestValue)) return null;
+    fields.push({
+      fieldRef: observed.fieldRef,
+      status: "verified",
+      requirement: "literal-value",
+      basis: "request",
+      relation: "assigns-value",
+      evidence: [{ kind: "request", excerpt, fieldText, valueText: requestValue }]
+    });
+  }
+  if (!fields.length) return null;
+  const assessment = {
+    version: 1,
+    binding: { session: observedFields.session, target: observedFields.target, pageUrl: observedFields.pageUrl, formStateFingerprint: observedFields.formStateFingerprint },
+    fields
+  };
+  return validateSubmissionAssessment(assessment, observedFields, request, [])?.allow === true ? assessment : null;
+}
+
 // A pending browser confirmation may carry a live control snapshot. Keep it
 // separate from successfulActionsAndResults: the form is evidence of what is
 // currently displayed, never independent evidence of where a requested

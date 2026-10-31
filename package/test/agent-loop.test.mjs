@@ -3499,13 +3499,13 @@ else if(command.includes('loop-verify.md')) {
 } else if(args.includes('--help')) process.stdout.write('run\\n  --session <id>\\n  --goal <arg>\\n  --field <value>\\n  --formStateApproval <value>');
 `);
 
-  async function runCase({ mode = "request", fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false, alteredContinuation = false } = {}) {
+  async function runCase({ mode = "request", requestText = request, fingerprint = "sha256:form-current", partial = false, preRead = false, forged = false, alteredContinuation = false } = {}) {
     fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
     fs.rmSync(actionCalls, { force: true });
-    const options = { ...baseOptions({ request, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
-    options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, request, options);
+    const options = { ...baseOptions({ request: requestText, packageDir: PACKAGE_DIR, configFile, hooksSupported: true, toolDispatchSupported: true }) };
+    options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, requestText, options);
     let effects = 0;
-    const initialCommand = "agent browser run --session s-form --goal 'complete the form'";
+    const initialCommand = "agent browser run --session s-form --goal 'complete the form' --field 'Priority=Urgent'";
     const next = forged ? `${pendingCommand} --formStateApproval sha256:forged` : pendingCommand;
     const pendingResult = snapshot(fingerprint, partial);
     pendingResult.confirmation.next = next;
@@ -3530,7 +3530,7 @@ else if(command.includes('loop-verify.md')) {
         const substitutions = {
           "value(__history)": h,
           "value(__commandLine)": `aux4 ${command}`,
-          "value(__request)": request,
+          "value(__request)": requestText,
           "value(field)": "confirm=yes",
           "value(data)": ""
         };
@@ -3569,18 +3569,17 @@ else if(command.includes('loop-verify.md')) {
       process.env.FORM_ASSESSMENT_MODE = "request";
       const requestBacked = await runCase();
       assert.equal(requestBacked.effects, 1, JSON.stringify({ stopped: requestBacked.outcome.stopped, answer: requestBacked.outcome.content, authCalls: requestBacked.authCalls, payload: requestBacked.payload }));
-      assert.equal(requestBacked.authCalls, 1, "the before-hook must not make a duplicate action-check model call");
-      assert.equal(requestBacked.payload.request, request);
-      assert.equal(requestBacked.payload.observedFields.approvalRequired, true);
+      assert.equal(requestBacked.authCalls, 0, "controller-grounded literal values do not require a model semantic assessment");
+      assert.equal(requestBacked.payload, null, "the trusted controller path must not fabricate a model authorization payload");
 
       process.env.FORM_ASSESSMENT_MODE = "read";
-      const readBacked = await runCase({ preRead: true });
+      const readBacked = await runCase({ preRead: true, requestText: "Use the assigned Priority from the record and submit the form." });
       assert.equal(readBacked.effects, 1);
       assert.equal(readBacked.payload.successfulActionsAndResults.some(entry => entry.attemptRef === "read-priority"), true);
 
       for (const mode of ["deny", "missing", "contradicted", "stale", "unmanaged"]) {
         process.env.FORM_ASSESSMENT_MODE = mode;
-        const blocked = await runCase();
+        const blocked = await runCase({ requestText: "Use the assigned Priority from the record and submit the form." });
         assert.equal(blocked.effects, 0, `${mode} assessment must not reach the write`);
         assert.equal(blocked.authCalls, 1);
       }

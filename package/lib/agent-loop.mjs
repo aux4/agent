@@ -4646,7 +4646,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       // A managed browser form submission has a stricter controller gate than
       // ordinary pending confirmation: current controls must be assessed
       // against the request and independent evidence before approval.
-      const { pendingBrowserFieldObservation, authorizeAction, createFormApprovalDispatch, isTrustedFormApprovalDispatch, validateSubmissionAssessment } =
+      const { pendingBrowserFieldObservation, authorizeAction, buildTrustedLiteralSubmissionAssessment, createFormApprovalDispatch, isTrustedFormApprovalDispatch, validateSubmissionAssessment } =
         await import("./action-check.mjs");
       const formObservation = pendingBrowserFieldObservation(pending.next, attempts);
       const formApprovalRequired = formObservation?.approvalRequired === true;
@@ -4674,7 +4674,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
         if (formApprovalRecord) {
           const record = formApprovalRecord;
           const revalidated = validateSubmissionAssessment(record.assessment, formObservation, options.request, attempts);
-          const sameAction = commandKey(record.originalCommand) === commandKey(pending.next);
+          const sameAction = commandKey(record.pendingCommand) === commandKey(pending.next);
           if (!sameAction || revalidated?.allow !== true
             || record.binding.session !== formObservation.session
             || record.binding.target !== formObservation.target
@@ -4691,7 +4691,24 @@ export async function runLoop(options, history, execute, recovery = "", executeC
             return done("needs-confirmation", attempt, "The controller form approval binding was altered. No submission was dispatched.");
           }
         } else {
-          const verdict = authorizeAction(options, pending.next, attempts, options.request, history);
+          // The first browser run may stage values and return a separate
+          // confirm-only continuation. Recover that exact staged command from
+          // the successful attempt whose result introduced this pending action;
+          // never infer values from model text or from confirm=yes alone.
+          const stagedAttempt = [...attempts].reverse().find(entry => {
+            if (entry.failed || entry.completed === false || !isSingleBrowserRunCommand(entry.command)) return false;
+            const result = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
+            return commandKey(result?.confirmation?.next) === commandKey(pending.next);
+          });
+          const stagedCommand = stagedAttempt?.command || pending.next;
+          // Establish a controller-owned literal assessment before asking the
+          // model-backed action checker. This covers only values independently
+          // grounded in the original request; source/preserve/default cases
+          // remain fail-closed and require the normal semantic assessment.
+          const trustedLiteralAssessment = buildTrustedLiteralSubmissionAssessment(stagedCommand, formObservation, options.request);
+          const verdict = trustedLiteralAssessment
+            ? { allow: true, reason: "Controller-validated literal request values.", submissionAssessmentValidated: true, submissionAssessment: trustedLiteralAssessment }
+            : authorizeAction(options, pending.next, attempts, options.request, history);
           if (!verdict?.allow || verdict.submissionAssessmentValidated !== true || !verdict.submissionAssessment) {
             round.confirmation = { command: pending.command, next: pending.next, requested: true, actionCheckRequired: true };
             lastContent = `The form was not submitted because its field values could not be grounded to the request and successful evidence: ${verdict?.reason || "the typed field assessment was missing or invalid"}`;
@@ -4700,7 +4717,8 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           formDispatch = createFormApprovalDispatch(pending.next, formObservation);
           if (formDispatch) {
             formApprovalRecord = {
-              originalCommand: pending.next,
+              stagedCommand,
+              pendingCommand: pending.next,
               assessment: verdict.submissionAssessment,
               binding: formDispatch.binding,
               reason: verdict.reason
