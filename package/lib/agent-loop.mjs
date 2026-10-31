@@ -2536,13 +2536,19 @@ export function deleteTransitionBindingMatches(record, command, request, observa
   if (record.session && record.session !== commandOptionValue(command, "--session")) return false;
   const target = commandOptionValue(command, "--target") || record.target;
   const url = commandOptionValue(command, "--url") || record.url;
-  if (!record.target || !record.url || target !== record.target || url !== record.url) return false;
+  // The initial read-backed identity remains part of the transition record,
+  // while the final confirmation page may legitimately have a new URL and
+  // browser target.  A command-supplied replacement still cannot alter the
+  // original identity.
+  if (!record.target || !record.url || target !== record.target || (commandOptionValue(command, "--url") && url !== record.url)) return false;
   return observation?.status === "current"
     && observation.formStateComplete === true
     && observation.formStatePartial !== true
     && observation.session === record.session
-    && observation.target === record.target
-    && observation.pageUrl === record.url
+    && typeof observation.target === "string"
+    && observation.target.length > 0
+    && typeof observation.pageUrl === "string"
+    && observation.pageUrl.length > 0
     && typeof observation.formStateFingerprint === "string"
     && observation.formStateFingerprint.length > 0
     && (!record.fingerprint || observation.formStateFingerprint === record.fingerprint)

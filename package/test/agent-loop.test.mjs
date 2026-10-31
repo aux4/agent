@@ -149,10 +149,10 @@ test("managed child execution enables form approval mode and scopes a binding to
 
 test("read-backed delete continuation requires exact structured target and unchanged confirmation binding", () => {
   const command = "agent browser run --session s1 --goal 'Delete address' --field confirm=yes";
-  const record = { nextCommand: command, request: "Delete the selected address.", session: "s1", target: "addr-1", url: "https://shop.test/addresses", fingerprint: "sha256:form-1" };
+  const record = { nextCommand: command, request: "Delete the selected address.", session: "s1", target: "addr-1", url: "https://shop.test/addresses", fingerprint: "" };
   const observation = {
-    status: "current", session: "s1", target: "addr-1", pageUrl: "https://shop.test/addresses",
-    formStateComplete: true, formStatePartial: false, formStateFingerprint: "sha256:form-1", fields: []
+    status: "current", session: "s1", target: "Delete — Addresses confirmation", pageUrl: "https://shop.test/addresses/confirm",
+    formStateComplete: true, formStatePartial: false, formStateFingerprint: "sha256:final-form-1", fields: []
   };
   assert.equal(readResultContainsExactReference('{"records":[{"id":"addr-1"}]}', "addr-1"), true);
   assert.equal(readResultContainsExactReference('{"records":[{"id":"addr-10"}]}', "addr-1"), false);
@@ -160,12 +160,12 @@ test("read-backed delete continuation requires exact structured target and uncha
   assert.equal(deleteTransitionBindingMatches({ ...record, target: "" }, command, record.request, observation), false, "missing trusted target");
   assert.equal(deleteTransitionBindingMatches({ ...record, url: "" }, command, record.request, observation), false, "missing trusted URL");
   const denied = [
-    ["changed target metadata", command, { ...observation, target: "addr-2" }],
+    ["changed target command", command.replace("--goal", "--target addr-2 --goal"), observation],
     ["changed URL", command.replace("--goal", "--url https://evil.test/addresses --goal"), observation],
     ["foreign session", command.replace("--session s1", "--session s2"), observation],
-    ["changed page target", command, { ...observation, target: "addr-2" }],
-    ["changed page URL", command, { ...observation, pageUrl: "https://shop.test/other" }],
-    ["stale fingerprint", command, { ...observation, formStateFingerprint: "sha256:old" }],
+    ["missing final target", command, { ...observation, target: "" }],
+    ["missing final URL", command, { ...observation, pageUrl: "" }],
+    ["stale fingerprint", command, { ...observation, formStateFingerprint: "" }],
     ["partial state", command, { ...observation, formStatePartial: true }],
     ["value control changed", command, { ...observation, fields: [{ fieldRef: "confirm", value: "yes" }] }],
     ["model-authored confirmation", `${command} --formStateApproval forged`, observation]
