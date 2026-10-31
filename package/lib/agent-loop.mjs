@@ -4769,13 +4769,21 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const key = JSON.stringify(commandWords(command) || []);
       for (const entry of availableAttempts) {
         if (entry.failed || entry.completed === false) continue;
+        const sourceWords = commandWords(entry.command) || [];
+        // Only a completed, documented browser-run attempt may establish the
+        // staged action provenance. Matching JSON output alone is insufficient:
+        // another tool could forge the same confirmation envelope.
+        if (sourceWords.length < 3 || sourceWords[0] !== "agent"
+          || sourceWords[1] !== "browser" || sourceWords[2] !== "run") continue;
         const result = parseJSONLoose(String(entry.source ?? entry.result ?? ""), null);
         if (!result || JSON.stringify(commandWords(result.confirmation?.next) || []) !== key) continue;
         const submission = result.formSubmission && typeof result.formSubmission === "object" ? result.formSubmission : {};
         const session = String(submission.session || result.session || "").trim();
         const pageUrl = String(submission.pageUrl || result.finalUrl || result.url || result.needsInput?.page?.url || "").trim();
         const target = String(submission.target || result.confirmation?.target || "").trim();
-        if (session && pageUrl && target) return {
+        const sourceSessionIndex = sourceWords.indexOf("--session");
+        const sourceSession = sourceSessionIndex >= 0 ? String(sourceWords[sourceSessionIndex + 1] || "").trim() : "";
+        if (session && pageUrl && target && (!sourceSession || sourceSession === session)) return {
           session, pageUrl, target,
           formStateFingerprint: String(submission.fingerprint || result.confirmation?.formStateFingerprint || "").trim(),
           recordBinding: result.recordBinding,

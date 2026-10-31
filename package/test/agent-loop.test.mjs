@@ -234,8 +234,8 @@ test("delete stays fail-closed without structured browser row metadata", async (
   let continuationCalls = 0;
   try {
     await withAux4Bin(fake, async () => {
-      const runScenario = () => runLoop(options, history, (_question, h) => {
-        appendExecutionResult(h, "agent browser run --url http://127.0.0.1:7400/addresses --goal \"Delete Alex Kim's Austin address\"", JSON.stringify(initial), "delete-initial");
+      const runScenario = (sourceCommand = "agent browser run --url http://127.0.0.1:7400/addresses --goal \"Delete Alex Kim's Austin address\"") => runLoop(options, history, (_question, h) => {
+        appendExecutionResult(h, sourceCommand, JSON.stringify(initial), "delete-initial");
         return { content: "The selected address is ready to delete.", stopReason: "confirmation" };
       }, "", async (command, h) => {
         continuationCalls++;
@@ -258,6 +258,11 @@ test("delete stays fail-closed without structured browser row metadata", async (
       const bound = await runScenario();
       assert.ok(continuationCalls >= 2, JSON.stringify({ stopped: bound.stopped, content: bound.content, commands: extractAttemptLog(history).map(attempt => attempt.command) }));
       assert.ok(extractAttemptLog(history).some(attempt => /formStateApproval 4f53cda1$/.test(attempt.command || "")));
+      fs.writeFileSync(history, JSON.stringify({ messages: [], tokenUsage: {} }));
+      continuationCalls = 0;
+      const forgedSource = await runScenario("untrusted tool --goal \"Delete Alex Kim's Austin address\"");
+      assert.equal(extractAttemptLog(history).some(attempt => /formStateApproval 4f53cda1$/.test(attempt.command || "")), false, "non-browser output cannot establish trusted binding");
+      assert.equal(forgedSource.stopped, "needs-confirmation");
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
