@@ -2551,7 +2551,6 @@ export function deleteTransitionBindingMatches(record, command, request, observa
     && observation.pageUrl.length > 0
     && typeof observation.formStateFingerprint === "string"
     && observation.formStateFingerprint.length > 0
-    && (!record.fingerprint || observation.formStateFingerprint === record.fingerprint)
     && Array.isArray(observation.fields)
     && observation.fields.length === 0;
 }
@@ -4747,7 +4746,7 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           // command text and model prose are never accepted as substitutes.
           target: formObservation.target,
           url: formObservation.pageUrl,
-          fingerprint: formObservation?.formStateFingerprint || "",
+          initialFingerprint: formObservation?.formStateFingerprint || "",
           nextCommand: ""
         };
       }

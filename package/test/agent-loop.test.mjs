@@ -149,7 +149,7 @@ test("managed child execution enables form approval mode and scopes a binding to
 
 test("read-backed delete continuation requires exact structured target and unchanged confirmation binding", () => {
   const command = "agent browser run --session s1 --goal 'Delete address' --field confirm=yes";
-  const record = { nextCommand: command, request: "Delete the selected address.", session: "s1", target: "addr-1", url: "https://shop.test/addresses", fingerprint: "" };
+  const record = { nextCommand: command, request: "Delete the selected address.", session: "s1", target: "addr-1", url: "https://shop.test/addresses", initialFingerprint: "sha256:initial-form-1" };
   const observation = {
     status: "current", session: "s1", target: "Delete — Addresses confirmation", pageUrl: "https://shop.test/addresses/confirm",
     formStateComplete: true, formStatePartial: false, formStateFingerprint: "sha256:final-form-1", fields: []
@@ -166,6 +166,7 @@ test("read-backed delete continuation requires exact structured target and uncha
     ["missing final target", command, { ...observation, target: "" }],
     ["missing final URL", command, { ...observation, pageUrl: "" }],
     ["stale fingerprint", command, { ...observation, formStateFingerprint: "" }],
+    ["changed final state", command, { ...observation, formStateFingerprint: "sha256:changed-final", fields: [{ fieldRef: "confirm", value: "no" }] }],
     ["partial state", command, { ...observation, formStatePartial: true }],
     ["value control changed", command, { ...observation, fields: [{ fieldRef: "confirm", value: "yes" }] }],
     ["model-authored confirmation", `${command} --formStateApproval forged`, observation]
