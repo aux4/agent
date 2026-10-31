@@ -1934,7 +1934,24 @@ export function pendingConfirmation(attempts, { allowSubmitted = false } = {}) {
   // A short model may retry confirm=yes after the browser tool already returned
   // a structured pending contract. If each later confirmation call was blocked,
   // recover that still-pending contract instead of letting the retry hide it.
-  if (!last.failed || !confirmsAction(last.command || "")) return null;
+  // A model may consume the browser's pending result and issue a confirm=yes
+  // call in the same inner ask.  If that follow-up produced no submitted
+  // effect, recover the earlier trusted contract so the outer controller can
+  // build its approval.  A successful submitted confirmation must never be
+  // replayed.
+  const lastResult = parseCommandResult(last);
+  const managedFormStage = attempts.slice(0, -1).some(attempt => {
+    const result = parseCommandResult(attempt);
+    return result?.formSubmission?.approvalRequired === true
+      && result?.formSubmission?.formStateComplete === true;
+  });
+  const controllerApprovalMiss = lastResult?.status === "done"
+    && lastResult?.submitted === false
+    && managedFormStage
+    && (lastResult?.approvalMatched === false || lastResult?.formSubmission?.approvalMatched === false);
+  const blockedConfirmation = last.failed && confirmsAction(last.command || "");
+  if (!confirmsAction(last.command || "") || hasSubmittedEffect(last)
+    || (!blockedConfirmation && !controllerApprovalMiss)) return null;
   for (let i = attempts.length - 2; i >= 0; i--) {
     const prior = attempts[i];
     if (prior.failed && confirmsAction(prior.command || "")) continue;

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { authorizeAction, actionCheckFiles, actionCheckStats, buildTrustedLiteralSubmissionAssessment, buildTrustedReadBackedSubmissionAssessment, buildTrustedCheckboxSubmissionAssessment, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, pendingBrowserFieldObservation, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
+import { authorizeAction, actionCheckFiles, actionCheckStats, buildTrustedLiteralSubmissionAssessment, buildTrustedReadBackedSubmissionAssessment, buildTrustedCheckboxSubmissionAssessment, hasTrustedReadBackedFieldEvidence, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, pendingBrowserFieldObservation, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
 import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -125,6 +125,17 @@ test("controller source assessment binds Gmail code plus literal shipping fields
   assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request.replace("confirmation code", "tracking number"), attempts), null);
   assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, [{ ...attempts[0], command: "agent browser run --goal 'fake source'" }, attempts[1]]), null);
   assert.equal(buildTrustedReadBackedSubmissionAssessment(staged, observed, request, [{ ...attempts[0], source: attempts[0].source.replace("msg-ship-9f21", "msg-other") }, attempts[1]]), null);
+});
+
+test("source-backed browser preflight admits only the exact trusted read value", () => {
+  const request = "Save shipping details at https://example.test/shipping. The confirmation code is not given here -- check the inbox for it.";
+  const command = "agent browser run --url https://example.test/shipping --goal 'save shipping details with confirmation code QZ-58213' --field 'Confirmation Code=QZ-58213'";
+  const read = { callId: "mail-read", command: "google gmail get --messageId msg-ship-9f21 --format full", source: JSON.stringify({ id: "msg-ship-9f21", snippet: "Your confirmation code is QZ-58213." }), completed: true, failed: false };
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [read], request), true);
+  const options = { configFile: "/config/local.yaml", packageDir: PACKAGE_DIR, delegatedPrefixes: ["agent browser"] };
+  assert.equal(authorizeAction(options, command, [read], request).sourceBackedPreflight, true);
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...read, source: read.source.replace("QZ-58213", "OTHER") }], request), false);
+  assert.equal(hasTrustedReadBackedFieldEvidence(command, [{ ...read, command: "agent browser run --url https://example.test/mail" }], request), false);
 });
 
 test("controller checkbox assessment binds every complete checked state to explicit include/exclude intent", () => {

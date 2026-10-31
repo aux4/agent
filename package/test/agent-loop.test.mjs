@@ -3099,11 +3099,21 @@ test("pendingConfirmation survives blocked retries of its exact confirm command"
     failed: true,
     result: "network error"
   }]), null, "an unrelated later failure must not revive an old confirmation");
-  assert.equal(pendingConfirmation([...attempts.slice(0, 1), {
+  const managedStage = { ...attempts[0], result: JSON.stringify({ status: "needs-input", confirmation: JSON.parse(pendingResult).confirmation,
+    formSubmission: { approvalRequired: true, formStateComplete: true } }) };
+  assert.equal(pendingConfirmation([managedStage, {
     command: next,
     failed: false,
-    result: '{"status":"done"}'
+    result: '{"status":"done","submitted":true}'
   }]), null, "a successful confirmation must consume the pending contract");
+  // A same-ask browser follow-up can return a non-submitting done response
+  // after the model supplied its own approval flag. Recover the original
+  // contract so the controller, not the model, can create trusted approval.
+  assert.equal(pendingConfirmation([managedStage, {
+    command: next,
+    failed: false,
+    result: '{"status":"done","submitted":false,"approvalMatched":false}'
+  }]).next, next);
 });
 
 test("isClearlyRequestedAction is strict: the request's own words must contain the SAME change verb as the pending action", () => {
@@ -3599,6 +3609,46 @@ else if(command.includes('loop-verify.md')) {
       else process.env.PENDING_ACTION_VERDICT = oldReply;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+test("same-ask staged form recovery dispatches one controller-bound source approval", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("same-ask-form-history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  const request = "Save the shipping details. The confirmation code is not given here -- check the inbox for it.";
+  const staged = "agent browser run --url https://example.test/shipping --goal 'save shipping details with confirmation code QZ-58213' --field 'Confirmation Code=QZ-58213'";
+  const next = "agent browser run --session s-ship --goal 'save shipping details with confirmation code QZ-58213' --field 'confirm=yes'";
+  const stageResult = { status: "needs-input", submitted: false,
+    confirmation: { action: "Save", target: "Save — form Shipping", emptyFields: [], next, formStateFingerprint: "fp-ship", formStateComplete: true },
+    formSubmission: { session: "s-ship", target: "Save — form Shipping", pageUrl: "https://example.test/shipping", fingerprint: "fp-ship", formStateComplete: true, partial: false, approvalRequired: true },
+    preSubmitFieldState: [{ url: "https://example.test/shipping", label: "Confirmation Code", context: "form Shipping", controlType: "text", fieldRef: "code-ref", value: "QZ-58213", origin: "explicit-input", status: "observed", phase: "before-confirmation", changed: true, empty: false }] };
+  const dispatches = [];
+  await withAux4Bin(fake, async () => {
+    const options = { ...baseOptions({ request, packageDir: PACKAGE_DIR, hooksSupported: true, toolDispatchSupported: true }) };
+    options.hooksFile = writeCheckValuesHooksFile(PACKAGE_DIR, history, request, options);
+    const outcome = await runLoop(options, history, (_question, h) => {
+      appendExecutionResult(h, "google gmail get --messageId msg-ship-9f21 --format full", JSON.stringify({ id: "msg-ship-9f21", snippet: "Your confirmation code is QZ-58213." }), "mail-read");
+      appendExecutionResult(h, staged, JSON.stringify(stageResult), "stage");
+      appendExecutionResult(h, next, JSON.stringify({ status: "done", submitted: false, approvalMatched: false }), "model-confirm");
+      return "The browser confirmation was not submitted.";
+    }, "", async (command, h, _denied, _retry, _patterns, binding) => {
+      dispatches.push({ command, binding });
+      if (command.startsWith("agent browser inspect")) {
+        appendExecutionResult(h, command, JSON.stringify({ status: "done", goalVerified: true, page: "Shipping details saved." }), "verify-submit");
+        return "The shipping details were saved.";
+      }
+      assert.equal(command, `${next} --formStateApproval fp-ship`);
+      assert.ok(binding, "controller must provide trusted approval binding");
+      assert.equal(binding.session, "s-ship");
+      assert.equal(binding.fingerprint, "fp-ship");
+      const live = JSON.parse(fs.readFileSync(h, "utf8"));
+      live.messages.push({ role: "assistant_with_tool", content: { tool_calls: [{ id: "live-confirm", name: "executeAux4", args: { command } }] } });
+      fs.writeFileSync(h, JSON.stringify(live));
+      appendExecutionResult(h, command, JSON.stringify({ status: "done", submitted: true, approvalMatched: true, goalVerified: true, session: "s-ship", finalUrl: "https://example.test/shipping" }), "controller-submit");
+      return "The shipping details were saved.";
+    });
+    assert.equal(dispatches.filter(item => item.command.includes("--formStateApproval")).length, 1, JSON.stringify({ dispatches, stopped: outcome.stopped, content: outcome.content }));
+    assert.equal(outcome.stopped, "pass");
   });
 });
 

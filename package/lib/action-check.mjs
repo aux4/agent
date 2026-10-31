@@ -583,6 +583,28 @@ export function buildTrustedCheckboxSubmissionAssessment(command, observedFields
   return validateSubmissionAssessment(assessment, observedFields, request, attempts)?.allow === true ? assessment : null;
 }
 
+// Preflight provenance for the first browser fill.  The live destination
+// snapshot is not available until browser.run stages the form, so this check
+// only admits a source-backed value when the prior read is independently
+// conclusive and the value is uniquely present in its structured result. The
+// subsequent managed form gate still binds that value to the exact field ref,
+// session, URL, and fingerprint before dispatch.
+export function hasTrustedReadBackedFieldEvidence(command, attempts = [], request = "") {
+  const parts = browserRunParts(command);
+  if (!parts || !Array.isArray(parts.fields) || !parts.fields.length) return false;
+  const sourceFields = parts.fields.filter(entry => /(?:code|reference|token)\b/i.test(String(entry[0] || "")));
+  if (!sourceFields.length) return false;
+  return sourceFields.every(entry => {
+    const label = String(entry[0] || "");
+    const value = String(entry[1] || "");
+    if (!sourceIntentForField(request, label) || !value) return false;
+    const matches = attempts.filter(attempt => eligibleReadAttempt(attempt)
+      && sourceResultMatchesCommand(attempt)
+      && countLiteral(String(attempt.source ?? attempt.result ?? ""), value) === 1);
+    return matches.length === 1;
+  });
+}
+
 // A pending browser confirmation may carry a live control snapshot. Keep it
 // separate from successfulActionsAndResults: the form is evidence of what is
 // currently displayed, never independent evidence of where a requested
@@ -599,7 +621,14 @@ export function pendingBrowserFieldObservation(command, attempts) {
     // before its before-hooks run.  That call is incomplete and must not
     // shadow the completed staged operation whose confirmation it carries.
     if (!attempts[i]?.failed && attempts[i]?.completed !== false
-      && browserRunParts(attempts[i]?.command || "")) { latestBrowserRun = i; break; }
+      && browserRunParts(attempts[i]?.command || "")) {
+      const followup = parseJSONLoose(String(attempts[i].source ?? attempts[i].result ?? ""), null);
+      const nonSubmittingConfirm = confirmsAction(attempts[i].command || "")
+        && followup?.status === "done" && followup?.submitted === false
+        && followup?.approvalMatched === false;
+      if (nonSubmittingConfirm) continue;
+      latestBrowserRun = i; break;
+    }
   }
   for (let i = attempts.length - 1; i >= 0; i--) {
     const attempt = attempts[i];
@@ -612,7 +641,12 @@ export function pendingBrowserFieldObservation(command, attempts) {
     if (i !== latestBrowserRun || !["needs-input", "needs-confirmation"].includes(status) || result.submitted === true) {
       return { status: "mismatched", reason: "The confirmation does not match the latest pending browser operation." };
     }
-    if (attempts.slice(i + 1).some(later => !later.failed && later.completed !== false && isChangeCommand(later.command || ""))) {
+    if (attempts.slice(i + 1).some(later => {
+      if (later.failed || later.completed === false || !isChangeCommand(later.command || "")) return false;
+      const laterResult = parseJSONLoose(String(later.source ?? later.result ?? ""), null);
+      return !(confirmsAction(later.command || "") && laterResult?.status === "done"
+        && laterResult?.submitted === false && laterResult?.approvalMatched === false);
+    })) {
       return { status: "mismatched", reason: "A later change makes the pending browser form snapshot stale." };
     }
     pending = { attempt, result };
@@ -795,11 +829,19 @@ export function isTrustedFormApprovalDispatch(command, attempts, binding) {
     const result = parseJSONLoose(String(attempt?.source ?? attempt?.result ?? ""), null);
     const next = result?.confirmation?.next;
     if (typeof next !== "string" || JSON.stringify(formDispatchWords(next)) !== JSON.stringify(originalWords)) continue;
-    const latestBrowserRun = attempts.reduce((latest, candidate, candidateIndex) =>
-      (!candidate?.failed && candidate?.completed !== false && browserRunParts(candidate?.command || ""))
-        ? candidateIndex : latest, -1);
-    if (index !== latestBrowserRun || attempts.slice(index + 1).some(later =>
-      !later.failed && later.completed !== false && isChangeCommand(later.command || ""))) return false;
+    const latestBrowserRun = attempts.reduce((latest, candidate, candidateIndex) => {
+      if (candidate?.failed || candidate?.completed === false || !browserRunParts(candidate?.command || "")) return latest;
+      const candidateResult = parseJSONLoose(String(candidate.source ?? candidate.result ?? ""), null);
+      if (confirmsAction(candidate.command || "") && candidateResult?.status === "done"
+        && candidateResult?.submitted === false && candidateResult?.approvalMatched === false) return latest;
+      return candidateIndex;
+    }, -1);
+    if (index !== latestBrowserRun || attempts.slice(index + 1).some(later => {
+      if (later.failed || later.completed === false || !isChangeCommand(later.command || "")) return false;
+      const laterResult = parseJSONLoose(String(later.source ?? later.result ?? ""), null);
+      return !(confirmsAction(later.command || "") && laterResult?.status === "done"
+        && laterResult?.submitted === false && laterResult?.approvalMatched === false);
+    })) return false;
     const observed = pendingBrowserFieldObservation(next, attempts);
     return observed?.status === "current" && observed.formStateComplete === true && observed.approvalRequired === true
       && observed.session === binding.session && observed.target === binding.target
@@ -1138,6 +1180,16 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   const unknownIds = unsourcedActionIds(command, attempts, request, payload.commandReference);
   if (unknownIds.length) {
     const verdict = { allow: false, reason: `The target identifier ${unknownIds.map(item => item.value).join(", ")} is not established by the request or successful tool evidence. Look up the named target before changing it.` };
+    if (auditBase) fs.writeFileSync(`${auditBase}.verdict.json`, JSON.stringify(verdict, null, 2));
+    return verdict;
+  }
+  // A browser fill may follow a successful read in the same ask before a
+  // destination snapshot exists.  Admit only the narrow source-backed
+  // preflight; the managed browser response must still supply the complete
+  // field/ref/session/fingerprint binding before any submit is dispatched.
+  if (delegatedGoal && !confirming && hasTrustedReadBackedFieldEvidence(command, attempts, request)) {
+    const verdict = { allow: true, delegated: true, sourceBackedPreflight: true,
+      reason: "The source-backed field value is uniquely established by a successful trusted read; the browser form gate must bind it to the live field before submission." };
     if (auditBase) fs.writeFileSync(`${auditBase}.verdict.json`, JSON.stringify(verdict, null, 2));
     return verdict;
   }
