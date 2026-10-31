@@ -2751,6 +2751,8 @@ if (command.includes("loop-plan.md")) {
 } else if (command.includes("loop-verify.md")) {
   const question = args[args.indexOf("--question") + 1] || "";
   const payload = JSON.parse(question.slice(question.indexOf("{")));
+  // This is a controller test with an explicit unknown assessment for the
+  // neutral page result; the stub does not test how a model interprets it.
   process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => c.criterion === ${JSON.stringify(state)}
     ? { criterion: c.criterion, status: "unverifiable", evidence: "The read showed a result, but not whether the requested update persisted.", basis: "currentState", relation: "unknown" }
     : c.criterion === ${JSON.stringify(answerFact)}
@@ -2779,9 +2781,12 @@ if (command.includes("loop-plan.md")) {
         continuations++;
         assert.equal(observedCommand, readCommand);
         appendExecutionResult(h, observedCommand, JSON.stringify({
-          status: "ok", session: "s1", url: "https://example.test/record/result", blocks: [{ text: "Result received" }]
+          status: "ok", sourceState: "readable", scope: "current-rendered-page",
+          coverage: "all-extracted-blocks", completeWithinScope: true, truncated: false,
+          session: "s1", url: "https://example.test/record/result",
+          blocks: [{ heading: "Operation result", text: "Operation result" }]
         }), "post-submit-read");
-        return "The read returned a generic result page.";
+        return "The complete page extraction contained a neutral result heading.";
       }
     );
 
