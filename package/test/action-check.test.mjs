@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { authorizeAction, actionCheckFiles, actionCheckStats, canonicalExplicitDate, createFormApprovalDispatch, isTrustedFormApprovalDispatch, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
+import { authorizeAction, actionCheckFiles, actionCheckStats, canonicalExplicitDate, trustedLiteralDateNormalization, createFormApprovalDispatch, isTrustedFormApprovalDispatch, unsourcedActionIds, validateSubmissionAssessment } from "../lib/action-check.mjs";
 import { fieldEvidenceText, isConclusiveAttempt, unsourcedFieldValues, writeCheckValuesHooksFile } from "../lib/agent-loop.mjs";
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -49,7 +49,35 @@ test("explicit day/month/year dates normalize only to one exact ISO date control
   });
   assert.equal(canonicalExplicitDate("Date of birth 14/03/1991.", field), null);
   assert.equal(canonicalExplicitDate("Dates 14/03/1990 or 15/03/1990.", field), null);
-  assert.equal(canonicalExplicitDate("Date of birth 14/03/1990.", { ...field, controlType: "text" }), null);
+  assert.deepEqual(canonicalExplicitDate("Date of birth 14/03/1990.", { ...field, controlType: "text" }), {
+    fieldRef: "dob", requestDate: "14/3/1990", canonicalValue: "1990-03-14"
+  });
+  assert.equal(canonicalExplicitDate("Date of birth 31/02/1990.", { ...field, controlType: "text" }), null);
+  assert.equal(canonicalExplicitDate("Date of birth 29/02/2023.", { ...field, controlType: "text" }), null);
+  assert.deepEqual(canonicalExplicitDate("Date of birth 29/02/2024.", { ...field, controlType: "text", value: "2024-02-29" }), {
+    fieldRef: "dob", requestDate: "29/2/2024", canonicalValue: "2024-02-29"
+  });
+});
+
+test("request evidence accepts one explicit DMY date bound to a text control's exact field and value", () => {
+  const request = "Date of birth (format YYYY-MM-DD) 14/03/1990 (day/month/year).";
+  const observed = observedFormField({ fields: [{ fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", controlType: "text", value: "1990-03-14", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" }] });
+  const assessment = fieldEvidenceAssessment({ request, fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", value: "1990-03-14" });
+  assessment.fields[0].evidence = [{ kind: "request", excerpt: request, fieldText: "Date of birth (format YYYY-MM-DD)", valueText: "14/03/1990" }];
+  assert.equal(validateSubmissionAssessment(assessment, observed, request).allow, true);
+  const ambiguous = `${request} Also 15/03/1990.`;
+  assert.equal(validateSubmissionAssessment(assessment, observed, ambiguous).allow, false);
+});
+
+test("trusted date fallback requires a complete literal snapshot and one exact date control", () => {
+  const request = "Name Priya Shah; date of birth 14/03/1990 (day/month/year).";
+  const observed = observedFormField({ fields: [
+    { fieldRef: "name", label: "Full name", controlType: "text", value: "Priya Shah", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", controlType: "text", value: "1990-03-14", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" }
+  ] });
+  assert.deepEqual(trustedLiteralDateNormalization(observed, request), { fieldRef: "dob", requestDate: "14/3/1990", canonicalValue: "1990-03-14" });
+  assert.equal(trustedLiteralDateNormalization({ ...observed, fields: observed.fields.map(field => ({ ...field, origin: "preexisting" })) }, request), null);
+  assert.equal(trustedLiteralDateNormalization({ ...observed, fields: [...observed.fields, { ...observed.fields[1], fieldRef: "dob2" }] }, request), null);
 });
 
 test("typed form assessment rejects missing, stale, partial, or contradictory state", () => {

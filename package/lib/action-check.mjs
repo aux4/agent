@@ -113,15 +113,45 @@ function observedFieldValueText(observed) {
 }
 
 export function canonicalExplicitDate(request, observed) {
-  if (!observed || observed.controlType !== "date" || typeof observed.value !== "string") return null;
-  if (!/YYYY[-/]MM[-/]DD/i.test(String(observed.label || ""))) return null;
+  if (!observed || !["date", "text"].includes(observed.controlType) || typeof observed.value !== "string") return null;
+  const label = String(observed.label || "");
+  if (!/date/i.test(label) || !/YYYY[-/]MM[-/]DD/i.test(label)) return null;
   const dates = [...String(request || "").matchAll(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})\b/g)]
     .map(match => ({ day: Number(match[1]), month: Number(match[2]), year: Number(match[3]) }))
-    .filter(value => value.day >= 1 && value.day <= 31 && value.month >= 1 && value.month <= 12);
+    .filter(value => {
+      if (value.day < 1 || value.month < 1 || value.month > 12 || value.year < 1) return false;
+      const parsed = new Date(Date.UTC(value.year, value.month - 1, value.day));
+      return parsed.getUTCFullYear() === value.year && parsed.getUTCMonth() === value.month - 1
+        && parsed.getUTCDate() === value.day;
+    });
   if (dates.length !== 1) return null;
   const date = dates[0];
   const candidate = `${String(date.year).padStart(4, "0")}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
-  return candidate === observed.value ? { fieldRef: observed.fieldRef, requestDate: `${date.day}/${date.month}/${date.year}`, canonicalValue: candidate } : null;
+  return observed.fieldRef && candidate === observed.value
+    ? { fieldRef: observed.fieldRef, requestDate: `${date.day}/${date.month}/${date.year}`, canonicalValue: candidate }
+    : null;
+}
+
+// A browser model can reject a valid DMY date because it sees the request's
+// notation rather than the input's canonical ISO value.  This narrow trusted
+// fallback is only available for a complete, current snapshot whose controls
+// are all literal/goal-derived values present in the original request and
+// whose sole date control has an exact fieldRef/value binding.
+export function trustedLiteralDateNormalization(observedFields, request) {
+  if (!observedFields || observedFields.status !== "current" || observedFields.formStateComplete !== true
+    || observedFields.formStatePartial === true || !Array.isArray(observedFields.fields) || !observedFields.fields.length) return null;
+  const fields = observedFields.fields;
+  if (fields.some(field => !field || typeof field.fieldRef !== "string" || !field.fieldRef
+    || field.status !== "observed" || field.empty === true || !["explicit-input", "goal-derived"].includes(field.origin))) return null;
+  const dates = fields.map(field => canonicalExplicitDate(request, field)).filter(Boolean);
+  if (dates.length !== 1 || new Set(dates.map(date => date.fieldRef)).size !== 1) return null;
+  for (const field of fields) {
+    const date = dates[0].fieldRef === field.fieldRef ? dates[0] : null;
+    const value = observedFieldValueText(field);
+    if (value === null) return null;
+    if (!date && (!String(request || "").includes(value) || !String(field.label || "").trim())) return null;
+  }
+  return dates[0];
 }
 
 function evidenceSupportsField(evidence, review, observed, basis, request, attempts) {
@@ -133,8 +163,16 @@ function evidenceSupportsField(evidence, review, observed, basis, request, attem
       if (typeof ref.excerpt !== "string" || !ref.excerpt || ref.excerpt.length > 600 || !request.includes(ref.excerpt)
         || typeof ref.fieldText !== "string" || fieldIdentity(ref.fieldText) !== fieldIdentity(observed.label)
         || !ref.excerpt.includes(ref.fieldText)) return false;
-      return typeof ref.valueText === "string" && ref.valueText === observedFieldValueText(observed)
+      if (typeof ref.valueText !== "string") return false;
+      const direct = ref.valueText === observedFieldValueText(observed) && ref.excerpt.includes(ref.valueText);
+      const normalized = canonicalExplicitDate(request, observed);
+      const dateParts = normalized && ref.valueText.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+      const explicitDate = normalized && dateParts
+        && Number(dateParts[1]) === Number(normalized.requestDate.split("/")[0])
+        && Number(dateParts[2]) === Number(normalized.requestDate.split("/")[1])
+        && Number(dateParts[3]) === Number(normalized.requestDate.split("/")[2])
         && ref.excerpt.includes(ref.valueText);
+      return direct || explicitDate;
     }
     if (basis !== "read" || ref.kind !== "attempt") return false;
     const attempt = sourceAttemptByRef(attempts, ref.attemptRef);
@@ -807,6 +845,9 @@ export function authorizeAction(options, command, attempts = [], request = "", h
   }
   const valid = validDecision(parsed);
   const assessmentRequired = observedFields?.approvalRequired === true;
+  const trustedDate = valid && parsed.allow === false && assessmentRequired
+    ? trustedLiteralDateNormalization(observedFields, request)
+    : null;
   const assessmentGate = valid && parsed.allow && assessmentRequired
     ? validateSubmissionAssessment(parsed.submissionAssessment, observedFields, request, attempts)
     : null;
@@ -829,13 +870,16 @@ export function authorizeAction(options, command, attempts = [], request = "", h
     }
     : null;
   const verdict = {
-    allow: Boolean(valid && parsed.allow && (!assessmentRequired || acceptedGate)),
-    reason: assessmentRequired && valid && parsed.allow && !acceptedGate
+    allow: Boolean((valid && parsed.allow && (!assessmentRequired || acceptedGate)) || trustedDate),
+    reason: trustedDate
+      ? "Authorized by deterministic literal field evidence, including the canonical date normalization bound to the current control."
+      : assessmentRequired && valid && parsed.allow && !acceptedGate
       ? (assessmentGate?.reason || "The submission assessment contains raw field values and was rejected.")
       : valid ? String(parsed.reason || (parsed.allow ? "Authorized by the action check." : "Denied by the action check.")).slice(0,500)
         : "The authorization check did not return a valid decision. This action was not run; more factual lookups cannot repair the check's output format.",
     ...(acceptedGate ? { submissionAssessmentValidated: true } : {}),
     ...(acceptedGate && acceptedAssessment ? { submissionAssessment: acceptedAssessment } : {}),
+    ...(trustedDate ? { trustedDateNormalization: trustedDate } : {}),
     ...(formatRecovery ? {formatRecovery:true} : {}),
     ...(!valid ? {protocolError:true} : {})
   };
