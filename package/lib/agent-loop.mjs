@@ -4868,7 +4868,10 @@ export async function runLoop(options, history, execute, recovery = "", executeC
           initialFingerprint: trustedTransitionObservation.formStateFingerprint || "",
           readId: trustedRecordBinding.identifier,
           recordBinding: trustedRecordBinding,
-          nextCommand: ""
+          // Preserve the exact browser-provided continuation. commandWords()
+          // performs the shell-safe canonical comparison; model-authored
+          // confirmation flags never replace this command.
+          nextCommand: pending.next
         };
       }
       // Keep the deterministic item-selection rule stricter than the semantic

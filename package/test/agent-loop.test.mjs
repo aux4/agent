@@ -158,6 +158,7 @@ test("read-backed delete continuation requires exact structured target and uncha
   assert.equal(readResultContainsExactReference('{"records":[{"id":"addr-1"}]}', "addr-1"), true);
   assert.equal(readResultContainsExactReference('{"records":[{"id":"addr-10"}]}', "addr-1"), false);
   assert.equal(deleteTransitionBindingMatches(record, command, record.request, observation), true);
+  assert.equal(deleteTransitionBindingMatches({ ...record, nextCommand: "" }, command, record.request, observation), false, "missing trusted continuation command");
   assert.equal(deleteTransitionBindingMatches({ ...record, target: "" }, command, record.request, observation), false, "missing trusted target");
   assert.equal(deleteTransitionBindingMatches({ ...record, url: "" }, command, record.request, observation), false, "missing trusted URL");
   const denied = [
