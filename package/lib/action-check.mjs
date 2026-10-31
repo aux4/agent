@@ -88,6 +88,24 @@ function fieldIdentity(value) {
   return String(value || "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function fieldLabelTokens(value) {
+  return String(value || "").normalize("NFKC")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+function labelAliasMatches(commandLabel, observedLabel) {
+  const commandTokens = fieldLabelTokens(commandLabel);
+  const observedTokens = new Set(fieldLabelTokens(observedLabel));
+  return commandTokens.length > 0 && commandTokens.every(token => observedTokens.has(token));
+}
+
+function fieldLabelBinds(reference, observed, allObserved = []) {
+  if (fieldIdentity(reference) === fieldIdentity(observed.label)) return true;
+  if (!labelAliasMatches(reference, observed.label)) return false;
+  return allObserved.filter(field => labelAliasMatches(reference, field.label)).length === 1;
+}
+
 function onlyKeys(value, allowed) {
   return value && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value).every(key => allowed.has(key));
@@ -154,14 +172,14 @@ export function trustedLiteralDateNormalization(observedFields, request) {
   return dates[0];
 }
 
-function evidenceSupportsField(evidence, review, observed, basis, request, attempts) {
+function evidenceSupportsField(evidence, review, observed, basis, request, attempts, allObserved = []) {
   if (!Array.isArray(evidence) || evidence.length === 0) return false;
   return evidence.every(ref => {
     if (!ref || typeof ref !== "object" || Array.isArray(ref)) return false;
     if (basis === "request") {
       if (!onlyKeys(ref, new Set(["kind", "excerpt", "fieldText", "valueText"])) || ref.kind !== "request") return false;
       if (typeof ref.excerpt !== "string" || !ref.excerpt || ref.excerpt.length > 600 || !request.includes(ref.excerpt)
-        || typeof ref.fieldText !== "string" || fieldIdentity(ref.fieldText) !== fieldIdentity(observed.label)
+        || typeof ref.fieldText !== "string" || !fieldLabelBinds(ref.fieldText, observed, allObserved)
         || !ref.excerpt.includes(ref.fieldText)) return false;
       if (typeof ref.valueText !== "string") return false;
       const direct = ref.valueText === observedFieldValueText(observed) && ref.excerpt.includes(ref.valueText);
@@ -194,7 +212,7 @@ function evidenceSupportsField(evidence, review, observed, basis, request, attem
     if (!onlyKeys(ref, new Set(["kind", "attemptRef", "excerpt", "fieldText", "valueText"]))) return false;
     return typeof ref.excerpt === "string" && ref.excerpt.length > 0 && ref.excerpt.length <= 600
       && source.includes(ref.excerpt)
-      && typeof ref.fieldText === "string" && fieldIdentity(ref.fieldText) === fieldIdentity(observed.label)
+      && typeof ref.fieldText === "string" && fieldLabelBinds(ref.fieldText, observed, allObserved)
       && ref.excerpt.includes(ref.fieldText)
       && typeof ref.valueText === "string" && ref.valueText === observedFieldValueText(observed)
       && ref.excerpt.includes(ref.valueText);
@@ -286,7 +304,7 @@ export function validateSubmissionAssessment(assessment, observedFields, request
     if (review.basis === "read" && review.relation !== "assigns-value") {
       return deny(`Form control ${observed.label || fieldRef} has no read-backed field/value relationship.`);
     }
-    if (!evidenceSupportsField(review.evidence, review, observed, review.basis, String(request || ""), attempts)) {
+    if (!evidenceSupportsField(review.evidence, review, observed, review.basis, String(request || ""), attempts, [...byRef.values()])) {
       return deny(`Form control ${observed.label || fieldRef} has no eligible grounded field/value evidence.`);
     }
   }
@@ -304,17 +322,33 @@ export function buildTrustedLiteralSubmissionAssessment(command, observedFields,
     || !observedFields.pageUrl || !observedFields.formStateFingerprint) return null;
   const supplied = enteredValues(command).filter(entry => !/^confirm$/i.test(entry.label));
   const fields = [];
+  const assignments = new Map();
+  const usedSupplied = new Set();
+  for (const entry of supplied) {
+    const exactLabels = (observedFields.fields || []).filter(observed => fieldIdentity(entry.label) === fieldIdentity(observed.label));
+    const aliasLabels = (observedFields.fields || []).filter(observed => labelAliasMatches(entry.label, observed.label));
+    if (!exactLabels.length && aliasLabels.length > 1) return null;
+  }
+  for (const observed of observedFields.fields || []) {
+    const actual = observedFieldValueText(observed);
+    const normalizedDate = canonicalExplicitDate(request, observed);
+    const valueMatches = supplied.map((entry, index) => ({ entry, index })).filter(({ entry }) =>
+      entry.value === actual || (normalizedDate?.canonicalValue === actual && entry.value === normalizedDate.requestDate));
+    const exact = valueMatches.filter(({ entry }) => fieldIdentity(entry.label) === fieldIdentity(observed.label));
+    const aliases = valueMatches.filter(({ entry }) => labelAliasMatches(entry.label, observed.label));
+    const candidates = exact.length ? exact : aliases;
+    if (candidates.length !== 1 || usedSupplied.has(candidates[0].index)) return null;
+    usedSupplied.add(candidates[0].index);
+    assignments.set(observed, candidates[0].entry);
+  }
   for (const observed of observedFields.fields || []) {
     if (!(observedFields.formStateComplete === true || observed.required === true || observed.changed === true)) continue;
     const actual = observedFieldValueText(observed);
     if (typeof observed.fieldRef !== "string" || !observed.fieldRef || actual === null
       || !["explicit-input", "goal-derived"].includes(observed.origin)) return null;
     const normalizedDate = canonicalExplicitDate(request, observed);
-    const matches = supplied.filter(entry => (entry.value === actual
-      || (normalizedDate?.canonicalValue === actual && entry.value === normalizedDate.requestDate))
-      && fieldIdentity(entry.label) === fieldIdentity(observed.label));
-    if (matches.length !== 1) return null;
-    const entry = matches[0];
+    const entry = assignments.get(observed);
+    if (!entry) return null;
     const requestValue = normalizedDate?.canonicalValue === actual ? normalizedDate.requestDate : actual;
     if (!String(request || "").includes(requestValue)) return null;
     const requestText = String(request || "");

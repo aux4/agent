@@ -66,6 +66,24 @@ test("controller literal assessment is created only from request-backed staged v
     repeated,
     "Fill Priority with Urgent and Summary with Urgent and submit the form."
   ), null, "one literal cannot authorize multiple controls without exact label bindings");
+  const aliases = observedFormField({ fields: [
+    { fieldRef: "name", label: "Full name", value: "Priya", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "dob", label: "Date of birth (format YYYY-MM-DD)", value: "1990-03-14", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" }
+  ] });
+  assert.notEqual(buildTrustedLiteralSubmissionAssessment(
+    "agent browser run --goal 'submit form' --field 'Name=Priya' --field 'DateOfBirth=1990-03-14'",
+    aliases,
+    "Fill Name with Priya and DateOfBirth with 1990-03-14 and submit the form."
+  ), null, "camel-case and descriptive labels may alias one unambiguous control");
+  const ambiguous = observedFormField({ fields: [
+    { fieldRef: "first", label: "First name", value: "Priya", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" },
+    { fieldRef: "last", label: "Last name", value: "Priya", origin: "explicit-input", changed: true, required: true, empty: false, status: "observed" }
+  ] });
+  assert.equal(buildTrustedLiteralSubmissionAssessment(
+    "agent browser run --goal 'submit form' --field 'Name=Priya'",
+    ambiguous,
+    "Fill Name with Priya and submit the form."
+  ), null, "an ambiguous short label cannot select first versus last name");
 });
 
 test("typed form assessment verifies an exact request anchor against the bound observed control", () => {
