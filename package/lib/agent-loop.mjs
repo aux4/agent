@@ -4727,14 +4727,20 @@ export async function runLoop(options, history, execute, recovery = "", executeC
       const actionCheckRequired = formApprovalRequired || !isClearlyRequestedAction(pending.label, options.request);
       if (!formApprovalRequired && deleteAction(pending.label)
         && isClearlyRequestedAction(pending.label, options.request)
-        && hasReadBackTarget(pending.next, attempts)) {
+        && hasReadBackTarget(pending.next, attempts)
+        && formObservation?.status === "current"
+        && formObservation.target
+        && formObservation.pageUrl) {
         deleteTransitionRecord = {
           command: pending.next,
           request: options.request,
           signature: confirmationSignature(pending),
           session: commandOption(pending.next, "--session"),
-          target: commandOption(pending.next, "--target") || pending.target || "",
-          url: commandOption(pending.next, "--url") || "",
+          // Session-only browser continuations are common.  These identity
+          // values come only from the browser's complete staged metadata;
+          // command text and model prose are never accepted as substitutes.
+          target: formObservation.target,
+          url: formObservation.pageUrl,
           fingerprint: formObservation?.formStateFingerprint || "",
           nextCommand: ""
         };
