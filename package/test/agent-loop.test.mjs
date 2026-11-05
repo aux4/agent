@@ -23,6 +23,9 @@ import {
   salvageVerdict,
   stripFailureClass,
   COVERAGE_CRITERION,
+  HONESTY_CRITERION,
+  MEANS_CRITERION,
+  verifyCriteria,
   allowedCommandsOffered,
   readBackCandidates,
   askedWithoutLooking,
@@ -318,9 +321,55 @@ test("verifyPayload gives the request verbatim, typed criteria plus coverage, an
     { command: "todo complete --id 9", failed: true, result: "Error: no such item 9" }
   ], "remove item 9 and tell me which it was");
   assert.equal(payload.request, "remove item 9 and tell me which it was");
-  assert.deepEqual(payload.criteria.map(c => c.kind), ["state", "answer", "answer", "answer"]);
+  assert.deepEqual(payload.criteria.map(c => c.kind), ["state", "answer", "answer", "answer", "answer"]);
   assert.equal(payload.criteria[2].criterion, COVERAGE_CRITERION);
   assert.deepEqual(payload.actions.map(a => a.result), ["1. buy milk", "Error: no such item 9"]);
+});
+
+test("verifyCriteria always appends coverage, honesty and means after the plan's own criteria", () => {
+  const plan = { doneCriteria: ["the item is gone"] };
+  assert.deepEqual(verifyCriteria(plan), ["the item is gone", COVERAGE_CRITERION, HONESTY_CRITERION, MEANS_CRITERION]);
+});
+
+// A request that names a means (an app, account, website, or file) but was
+// answered without ever going through it: HONESTY_CRITERION alone can pass
+// (the reply doesn't contradict any action, there were none), so MEANS_CRITERION
+// is what must fail this run, generically, with no Calculator-specific code.
+test("runLoop fails the run when the verifier judges the named means was never used", async () => {
+  const fake = makeFakeAux4(`
+const args = process.argv.slice(2);
+const command = args.join(" ");
+if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: [{ text: "the division is done using the calculator app", kind: "state" }], steps: [] }));
+else if (command.includes("loop-verify.md")) {
+  const question = args[args.indexOf("--question") + 1] || "";
+  const payload = JSON.parse(question.slice(question.indexOf("{")));
+  process.stdout.write(JSON.stringify({ results: payload.criteria.map(c => ({
+    criterion: c.criterion,
+    status: /means/i.test(c.criterion) || /calculator/i.test(c.criterion) ? "fail" : "pass",
+    evidence: "no action went through the app"
+  })) }));
+}
+`);
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions({ request: "open the calculator and divide 81 by 9" }), history, () => "81 divided by 9 is 9.");
+    assert.notEqual(outcome.stopped, "pass");
+    const meansResult = outcome.verdict.criteria.find(c => c.criterion === MEANS_CRITERION);
+    assert.equal(meansResult.status, "fail");
+  });
+});
+
+// A request naming no means at all must not be penalized: MEANS_CRITERION
+// passes "vacuously" and the run still stops pass when everything else does.
+test("runLoop still passes a non-computer request that names no means to use", async () => {
+  const fake = planVerifyFake({ verifyStatus: "pass" });
+  const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
+  await withAux4Bin(fake, async () => {
+    const outcome = await runLoop(baseOptions({ request: "What is the capital of France?" }), history, () => "Paris.");
+    assert.equal(outcome.stopped, "pass");
+    const meansResult = outcome.verdict.criteria.find(c => c.criterion === MEANS_CRITERION);
+    assert.equal(meansResult.status, "pass");
+  });
 });
 
 test("salvageVerdict recovers complete entries from a reply cut off mid-JSON", () => {
@@ -411,7 +460,7 @@ test("a verdict whose criteria were reworded is matched by position", async () =
 const args = process.argv.slice(2);
 const command = args.join(" ");
 if (command.includes("loop-plan.md")) process.stdout.write(JSON.stringify({ goal: "g", doneCriteria: [{ text: "the reply names the item", kind: "answer" }], steps: [] }));
-else if (command.includes("loop-verify.md")) process.stdout.write(JSON.stringify({ results: [{ criterion: "Reply names item.", status: "pass", evidence: "it does" }, { criterion: "covers all", status: "pass", evidence: "yes" }, { criterion: "honest", status: "pass", evidence: "matches" }] }));
+else if (command.includes("loop-verify.md")) process.stdout.write(JSON.stringify({ results: [{ criterion: "Reply names item.", status: "pass", evidence: "it does" }, { criterion: "covers all", status: "pass", evidence: "yes" }, { criterion: "honest", status: "pass", evidence: "matches" }, { criterion: "no means named", status: "pass", evidence: "n/a" }] }));
 `);
   const history = tmpFile("history.json", JSON.stringify({ messages: [], tokenUsage: {} }));
   await withAux4Bin(fake, async () => {

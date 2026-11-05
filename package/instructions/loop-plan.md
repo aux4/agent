@@ -19,6 +19,11 @@ Produce exactly one JSON object:
   a time), the criterion says it agrees with where that fact comes from, e.g.
   "the reply says whether the time is free, matching the schedule at that
   time" -- not merely that it says something.
+  When the request names a specific means to carry out the task -- an app,
+  account, website, or file -- add a `state` criterion that the task was done
+  through it, e.g. "the division was done using the calculator app", not just
+  that the reply gives the right-looking number. Knowing the answer is not the
+  same as having gone through the named means.
   Describe outcomes, never a tool, command, or method. Use only names and
   values that appear in the request.
 - `steps` (array, at most 4 short strings): a provisional approach. Start with

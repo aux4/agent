@@ -416,6 +416,15 @@ export const COVERAGE_CRITERION = "The final answer responds to every part of th
 // And one implicit honesty criterion: the answer must match what the actions
 // actually did -- what was sent, changed, or found -- not what was intended.
 export const HONESTY_CRITERION = "The final answer accurately describes what the actions actually did, including the exact content of anything sent or changed";
+// And one implicit means criterion: a request that names a specific means to
+// carry out the task -- an app, tool, account, website, or file -- must have
+// actually gone through it, not just produced the right-looking answer from
+// general knowledge. The planner is also asked for a doneCriterion about this
+// (loop-plan.md), but a plan that misses it on a small model is still caught
+// here, judged from the same recorded actions as HONESTY_CRITERION, no new
+// observation needed. When the request names no such means, this is moot and
+// passes.
+export const MEANS_CRITERION = "If the request names a specific means to carry out the task (an app, tool, account, website, or file), that means was actually used: the actions show a successful command that went through it, not just an answer produced without it. If the request names no such means, this passes.";
 
 // A pass on a state criterion only counts when it rests on the verifier's own
 // observation made after the work. If the verify run made no checks of its
@@ -454,7 +463,7 @@ export function verifyPayload(plan, finalAnswer, attempts, request = "") {
 }
 
 export function verifyCriteria(plan) {
-  return [...plan.doneCriteria, COVERAGE_CRITERION, HONESTY_CRITERION];
+  return [...plan.doneCriteria, COVERAGE_CRITERION, HONESTY_CRITERION, MEANS_CRITERION];
 }
 
 // Commands that already worked in this run, minus help lookups: the verifier
